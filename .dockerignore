@@ -1,0 +1,11 @@
+/.envrc
+/dist/
+/build/
+/.env/
+/.git/
+/Makefile
+/application.conf
+/spark-defaults.conf
+/readme.md
+**/__pycache__
+**/*.egg-info
