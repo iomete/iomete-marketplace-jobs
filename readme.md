@@ -9,7 +9,7 @@
 Specify the following parameters (these are examples, you can change them based on your preference):
 - **Name:** `query-scheduler-job`
 - **Schedule:** `0 0/22 1/1 * *`
-- **Docker Image:** `iomete/query_scheduler_job:0.1.0`
+- **Docker Image:** `iomete/query_scheduler_job:0.1.3`
 - **Main application file:** `local:///app/driver.py`
 - **Config file:** 
 ```hocon

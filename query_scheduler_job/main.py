@@ -15,7 +15,7 @@ def run_query(spark, query):
 
 
 def start_job(spark: SparkSession, queries):
-    logger.info("Query Scheduler Job: 0.1.0")
+    logger.info("Query Scheduler Job: 0.1.3")
 
     for query in queries:
         run_query(spark, query)
