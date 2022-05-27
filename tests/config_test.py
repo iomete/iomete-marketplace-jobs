@@ -1,4 +1,4 @@
-from config import get_config
+from query_scheduler_job.config import get_config
 
 
 def test_config_parsing():

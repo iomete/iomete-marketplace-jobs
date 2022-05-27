@@ -1,9 +1,11 @@
 """Main module."""
 from pyspark.sql import SparkSession
+
+from query_scheduler_job.iometeLogger import iometeLogger
 from query_scheduler_job.utils import timeit
 import structlog
 
-logger = structlog.get_logger("Query Scheduler")
+logger = iometeLogger("Query Scheduler").get_logger()
 
 
 @timeit
