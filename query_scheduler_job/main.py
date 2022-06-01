@@ -1,21 +1,21 @@
 """Main module."""
+import logging
 from pyspark.sql import SparkSession
 
-from query_scheduler_job.iometeLogger import iometeLogger
+from query_scheduler_job.iomete_logger import init_logger
 from query_scheduler_job.utils import timeit
-import structlog
 
-logger = iometeLogger("Query Scheduler").get_logger()
+logger = logging.getLogger(__name__)
 
 
 @timeit
 def run_query(spark, query):
-    logger.info(f'Running query: {query}')
     spark.sql(query)
 
 
 def start_job(spark: SparkSession, queries):
-    logger.info("Query Scheduler Job: 0.1.3")
+    init_logger()
+    logger.info("Query Scheduler Job started")
 
     for query in queries:
         run_query(spark, query)

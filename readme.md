@@ -1,17 +1,19 @@
 # iomete: Pyspark query scheduler job
 
-
 ## Deployment
 
 - Go to `Spark Jobs`.
 - Click on `Create New`.
 
 Specify the following parameters (these are examples, you can change them based on your preference):
+
 - **Name:** `query-scheduler-job`
 - **Schedule:** `0 0/22 1/1 * *`
-- **Docker Image:** `iomete/query_scheduler_job:0.1.3`
+- **Docker Image:** `iomete/query_scheduler_job:0.1.6`
 - **Main application file:** `local:///app/driver.py`
-- **Config file:** 
+- **Environment Variables:** `LOG_LEVEL`: `INFO`
+- **Config file:**
+
 ```hocon
 [
     """
@@ -31,20 +33,21 @@ Specify the following parameters (these are examples, you can change them based 
 ```
 
 Create Spark Job
-![Create Spark Job.png](doc/img/1-create-spark-job.png)
+![Create Spark Job.png](doc/img/create-spark-job.png)
+
+Create Spark Job - Environment Variables
+![Create Spark Job - Environment Variables.png](doc/img/add-environment-variables.png)
 
 Create Spark Job - Application Config
-![Create Spark Job - Application Config.png](doc/img/2-create-spark-job--application-config.png)
+![Create Spark Job - Application Config.png](doc/img/create-spark-job--application-config.png)
 
 And, hit the create button.
 
 ---
-The job will be run based on the defined schedule. But, you can trigger the job manually by clicking on the `Run` button.
+The job will be run based on the defined schedule. But, you can trigger the job manually by clicking on the `Run`
+button.
 
-![Manual Run](doc/img/3-manual-run.png)
-
-
-
+![Manual Run](doc/img/manual-run.png)
 
 ## Development
 
