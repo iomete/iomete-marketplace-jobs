@@ -1,5 +1,5 @@
 docker_image := iomete/query_scheduler_job
-docker_tag := 0.1.6
+docker_tag := 0.3.0
 
 test:
 	pytest --capture=no --log-cli-level=DEBUG
