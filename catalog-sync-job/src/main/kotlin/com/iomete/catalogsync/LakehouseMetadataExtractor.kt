@@ -212,11 +212,16 @@ class LakehouseMetadataExtractor(
     private fun getSchemas(catalog: String): List<String> {
         logger.info("Fetching schemas in catalog: {}... excludeSchemas: {}", catalog, excludeSchemas)
 
-        return spark.sql("show databases in $catalog")
-            .collectAsList().map { it.getString(0) }
-            .filter { schemaName -> schemaName.isNotBlank() } // filter out empty schema names
-            .filter { schemaName -> !excludeSchemas.contains(schemaName) }
-            .map { schemaName -> "$catalog.$schemaName" }
+        try {
+            return spark.sql("show databases in $catalog")
+                .collectAsList().map { it.getString(0) }
+                .filter { schemaName -> schemaName.isNotBlank() } // filter out empty schema names
+                .filter { schemaName -> !excludeSchemas.contains(schemaName) }
+                .map { schemaName -> "$catalog.$schemaName" }
+        } catch (ex: Exception) {
+            logger.warn("Couldn't fetch schemas in catalog: {}", catalog, ex)
+            return emptyList()
+        }
     }
 
     private fun getTables(schema: String): List<Row> {
