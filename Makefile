@@ -5,11 +5,7 @@ install-dev-requirements:
 	pip install -r infra/requirements-dev.txt
 
 run:
-	python test_job.py
-
-tests:
-	# run all tests
-	pytest
+	python job.py
 
 
 build-dependencies:
