@@ -1,4 +1,4 @@
-# iomete: Pyspark query scheduler job
+# PySpark - Query Scheduler | IOMETE
 
 ## Deployment
 
@@ -7,14 +7,22 @@
 
 Specify the following parameters (these are examples, you can change them based on your preference):
 
-- **Name:** `query-scheduler-job`
-- **Schedule:** `0 0/22 1/1 * *`
-- **Docker Image:** `iomete/query_scheduler_job:1.0.0`
-- **Main application file:** `local:///app/driver.py`
-- **Config file:**
+```json
+{
+  "mainApplicationFile": "https://raw.githubusercontent.com/iomete/query-scheduler-job/main/job.py",
+  "deps": {
+    "pyFiles": [
+      "https://github.com/iomete/query-scheduler-job/raw/main/infra/dependencies.zip"
+    ]
+  }
+}
+``` 
 
-Example config:
+And add config(`/etc/configs/application.conf`): 
+
 ```hocon
+# EXAMPLE
+
 # Queries to be run sequentially
 [
   # let's create an example database
@@ -46,6 +54,13 @@ Example config:
   """
 ]
 ```
+
+## Build Dependencies
+
+```shell
+make build-dependencies
+```
+
 
 ## Development
 
