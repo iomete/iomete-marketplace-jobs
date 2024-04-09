@@ -9,9 +9,8 @@ Specify the following parameters (these are examples, you can change them based 
 
 - **Name:** `query-scheduler-job`
 - **Schedule:** `0 0/22 1/1 * *`
-- **Docker Image:** `iomete/query_scheduler_job:0.3.0`
+- **Docker Image:** `iomete/query_scheduler_job:1.0.0`
 - **Main application file:** `local:///app/driver.py`
-- **Environment Variables:** `LOG_LEVEL`: `INFO`
 - **Config file:**
 
 Example config:
@@ -48,23 +47,6 @@ Example config:
 ]
 ```
 
-Create Spark Job
-![Create Spark Job.png](doc/img/create-spark-job.png)
-
-Create Spark Job - Environment Variables
-![Create Spark Job - Environment Variables.png](doc/img/add-environment-variables.png)
-
-Create Spark Job - Application Config
-![Create Spark Job - Application Config.png](doc/img/create-spark-job--application-config.png)
-
-And, hit the create button.
-
----
-The job will be run based on the defined schedule. But, you can trigger the job manually by clicking on the `Run`
-button.
-
-![Manual Run](doc/img/manual-run.png)
-
 ## Development
 
 **Prepare the dev environment**
@@ -73,7 +55,7 @@ button.
 virtualenv .env #or python3 -m venv .env
 source .env/bin/activate
 
-pip install -e ."[dev]"
+make install-dev-requirements
 ```
 
 **Run test**

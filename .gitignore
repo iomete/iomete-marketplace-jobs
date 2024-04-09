@@ -109,3 +109,5 @@ ENV/
 .pytest_cache
 .DS_Store
 /.envrc
+/.lakehouse/
+/spark-warehouse/
