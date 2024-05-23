@@ -2,6 +2,7 @@ package com.iomete.catalogsync.extract.utils
 
 import com.iomete.catalogsync.*
 import org.apache.spark.sql.SparkSession
+import org.eclipse.microprofile.config.ConfigProvider
 import org.slf4j.LoggerFactory
 
 
@@ -13,6 +14,10 @@ class ColumnTagExtractor(
         fullTableName: String,
         columns: List<String>
     ): Map<String, List<String>> {
+        if (isPiiDetectionEnabled().not()) {
+            return emptyMap()
+        }
+
         logger.info("detectColumnTags for {}", fullTableName)
 
         val result = mutableMapOf<String, List<String>>()
@@ -67,4 +72,16 @@ class ColumnTagExtractor(
         private val logger = LoggerFactory.getLogger(ColumnTagExtractor::class.java)
     }
 
+    private fun isPiiDetectionEnabled(): Boolean {
+        val config = ConfigProvider.getConfig()
+
+        // Check if the environment variable PII_DETECTION_ENABLED exists
+        val envVar = config.getOptionalValue("PII_DETECTION_ENABLED", String::class.java).orElse("false")
+
+        // Check if the system property piiDetectionEnabled exists
+        val systemProperty = System.getProperty("piiDetectionEnabled", "false")
+
+        // Determine the value to use
+        return envVar.toBoolean() || systemProperty.toBoolean()
+    }
 }
