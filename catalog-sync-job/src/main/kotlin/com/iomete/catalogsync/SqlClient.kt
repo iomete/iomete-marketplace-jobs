@@ -6,9 +6,9 @@ import jakarta.ws.rs.GET
 import jakarta.ws.rs.Path
 
 @Singleton
-@RegisterRestClient(configKey = "sql-service")
+@RegisterRestClient(configKey = "core-service")
 interface SqlClient {
     @GET
-    @Path("/schema/catalogs")
+    @Path("/catalog-names")
     fun catalogs(): Set<String>
 }

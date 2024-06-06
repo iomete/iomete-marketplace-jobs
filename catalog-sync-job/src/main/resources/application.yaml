@@ -3,7 +3,7 @@ application:
   catalog-endpoint: "http://iom-catalog"
 
 "presidio/mp-rest/url": http://presidio-analyzer
-"sql-service/mp-rest/url": http://iom-sql/api/internal/sql
+"core-service/mp-rest/url": http://iom-core/api/internal/spark-settings
 
 quarkus:
   package:
