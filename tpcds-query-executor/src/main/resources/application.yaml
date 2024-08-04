@@ -1,0 +1,32 @@
+application:
+  db: spark_catalog.tpcds_10tb
+  query-id: q1.sql
+  result-table: spark_catalog.default.tpcds_query_results
+  cpu: 1
+  memory: 8
+  attempt: 1
+  flags: "-"
+  
+quarkus:
+  package:
+    type: uber-jar
+  http:
+    port: 0
+  banner:
+    enabled: false
+  log:
+    level: INFO
+    category:
+      com.iomete:
+        level: INFO
+    console:
+      json: false
+
+"%dev":
+  quarkus:
+    log:
+      category:
+        com:
+          level: INFO
+      console:
+        json: false
