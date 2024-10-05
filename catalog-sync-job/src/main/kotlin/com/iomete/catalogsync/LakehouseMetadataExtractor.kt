@@ -164,10 +164,13 @@ class LakehouseMetadataExtractor(
 
         var creationTime: Long? = null
         try {
-            creationTime = LocalDateTime.parse(
-                table.metadata.getOrDefault("Created Time", null),
-                DateTimeFormatter.ofPattern("E MMM dd HH:mm:ss zzz yyyy")
-            ).toEpochSecond(ZoneOffset.UTC)
+            val tableCreationTime = table.metadata.getOrDefault("Created Time", null)
+            if (tableCreationTime != null) {
+                creationTime = LocalDateTime.parse(
+                    tableCreationTime,
+                    DateTimeFormatter.ofPattern("E MMM dd HH:mm:ss zzz yyyy")
+                ).toEpochSecond(ZoneOffset.UTC)
+            }
         } catch (ex: DateTimeParseException) {
             logger.warn(
                 "error parsing table creation time for {}.{} time={}",
