@@ -15,7 +15,7 @@ data class TableMetadata(
     // External providers: org.apache.spark.sql.json,com.databricks.spark.csv,...
     val provider: String?,
     val viewText: String?,
-    val createdAt: Long,
+    val createdAt: Long? = null,
 
     val lastModified: Long? = null,
     val numFiles: Long? = null,

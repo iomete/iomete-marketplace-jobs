@@ -162,10 +162,10 @@ class LakehouseMetadataExtractor(
             .filter { it.contains("PII") || it.contains("PCI") }.distinct().toList()
 
 
-        var creationTime = 0L
+        var creationTime: Long? = null
         try {
             creationTime = LocalDateTime.parse(
-                table.metadata.getOrDefault("Created Time", ""),
+                table.metadata.getOrDefault("Created Time", null),
                 DateTimeFormatter.ofPattern("E MMM dd HH:mm:ss zzz yyyy")
             ).toEpochSecond(ZoneOffset.UTC)
         } catch (ex: DateTimeParseException) {
