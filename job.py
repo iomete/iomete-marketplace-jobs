@@ -16,7 +16,9 @@ def run_query(query):
     start_time = time.time()
 
     # Execute the command query
-    spark.sql(query)
+    val result = spark.sql(query)
+    # Show output
+    result.show(truncate=False)
 
     duration = (time.time() - start_time)
     logger.info(f"Query executed in {duration:0.2f} seconds")
