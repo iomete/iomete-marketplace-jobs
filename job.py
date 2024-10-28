@@ -16,7 +16,7 @@ def run_query(query):
     start_time = time.time()
 
     # Execute the command query
-    val result = spark.sql(query)
+    result = spark.sql(query)
     # Show output
     result.show(truncate=False)
 
