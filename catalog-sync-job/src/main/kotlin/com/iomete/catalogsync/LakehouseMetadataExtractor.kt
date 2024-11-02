@@ -236,7 +236,7 @@ class LakehouseMetadataExtractor(
 
         var rawColumns: List<Row> = listOf()
         try {
-            rawColumns = spark.sql("describe extended $schema.$tableName").collectAsList()
+            rawColumns = spark.sql("describe extended $schema.`$tableName`").collectAsList()
         } catch (ex: Exception) {
             logger.warn("Couldn't describeTable for {}.{}", schema, tableName, ex)
         }
