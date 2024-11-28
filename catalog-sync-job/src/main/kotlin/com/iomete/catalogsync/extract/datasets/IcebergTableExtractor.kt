@@ -22,7 +22,7 @@ class IcebergTableExtractor(
         get() = "MANAGED"
 
     override fun extractTableStatistics(): TableStatistics? {
-        spark.sql("REFRESH TABLE $fullName")
+        // spark.sql("REFRESH TABLE $fullName")
         val lastSnapshot = spark.sql(
             """
                 select 
