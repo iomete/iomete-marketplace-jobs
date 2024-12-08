@@ -5,6 +5,7 @@ import org.apache.spark.sql.SparkSession
 
 class GenericTableExtractor(
     spark: SparkSession,
+    catalog: String,
     schema: String,
     tableName: String
 ) : TableExtractor {

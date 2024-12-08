@@ -6,10 +6,11 @@ import com.iomete.catalogsync.extract.utils.ColumnTagExtractor
 
 class ViewExtractor(
     private val columnTagExtractor: ColumnTagExtractor,
+    catalog: String,
     schema: String,
     table: String
 ) : TableExtractor, SupportColumnTags {
-    private val fullName = "$schema.$table"
+    private val fullName = "$catalog.$schema.$table"
     override fun extractColumnTags(columns: List<String>): Map<String, List<String>> =
         columnTagExtractor.extract(fullName, columns)
 

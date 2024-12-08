@@ -13,10 +13,11 @@ import org.slf4j.LoggerFactory
 class IcebergTableExtractor(
     private val spark: SparkSession,
     private val columnTagExtractor: ColumnTagExtractor,
+    catalog: String,
     schema: String,
     table: String
 ) : TableExtractor, SupportTableStatistics, SupportColumnTags {
-    private val fullName = "$schema.$table"
+    private val fullName = "$catalog.$schema.$table"
 
     override val getTableType: String
         get() = "MANAGED"

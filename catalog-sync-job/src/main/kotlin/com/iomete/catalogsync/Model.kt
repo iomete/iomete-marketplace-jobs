@@ -3,6 +3,7 @@ package com.iomete.catalogsync
 import com.iomete.catalogsync.extract.ColumnStat
 
 data class TableMetadata(
+    val catalog: String,
     val schema: String,
     val name: String,
     val description: String?,

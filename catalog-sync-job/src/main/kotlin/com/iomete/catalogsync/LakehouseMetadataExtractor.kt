@@ -58,41 +58,43 @@ class LakehouseMetadataExtractor(
             logger.info("Schemas: {}", schemas)
 
             schemas.forEach { schema ->
-                processSchema(schema = schema)
+                processSchema(catalog = catalog, schema = schema)
             }
         }
 
         printMetrics()
     }
 
-    private fun processSchema(schema: String) {
-        logger.info("Processing schema: {}", schema)
+    private fun processSchema(catalog: String, schema: String) {
+        logger.info("Processing schema: {}.{}", catalog, schema)
 
-        getTables(schema).parallelStream().forEach { tableRow ->
+        getTables(catalog, schema).parallelStream().forEach { tableRow ->
             val tableName = tableRow.getString(1)
             val isTemp = tableRow.getBoolean(2)
 
-            logger.info("Processing table: {}.{}", schema, tableName)
+            logger.info("Processing table: {}.{}.{}", catalog, schema, tableName)
             var scrapedData: TableMetadata? = null
 
-            val tableProcessMetric = getTimer(name = METRIC_NAME_TABLE_PROCESS, schema = schema, tableName = tableName)
-            scrapedData = tableProcessMetric.recordCallable { scrapeTable(schema = schema, tableName = tableName, isTemp = isTemp) }
+            val tableProcessMetric = getTimer(name = METRIC_NAME_TABLE_PROCESS, catalog = catalog, schema = schema, tableName = tableName)
+            scrapedData =
+                tableProcessMetric.recordCallable { scrapeTable(catalog = catalog, schema = schema, tableName = tableName, isTemp = isTemp) }
 
             logger.info(
-                "Processing finished in {} ms for schema: {}, table: {}",
+                "Processing finished in {} ms for schema: {}.{}, table: {}",
                 tableProcessMetric.totalTime(TimeUnit.MILLISECONDS),
+                catalog,
                 schema,
                 tableName,
             )
 
-            val dataSyncMetric = getTimer(name = METRIC_NAME_DATA_SYNC, schema = schema, tableName = tableName)
+            val dataSyncMetric = getTimer(name = METRIC_NAME_DATA_SYNC, catalog = catalog, schema = schema, tableName = tableName)
             scrapedData?.let { dataSyncMetric.record<Unit> { dataSync.syncData(it) } }
         }
         logger.info("Processing schema: {} finished!", schema)
     }
 
-    private fun scrapeTable(schema: String, tableName: String, isTemp: Boolean): TableMetadata? {
-        val table = describeTable(schema, tableName)
+    private fun scrapeTable(catalog: String, schema: String, tableName: String, isTemp: Boolean): TableMetadata? {
+        val table = describeTable(catalog, schema, tableName)
 
         var tableType = table.metadata.getOrDefault("Type", "UNKNOWN")
         val isView = tableType.equals("view", ignoreCase = true)
@@ -105,20 +107,21 @@ class LakehouseMetadataExtractor(
         val tableExtractor = tableExtractorFactory.extractorFor(
             provider = tableProvider,
             isView = isView,
+            catalog = catalog,
             schema = schema,
             table = tableName
         )
 
         val extractTableStatisticsMetric = getTimer(
-            name = METRIC_NAME_EXTRACT_TABLE_STATISTICS, schema = schema, tableName = tableName
+            name = METRIC_NAME_EXTRACT_TABLE_STATISTICS, catalog = catalog, schema = schema, tableName = tableName
         )
 
         val extractColumnsStatisticsMetric = getTimer(
-            name = METRIC_NAME_EXTRACT_COLUMNS_STATISTICS, schema = schema, tableName = tableName
+            name = METRIC_NAME_EXTRACT_COLUMNS_STATISTICS, catalog = catalog, schema = schema, tableName = tableName
         )
 
         val extractTagsMetric = getTimer(
-            name = METRIC_NAME_EXTRACT_TAGS, schema = schema, tableName = tableName
+            name = METRIC_NAME_EXTRACT_TAGS, catalog = catalog, schema = schema, tableName = tableName
         )
 
         fun <T : Any?> recordNullable(timer: Timer, supplier: Supplier<T>): T? {
@@ -173,7 +176,8 @@ class LakehouseMetadataExtractor(
             }
         } catch (ex: DateTimeParseException) {
             logger.warn(
-                "error parsing table creation time for {}.{} time={}",
+                "error parsing table creation time for {}.{}.{} time={}",
+                catalog,
                 schema,
                 tableName,
                 table.metadata.getOrDefault("Created Time", "")
@@ -181,6 +185,7 @@ class LakehouseMetadataExtractor(
         }
 
         return TableMetadata(
+            catalog = catalog,
             schema = schema,
             name = tableName,
             description = table.metadata.getOrDefault("Comment", ""),
@@ -220,25 +225,25 @@ class LakehouseMetadataExtractor(
                 .collectAsList().map { it.getString(0) }
                 .filter { schemaName -> schemaName.isNotBlank() } // filter out empty schema names
                 .filter { schemaName -> !excludeSchemas.contains(schemaName) }
-                .map { schemaName -> "$catalog.$schemaName" }
+
         } catch (ex: Exception) {
             logger.warn("Couldn't fetch schemas in catalog: {}", catalog, ex)
             return emptyList()
         }
     }
 
-    private fun getTables(schema: String): List<Row> {
-        return spark.sql("show tables from $schema").collectAsList()
+    private fun getTables(catalog: String, schema: String): List<Row> {
+        return spark.sql("show tables from $catalog.$schema").collectAsList()
     }
 
-    private fun describeTable(schema: String, tableName: String): TableDescription {
+    private fun describeTable(catalog: String, schema: String, tableName: String): TableDescription {
         logger.info("describeTable for {}", tableName)
 
         var rawColumns: List<Row> = listOf()
         try {
-            rawColumns = spark.sql("describe extended $schema.`$tableName`").collectAsList()
+            rawColumns = spark.sql("describe extended $catalog.$schema.`$tableName`").collectAsList()
         } catch (ex: Exception) {
-            logger.warn("Couldn't describeTable for {}.{}", schema, tableName, ex)
+            logger.warn("Couldn't describeTable for {}.{}.{}", catalog, schema, tableName, ex)
         }
         var sortOrder = 0
         var columnFlag = true
@@ -326,8 +331,8 @@ class LakehouseMetadataExtractor(
         logger.info("Report: {}", report)
     }
 
-    private fun getTimer(name: String, schema: String, tableName: String): Timer {
-        return registry.timer(name, "schema", schema, "table", tableName)
+    private fun getTimer(name: String, catalog: String, schema: String, tableName: String): Timer {
+        return registry.timer(name, "catalog", catalog, "schema", schema, "table", tableName)
     }
 
     data class TableDescription(val columns: List<ColumnMetadata>, val metadata: Map<String, String>)

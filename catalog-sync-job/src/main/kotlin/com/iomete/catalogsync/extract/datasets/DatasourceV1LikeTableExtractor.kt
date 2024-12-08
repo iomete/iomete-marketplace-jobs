@@ -21,7 +21,8 @@ class DatasourceV1LikeTableExtractor(
     private val catalog = spark.sessionState().catalog()
     private val fullName = "$schema.$tableName"
     private val catalogTable = catalog.getTempViewOrPermanentTableMetadata(
-        TableIdentifier(tableName, Option.apply(schema.removePrefix(SPARK_CATALOG_PREFIX))))
+        TableIdentifier(tableName, Option.apply(schema.removePrefix(SPARK_CATALOG_PREFIX)))
+    )
     private val table = spark.catalog().getTable(schema.removePrefix(SPARK_CATALOG_PREFIX), tableName)
 
     override val getTableType: String

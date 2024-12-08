@@ -24,24 +24,26 @@ class TableExtractorFactory(
     fun extractorFor(
         provider: String,
         isView: Boolean = false,
+        catalog: String,
         schema: String,
         table: String
     ): TableExtractor {
 
-        if (isView) return ViewExtractor(columnTagExtractor = columnTagExtractor, schema = schema, table = table)
+        if (isView) return ViewExtractor(columnTagExtractor = columnTagExtractor, catalog = catalog, schema = schema, table = table)
 
         return when (provider) {
             "iceberg" -> IcebergTableExtractor(
-                spark = spark, columnTagExtractor = columnTagExtractor, schema = schema, table = table
+                spark = spark, columnTagExtractor = columnTagExtractor, catalog = catalog, schema = schema, table = table
             )
 
             "parquet", "orc", "hive" -> DatasourceV1LikeTableExtractor(
                 spark = spark,
                 columnTagExtractor = columnTagExtractor,
-                schema = schema, tableName = table
+                schema = schema,
+                tableName = table
             )
 
-            else -> GenericTableExtractor(spark = spark, schema = schema, tableName = table)
+            else -> GenericTableExtractor(spark = spark, catalog = catalog, schema = schema, tableName = table)
         }
     }
 }
