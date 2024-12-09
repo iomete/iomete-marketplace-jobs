@@ -64,3 +64,20 @@ More info on sync modes:
 ```shell
 python driver.py
 ```
+
+## Docker - Build and Push Images
+
+**Spark Connect Image**
+```shell
+docker buildx build --platform linux/amd64,linux/arm64 --push -f docker/Spark-Connect-Dockerfile -t iomete/iomete-oracle-sync:1.2.0-spark-connect .
+```
+
+**Spark Job Image**
+```shell
+docker buildx build --platform linux/amd64,linux/arm64 --push -f docker/Spark-Job-Dockerfile -t iomete/iomete-oracle-sync:1.2.0-spark-job .
+```
+
+## Run Jobs
+- Copy DAGs from ./dags folder and add them to airflow dags folder.
+- Update the DAGs with the required configurations.
+- For running DAG with `IometeOperator` install the `iomete-airflow-plugin` package.
