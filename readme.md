@@ -81,3 +81,6 @@ docker buildx build --platform linux/amd64,linux/arm64 --push -f docker/Spark-Jo
 - Copy DAGs from ./dags folder and add them to airflow dags folder.
 - Update the DAGs with the required configurations.
 - For running DAGs with `IometeOperator` install the `iomete-airflow-plugin` package.
+
+## High Level Design
+![HLD](images/HLD.png)
