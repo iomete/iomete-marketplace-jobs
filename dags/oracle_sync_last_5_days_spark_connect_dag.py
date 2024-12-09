@@ -11,7 +11,7 @@ config = {
     "token": Variable.get("SPARK_CLUSTER_TOKEN")
   },
   "source_connection": {
-    "host": "oracle-db.infra.svc.cluster.local",
+    "host": "192.168.106.16",
     "port": 1521,
     "username": Variable.get("ORACLE_USERNAME"),
     "password": Variable.get("ORACLE_PASSWORD")
@@ -19,18 +19,20 @@ config = {
   "syncs": [
     {
       "source": {
-        "database": "FREEPDB1",
-        "schema": "iomete_user",
-        "tables": ["ORDERS"]
+        "database": "FCJPREPROD",
+        "schema": "FCJLIVE",
+        "tables": [
+          "ACTB_HISTORY"
+        ]
       },
       "destination": {
-        "catalog": "test_abhishek_catalog",
-        "schema": "marketplace"
+        "catalog": "bronze",
+        "schema": "flex"
       },
       "sync_mode": {
         "type": "incremental_load",
-        "primary_key": "ORDER_ID",
-        "partition_column": "updated_at",
+        "primary_key": "AC_ENTRY_SR_NO",
+        "partition_column": "TRN_DT",
         "start_date_offset_days": 5
       }
     }

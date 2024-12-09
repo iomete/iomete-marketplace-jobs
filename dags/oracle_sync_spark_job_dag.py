@@ -11,7 +11,7 @@ with DAG(
 ) as dag:
   task = IometeOperator(
     task_id="iomete-oracle-db-sync-task",
-    job_id="fa8aba3b-3b84-4462-86b3-90f68a288a1b",
+    job_id="387627f0-ea86-47a1-807d-e4fa893aa18b",
     dag=dag,
   )
 
