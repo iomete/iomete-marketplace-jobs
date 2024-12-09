@@ -10,7 +10,7 @@ Quickly move your Oracle tables to IOMETE Lakehouse using either Spark Connet Cl
 virtualenv .env #or python3 -m venv .env
 source .env/bin/activate
 
-pip install -r requirements.txt
+pip install -r requirements/spark_connect_requirements.txt
 export ENV=local
 ```
 
