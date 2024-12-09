@@ -11,9 +11,10 @@ virtualenv .env #or python3 -m venv .env
 source .env/bin/activate
 
 pip install -r requirements.txt
+export ENV=local
 ```
 
-**Create application configuration file** - `app_conf.json`
+**Create application configuration file at the project root** - `./app_conf.json`
 ```json
 {
   "spark_cluster": {
@@ -43,14 +44,13 @@ pip install -r requirements.txt
         "type": "full_load/incremental_load",
         "primary_key": "primary_key_column_name",
         "partition_column": "partition_column_name",
-        "start_date": "2024-01-01",
-        "end_date": "2024-01-10"
+        "start_date_offset_days": 5
       }
     }
   ]
 }
 ```
-More info on sync modes
+More info on sync modes:
 - You can choose either `full_load` or `incremental_load`.
 - With `full_load` mode, the application will sync the entire data from the source table.
 - If you choose `incremental_load`, you need to provide the `primary_key` and `partition_column` to sync the data incrementally.
