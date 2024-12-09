@@ -65,7 +65,7 @@ More info on sync modes:
 python driver.py
 ```
 
-## Docker - Build and Push Images
+## Build and Push Images
 
 **Spark Connect Image**
 ```shell
@@ -80,4 +80,4 @@ docker buildx build --platform linux/amd64,linux/arm64 --push -f docker/Spark-Jo
 ## Run Jobs
 - Copy DAGs from ./dags folder and add them to airflow dags folder.
 - Update the DAGs with the required configurations.
-- For running DAG with `IometeOperator` install the `iomete-airflow-plugin` package.
+- For running DAGs with `IometeOperator` install the `iomete-airflow-plugin` package.
