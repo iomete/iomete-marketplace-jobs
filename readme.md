@@ -83,4 +83,4 @@ docker buildx build --platform linux/amd64,linux/arm64 --push -f docker/Spark-Jo
 - For running DAGs with `IometeOperator` install the `iomete-airflow-plugin` package.
 
 ## High Level Design
-![HLD](images/HLD.png)
+![HLD](images/high_level_design.png)
