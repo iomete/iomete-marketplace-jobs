@@ -1,33 +1,32 @@
 import os
 import json
 
-from pyspark.sql import SparkSession
-
 from iomete_oracle_sync.data_sync.syncer import Syncer
 from iomete_oracle_sync.logger.iomete_logger import init_logger
+from iomete_oracle_sync.utils.config_utils import get_config
+from iomete_oracle_sync.utils.spark_session import get_custom_spark_connect_session, get_spark_connect_session, \
+  get_spark_session
 
 
 def start_job():
   init_logger()
 
-  application_conf = os.getenv("APPLICATION_CONF")
-  env = os.getenv("ENV")
+  config = get_config()
 
-  if env == "local":
-    with open('app_conf.json', 'r') as file:
-      config = json.load(file)
-      spark = SparkSession.builder.appName("JDBC migration").remote(
-        config["spark_cluster"]["endpoint"].replace('{access_token}', config["spark_cluster"]["token"])).getOrCreate()
-  elif application_conf:
-    config = json.loads(application_conf)
-    spark = SparkSession.builder.appName("JDBC migration").remote(
-      config["spark_cluster"]["endpoint"].replace('{access_token}', config["spark_cluster"]["token"])).getOrCreate()
+  if os.getenv("ENV") == "local" or os.getenv("APPLICATION_CONF"):
+    spark_cluster_conf = config["spark_cluster"]
+    sc_url = spark_cluster_conf["endpoint"].replace('{access_token}', spark_cluster_conf["token"])
+
+    if config["spark_cluster"].get("certificate"):
+      spark = get_custom_spark_connect_session(sc_url, spark_cluster_conf.get("certificate"))
+    else:
+      spark = get_spark_connect_session(sc_url)
   else:
     with open('/etc/configs/app_conf.json', 'r') as file:
       config = json.load(file)
       config["source_connection"]["username"] = os.getenv(config["source_connection"]["username"])
       config["source_connection"]["password"] = os.getenv(config["source_connection"]["password"])
 
-      spark = SparkSession.builder.appName("JDBC migration").getOrCreate()
+      spark = get_spark_session()
 
   Syncer(spark, config).run()

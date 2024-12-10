@@ -8,7 +8,8 @@ from airflow.utils.dates import days_ago
 config = {
   "spark_cluster": {
     "endpoint": Variable.get("SPARK_CLUSTER_ENDPOINT"),
-    "token": Variable.get("SPARK_CLUSTER_TOKEN")
+    "token": Variable.get("SPARK_CLUSTER_TOKEN"),
+    "certificate": Variable.get("SPARK_CLUSTER_CERTIFICATE")
   },
   "source_connection": {
     "host": "192.168.106.16",
