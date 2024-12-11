@@ -47,7 +47,7 @@ with DAG(
     start_date=days_ago(1),
 ) as dag:
   task = KubernetesPodOperator(
-    namespace='airflow-abhishek',
+    namespace='iomete-system',
     image="iomete/iomete-oracle-sync:1.2.1-spark-connect",
     cmds=["python", "driver.py"],
     name="oracle_sync",
