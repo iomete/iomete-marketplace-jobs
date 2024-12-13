@@ -1,8 +1,9 @@
 # IOMETE: Spark Streaming Job
 
-Pipeline data from your tables to IOMETE Lakehouse using Spark Streaming Job
+Pipeline data from your tables to IOMETE Lakehouse using Spark Streaming Job.
 
 ## Configuration
+
 ```json
 {
   "kafka": {
@@ -27,6 +28,7 @@ Pipeline data from your tables to IOMETE Lakehouse using Spark Streaming Job
 ## Build and Push Images
 
 **Spark Streaming Job Image**
+
 ```shell
 docker buildx build --platform linux/amd64,linux/arm64 --push -f table_sync/infra/Dockerfile -t iomete/iomete-kafka-sync:1.0.1 .
 ```
