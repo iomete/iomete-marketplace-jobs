@@ -62,7 +62,8 @@ class OracleConnection(SourceConnection):
               dbtable '{db_table_name}',
               user '{self.user_name}',
               password '{self.user_pass}',
-              driver '{self.driver}'
+              driver '{self.driver}',
+              oracle.jdbc.mapDateToTimestamp 'false'
             )
         """
 
