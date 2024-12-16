@@ -69,7 +69,7 @@ python driver.py
 
 **Spark Connect Image**
 ```shell
-docker buildx build --platform linux/amd64,linux/arm64 --push -f docker/Spark-Connect-Dockerfile -t iomete/iomete-oracle-sync:1.2.1-spark-connect .
+docker buildx build --platform linux/amd64,linux/arm64 --push -f docker/Spark-Connect-Dockerfile -t iomete/iomete-oracle-sync:1.2.2-spark-connect .
 ```
 
 **Spark Job Image**

@@ -48,7 +48,7 @@ with DAG(
 ) as dag:
   task = KubernetesPodOperator(
     namespace='iomete-system',
-    image="iomete/iomete-oracle-sync:1.2.1-spark-connect",
+    image="iomete/iomete-oracle-sync:1.2.2-spark-connect",
     cmds=["python", "driver.py"],
     name="oracle_sync",
     task_id="oracle_sync_task",
