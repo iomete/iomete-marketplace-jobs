@@ -27,8 +27,7 @@ class DataSync(
         .build()
 
     fun syncData(tableMetadata: TableMetadata): Boolean {
-        val endpoint = "${applicationConfig.catalogEndpoint()}/internal/v1/data-catalog/index"
-
+        val endpoint = "${applicationConfig.catalogEndpoint()}/internal/v1/data-catalog/domain/${System.getenv("DOMAIN")}/index"
         try {
             val response = client.target(endpoint)
                 .request(MediaType.APPLICATION_JSON_TYPE)
