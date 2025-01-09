@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit
 import java.util.function.Supplier
 import jakarta.inject.Singleton
 import org.eclipse.microprofile.rest.client.inject.RestClient
+import java.util.Optional
 import kotlin.collections.set
 
 const val METRIC_NAME_TABLE_PROCESS = "1.table_process"
@@ -214,7 +215,7 @@ class LakehouseMetadataExtractor(
     private fun getCatalog(): List<String> {
         logger.info("Fetching catalogs...")
         // return spark.sql("show catalogs").collectAsList().map { it.getString(0) }
-        val domain = System.getenv("IOMETE_DOMAIN")
+        val domain = Optional.ofNullable(System.getenv("IOMETE_DOMAIN")).orElse("default")
         return sqlClient.catalogs(domain).toList()
     }
 

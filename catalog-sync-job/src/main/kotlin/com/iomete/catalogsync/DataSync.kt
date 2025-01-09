@@ -1,15 +1,16 @@
 package com.iomete.catalogsync
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import org.jboss.resteasy.client.jaxrs.internal.ResteasyClientBuilderImpl
-import org.slf4j.LoggerFactory
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import jakarta.inject.Singleton
 import jakarta.ws.rs.client.Client
 import jakarta.ws.rs.client.Entity
 import jakarta.ws.rs.core.MediaType
 import jakarta.ws.rs.core.Response
+import org.jboss.resteasy.client.jaxrs.internal.ResteasyClientBuilderImpl
+import org.slf4j.LoggerFactory
+import java.util.*
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 
 @Singleton
@@ -27,7 +28,8 @@ class DataSync(
         .build()
 
     fun syncData(tableMetadata: TableMetadata): Boolean {
-        val endpoint = "${applicationConfig.catalogEndpoint()}/internal/v1/domain/${System.getenv("IOMETE_DOMAIN")}/data-catalog/index"
+        val domain: String = Optional.ofNullable(System.getenv("IOMETE_DOMAIN")).orElse("default")
+        val endpoint = "${applicationConfig.catalogEndpoint()}/internal/v1/domain/$domain/data-catalog/index"
         try {
             val response = client.target(endpoint)
                 .request(MediaType.APPLICATION_JSON_TYPE)
