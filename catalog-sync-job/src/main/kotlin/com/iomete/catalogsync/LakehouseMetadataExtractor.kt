@@ -214,7 +214,7 @@ class LakehouseMetadataExtractor(
     private fun getCatalog(): List<String> {
         logger.info("Fetching catalogs...")
         // return spark.sql("show catalogs").collectAsList().map { it.getString(0) }
-        val domain = System.getenv("DOMAIN")
+        val domain = System.getenv("IOMETE_DOMAIN")
         return sqlClient.catalogs(domain).toList()
     }
 
