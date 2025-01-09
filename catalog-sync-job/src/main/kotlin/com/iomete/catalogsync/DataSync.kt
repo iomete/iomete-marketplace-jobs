@@ -29,7 +29,7 @@ class DataSync(
 
     fun syncData(tableMetadata: TableMetadata): Boolean {
         val domain: String = Optional.ofNullable(System.getenv("IOMETE_DOMAIN")).orElse("default")
-        val endpoint = "${applicationConfig.catalogEndpoint()}/internal/v1/domain/$domain/data-catalog/index"
+        val endpoint = "${applicationConfig.catalogEndpoint()}/internal/v1/domains/$domain/data-catalog/index"
         try {
             val response = client.target(endpoint)
                 .request(MediaType.APPLICATION_JSON_TYPE)
