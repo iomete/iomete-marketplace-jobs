@@ -1,9 +1,9 @@
 application:
   exclude-schemas: []
-  catalog-endpoint: "http://iom-catalog"
+  catalog-endpoint: "http://iom-catalog.${IOMETE_RELEASE_NAMESPACE}.svc.${IOMETE_CLUSTER_DNS}"
 
-"presidio/mp-rest/url": http://presidio-analyzer
-"core-service/mp-rest/url": http://iom-core/api/internal
+"presidio/mp-rest/url": http://presidio-analyzer.${IOMETE_RELEASE_NAMESPACE}.svc.${IOMETE_CLUSTER_DNS}
+"core-service/mp-rest/url": http://iom-core.${IOMETE_RELEASE_NAMESPACE}.svc.${IOMETE_CLUSTER_DNS}
 
 quarkus:
   package:

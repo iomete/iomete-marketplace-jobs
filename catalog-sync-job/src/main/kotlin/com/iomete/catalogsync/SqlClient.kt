@@ -10,6 +10,6 @@ import jakarta.ws.rs.PathParam
 @RegisterRestClient(configKey = "core-service")
 interface SqlClient {
     @GET
-    @Path("/domains/{domain}/spark/settings/catalog-names")
+    @Path("/api/internal/domains/{domain}/spark/settings/catalog-names")
     fun catalogs(@PathParam("domain") domainIdentifier: String): Set<String>
 }

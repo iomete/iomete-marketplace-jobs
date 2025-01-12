@@ -1,5 +1,5 @@
 image := iomete/iom-catalog-sync
-tag   := 2.1.0
+tag   := 3.0.1
 
 spark_submit_cmd := /opt/spark/bin/spark-submit \
 			--properties-file=/opt/spark/conf/spark-defaults.conf \
