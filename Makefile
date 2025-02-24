@@ -43,6 +43,7 @@ spark-sql:
 
 .PHONY: submit-local
 submit-local:
+	APPLICATION_CATALOG_ENDPOINT=http://localhost:8080 \
 	CORE_SERVICE_MP_REST_URL=http://127.0.0.1:3000 \
 	IOMETE_RELEASE_NAMESPACE=iomete-system \
 	IOMETE_CLUSTER_DNS=cluster.local \
