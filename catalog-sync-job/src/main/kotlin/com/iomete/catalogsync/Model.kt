@@ -2,6 +2,19 @@ package com.iomete.catalogsync
 
 import com.iomete.catalogsync.extract.ColumnStat
 
+data class CatalogMetadata(
+    val catalog: String,
+    val totalSchemaCount: Int,
+    val totalSizeInBytes: Long
+)
+
+data class SchemaMetadata(
+    val catalog: String,
+    val schema: String,
+    val totalTableCount: Int,
+    val totalSizeInBytes: Long
+)
+
 data class TableMetadata(
     val catalog: String,
     val schema: String,

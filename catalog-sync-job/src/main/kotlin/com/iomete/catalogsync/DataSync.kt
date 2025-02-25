@@ -27,25 +27,29 @@ class DataSync(
         .executorService(executorService)
         .build()
 
-    fun syncData(tableMetadata: TableMetadata): Boolean {
+    private fun <T> sync(endpointPath: String, metadata: T): Boolean {
         val domain: String = Optional.ofNullable(System.getenv("IOMETE_DOMAIN")).orElse("default")
-        val endpoint = "${applicationConfig.catalogEndpoint()}/internal/v1/domains/$domain/data-catalog/index"
+        val endpoint = "${applicationConfig.catalogEndpoint()}/internal/v1/domains/$domain/$endpointPath"
         try {
             val response = client.target(endpoint)
                 .request(MediaType.APPLICATION_JSON_TYPE)
                 .accept(MediaType.APPLICATION_JSON_TYPE)
-                .post(Entity.json(mapper.writeValueAsString(tableMetadata)))
+                .post(Entity.json(mapper.writeValueAsString(metadata)))
 
             if (response.status == Response.Status.NO_CONTENT.statusCode) {
                 return true
             }
 
-            logger.error("Unexpected response on syncing: tableMetadata: {}, status: {}", tableMetadata, response.status)
+            logger.error("Unexpected response on syncing: metadata: {}, status: {}", metadata, response.status)
         } catch (ex: RuntimeException) {
-            logger.error("Unexpected exception on syncing: tableMetadata: {}", tableMetadata, ex)
+            logger.error("Unexpected exception on syncing: metadata: {}", metadata, ex)
             throw ex
         }
 
         return false
     }
+
+    fun syncTableData(tableMetadata: TableMetadata): Boolean = sync("data-catalog/index", tableMetadata)
+    fun syncSchemaData(schemaMetadata: SchemaMetadata): Boolean = sync("data-catalog/index/schema", schemaMetadata)
+    fun syncCatalogData(catalogMetadata: CatalogMetadata): Boolean = sync("data-catalog/index/catalog", catalogMetadata)
 }

@@ -58,18 +58,35 @@ class LakehouseMetadataExtractor(
             val schemas = getSchemas(catalog)
             logger.info("Schemas: {}", schemas)
 
+            val totalSchemaCount = schemas.size
+            var totalCatalogSizeInBytes = 0L
+
             schemas.forEach { schema ->
-                processSchema(catalog = catalog, schema = schema)
+                val schemaMetrics = processSchema(catalog = catalog, schema = schema)
+                totalCatalogSizeInBytes += schemaMetrics.totalSizeInBytes
             }
+
+            // Sync catalog-level metrics
+            val catalogMetadata = CatalogMetadata(
+                catalog = catalog,
+                totalSchemaCount = totalSchemaCount,
+                totalSizeInBytes = totalCatalogSizeInBytes
+            )
+            dataSync.syncCatalogData(catalogMetadata)
+
+            logger.info("Processing catalog: {} finished! Total Schemas: {}, Total Size: {} bytes", catalog, totalSchemaCount, totalCatalogSizeInBytes)
         }
 
         printMetrics()
     }
 
-    private fun processSchema(catalog: String, schema: String) {
+    private fun processSchema(catalog: String, schema: String): SchemaMetadata {
         logger.info("Processing schema: {}.{}", catalog, schema)
+        val tables = getTables(catalog, schema)
+        val totalTableCount = tables.size
+        var totalSizeInBytes = 0L
 
-        getTables(catalog, schema).parallelStream().forEach { tableRow ->
+        tables.parallelStream().forEach { tableRow ->
             val tableName = tableRow.getString(1)
             val isTemp = tableRow.getBoolean(2)
 
@@ -89,9 +106,25 @@ class LakehouseMetadataExtractor(
             )
 
             val dataSyncMetric = getTimer(name = METRIC_NAME_DATA_SYNC, catalog = catalog, schema = schema, tableName = tableName)
-            scrapedData?.let { dataSyncMetric.record<Unit> { dataSync.syncData(it) } }
+            scrapedData?.let {
+                dataSyncMetric.record<Unit> { dataSync.syncTableData(it) }
+                synchronized(this) {
+                    totalSizeInBytes += it.sizeInBytes ?: 0L
+                }
+            }
         }
-        logger.info("Processing schema: {} finished!", schema)
+
+        // Sync schema-level metrics
+        val schemaMetadata = SchemaMetadata(
+            catalog = catalog,
+            schema = schema,
+            totalTableCount = totalTableCount,
+            totalSizeInBytes = totalSizeInBytes
+        )
+        dataSync.syncSchemaData(schemaMetadata)
+
+        logger.info("Processing schema: {} finished! Total Tables: {}, Total Size: {} bytes", schema, totalTableCount, totalSizeInBytes)
+        return schemaMetadata
     }
 
     private fun scrapeTable(catalog: String, schema: String, tableName: String, isTemp: Boolean): TableMetadata? {
