@@ -59,22 +59,30 @@ class LakehouseMetadataExtractor(
             logger.info("Schemas: {}", schemas)
 
             val totalSchemaCount = schemas.size
-            var totalCatalogSizeInBytes = 0L
+            var totalTableCount = 0
+            var totalSizeInBytes = 0L
+            var totalFiles = 0L
 
             schemas.forEach { schema ->
                 val schemaMetrics = processSchema(catalog = catalog, schema = schema)
-                totalCatalogSizeInBytes += schemaMetrics.totalSizeInBytes
+                totalTableCount += schemaMetrics.totalTableCount
+                totalSizeInBytes += schemaMetrics.totalSizeInBytes
+                totalFiles += schemaMetrics.totalFiles
             }
 
-            // Sync catalog-level metrics
             val catalogMetadata = CatalogMetadata(
                 catalog = catalog,
                 totalSchemaCount = totalSchemaCount,
-                totalSizeInBytes = totalCatalogSizeInBytes
+                totalTableCount = totalTableCount,
+                totalSizeInBytes = totalSizeInBytes,
+                totalFiles = totalFiles
             )
             dataSync.syncCatalogData(catalogMetadata)
 
-            logger.info("Processing catalog: {} finished! Total Schemas: {}, Total Size: {} bytes", catalog, totalSchemaCount, totalCatalogSizeInBytes)
+            logger.info(
+                "Processing catalog: {} finished! Total Schemas: {}, Total Tables: {}, Total Size: {} bytes, Total Files: {}",
+                catalog, totalSchemaCount, totalTableCount, totalSizeInBytes, totalFiles
+            )
         }
 
         printMetrics()
@@ -84,7 +92,9 @@ class LakehouseMetadataExtractor(
         logger.info("Processing schema: {}.{}", catalog, schema)
         val tables = getTables(catalog, schema)
         val totalTableCount = tables.size
+        var totalViewCount = 0
         var totalSizeInBytes = 0L
+        var totalFiles = 0L
 
         tables.parallelStream().forEach { tableRow ->
             val tableName = tableRow.getString(1)
@@ -109,21 +119,27 @@ class LakehouseMetadataExtractor(
             scrapedData?.let {
                 dataSyncMetric.record<Unit> { dataSync.syncTableData(it) }
                 synchronized(this) {
+                    if (it.isView) totalViewCount++
                     totalSizeInBytes += it.sizeInBytes ?: 0L
+                    totalFiles += it.numFiles ?: 0L
                 }
             }
         }
 
-        // Sync schema-level metrics
         val schemaMetadata = SchemaMetadata(
             catalog = catalog,
             schema = schema,
             totalTableCount = totalTableCount,
-            totalSizeInBytes = totalSizeInBytes
+            totalViewCount = totalViewCount,
+            totalSizeInBytes = totalSizeInBytes,
+            totalFiles = totalFiles
         )
         dataSync.syncSchemaData(schemaMetadata)
 
-        logger.info("Processing schema: {} finished! Total Tables: {}, Total Size: {} bytes", schema, totalTableCount, totalSizeInBytes)
+        logger.info(
+            "Processing schema: {} finished! Total Tables: {}, Views: {}, Total Size: {} bytes, Total Files: {}",
+            schema, totalTableCount, totalViewCount, totalSizeInBytes, totalFiles
+        )
         return schemaMetadata
     }
 
