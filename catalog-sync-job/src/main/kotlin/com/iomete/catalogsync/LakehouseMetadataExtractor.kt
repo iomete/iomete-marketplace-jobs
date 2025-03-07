@@ -16,6 +16,7 @@ import java.util.function.Supplier
 import jakarta.inject.Singleton
 import org.eclipse.microprofile.rest.client.inject.RestClient
 import java.util.Optional
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.collections.set
 
 const val METRIC_NAME_TABLE_PROCESS = "1.table_process"
@@ -75,7 +76,8 @@ class LakehouseMetadataExtractor(
                 totalSchemaCount = totalSchemaCount,
                 totalTableCount = totalTableCount,
                 totalSizeInBytes = totalSizeInBytes,
-                totalFiles = totalFiles
+                totalFiles = totalFiles,
+
             )
             dataSync.syncCatalogData(catalogMetadata)
 
@@ -95,6 +97,10 @@ class LakehouseMetadataExtractor(
         var totalViewCount = 0
         var totalSizeInBytes = 0L
         var totalFiles = 0L
+        var failedTableCount = 0
+
+        // Create a thread-safe collection to track failed tables
+        val failedTables = ConcurrentHashMap<String, String>()
 
         tables.parallelStream().forEach { tableRow ->
             val tableName = tableRow.getString(1)
@@ -103,26 +109,43 @@ class LakehouseMetadataExtractor(
             logger.info("Processing table: {}.{}.{}", catalog, schema, tableName)
             var scrapedData: TableMetadata? = null
 
-            val tableProcessMetric = getTimer(name = METRIC_NAME_TABLE_PROCESS, catalog = catalog, schema = schema, tableName = tableName)
-            scrapedData =
-                tableProcessMetric.recordCallable { scrapeTable(catalog = catalog, schema = schema, tableName = tableName, isTemp = isTemp) }
+            try {
+                val tableProcessMetric = getTimer(name = METRIC_NAME_TABLE_PROCESS, catalog = catalog, schema = schema, tableName = tableName)
+                scrapedData =
+                    tableProcessMetric.recordCallable { scrapeTable(catalog = catalog, schema = schema, tableName = tableName, isTemp = isTemp) }
 
-            logger.info(
-                "Processing finished in {} ms for schema: {}.{}, table: {}",
-                tableProcessMetric.totalTime(TimeUnit.MILLISECONDS),
-                catalog,
-                schema,
-                tableName,
-            )
+                logger.info(
+                    "Processing finished in {} ms for schema: {}.{}, table: {}",
+                    tableProcessMetric.totalTime(TimeUnit.MILLISECONDS),
+                    catalog,
+                    schema,
+                    tableName,
+                )
 
-            val dataSyncMetric = getTimer(name = METRIC_NAME_DATA_SYNC, catalog = catalog, schema = schema, tableName = tableName)
-            scrapedData?.let {
-                dataSyncMetric.record<Unit> { dataSync.syncTableData(it) }
-                synchronized(this) {
-                    if (it.isView) totalViewCount++
-                    totalSizeInBytes += it.sizeInBytes ?: 0L
-                    totalFiles += it.numFiles ?: 0L
+                val dataSyncMetric = getTimer(name = METRIC_NAME_DATA_SYNC, catalog = catalog, schema = schema, tableName = tableName)
+                scrapedData?.let {
+                    dataSyncMetric.record<Unit> { dataSync.syncTableData(it) }
+                    synchronized(this) {
+                        if (it.isView) totalViewCount++
+                        totalSizeInBytes += it.sizeInBytes ?: 0L
+                        totalFiles += it.numFiles ?: 0L
+                    }
                 }
+            } catch (e: Exception) {
+                // Record the failure but continue processing other tables
+                failedTables[tableName] = e.message ?: "Unknown error"
+                logger.error("Failed to process table {}.{}.{}: {}", catalog, schema, tableName, e.message, e)
+                synchronized(this) {
+                    failedTableCount++
+                }
+            }
+        }
+
+        // Log information about failed tables
+        if (failedTableCount > 0) {
+            logger.warn("Failed to process {} tables in schema {}.{}", failedTableCount, catalog, schema)
+            failedTables.forEach { (tableName, errorMessage) ->
+                logger.warn("Table {}.{}.{} failed: {}", catalog, schema, tableName, errorMessage)
             }
         }
 
@@ -132,13 +155,14 @@ class LakehouseMetadataExtractor(
             totalTableCount = totalTableCount,
             totalViewCount = totalViewCount,
             totalSizeInBytes = totalSizeInBytes,
-            totalFiles = totalFiles
+            totalFiles = totalFiles,
+            failedTableCount = failedTableCount
         )
         dataSync.syncSchemaData(schemaMetadata)
 
         logger.info(
-            "Processing schema: {} finished! Total Tables: {}, Views: {}, Total Size: {} bytes, Total Files: {}",
-            schema, totalTableCount, totalViewCount, totalSizeInBytes, totalFiles
+            "Processing schema: {} finished! Total Tables: {}, Views: {}, Total Size: {} bytes, Total Files: {}, Failed Tables: {}",
+            schema, totalTableCount, totalViewCount, totalSizeInBytes, totalFiles, failedTableCount
         )
         return schemaMetadata
     }

@@ -1,5 +1,5 @@
-image := iomete/iom-catalog-sync
-tag   := 3.1.0
+image := iomete.azurecr.io/iomete/iom-catalog-sync
+tag   := 4.0.0
 
 spark_submit_cmd := /opt/spark/bin/spark-submit \
 			--properties-file=/opt/spark/conf/spark-defaults.conf \
@@ -22,7 +22,7 @@ build:
 
 .PHONY: docker-push
 docker-push: build
-	docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile -t ${image}:${tag} --push .
+	docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile -t ${image}:${tag} --push . --sbom=true --provenance=true
 	@echo ${image}
 	@echo ${tag}
 
