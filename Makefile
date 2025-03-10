@@ -1,5 +1,5 @@
-docker_tag := 3.5.3-v7
-repo := iomete
+docker_tag := 3.5.4-v2
+repo := iomete.azurecr.io/iomete
 
 SPARK_VERSION := 3.5.3
 
