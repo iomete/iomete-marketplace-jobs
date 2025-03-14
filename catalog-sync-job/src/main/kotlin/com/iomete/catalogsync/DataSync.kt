@@ -28,8 +28,7 @@ class DataSync(
         .build()
 
     private fun <T> sync(endpointPath: String, metadata: T): Boolean {
-        val domain: String = Optional.ofNullable(System.getenv("IOMETE_DOMAIN")).orElse("default")
-        val endpoint = "${applicationConfig.catalogEndpoint()}/internal/v1/domains/$domain/$endpointPath"
+        val endpoint = "${applicationConfig.catalogEndpoint()}/internal/v2/$endpointPath"
         try {
             val response = client.target(endpoint)
                 .request(MediaType.APPLICATION_JSON_TYPE)
@@ -49,7 +48,7 @@ class DataSync(
         return false
     }
 
-    fun syncTableData(tableMetadata: TableMetadata): Boolean = sync("data-catalog/index", tableMetadata)
+    fun syncTableData(tableMetadata: TableMetadata): Boolean = sync("data-catalog/index/table", tableMetadata)
     fun syncSchemaData(schemaMetadata: SchemaMetadata): Boolean = sync("data-catalog/index/schema", schemaMetadata)
     fun syncCatalogData(catalogMetadata: CatalogMetadata): Boolean = sync("data-catalog/index/catalog", catalogMetadata)
 }

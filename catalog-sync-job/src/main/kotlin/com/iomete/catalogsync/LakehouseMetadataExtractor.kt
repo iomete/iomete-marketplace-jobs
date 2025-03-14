@@ -15,7 +15,6 @@ import java.util.concurrent.TimeUnit
 import java.util.function.Supplier
 import jakarta.inject.Singleton
 import org.eclipse.microprofile.rest.client.inject.RestClient
-import java.util.Optional
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.collections.set
 
@@ -42,7 +41,7 @@ class LakehouseMetadataExtractor(
     sparkSessionProvider: SparkSessionProvider,
     applicationConfig: ApplicationConfig,
     private val registry: MeterRegistry,
-    @RestClient val sqlClient: SqlClient
+    @RestClient val coreServiceClient: CoreServiceClient
 ) {
     private val logger = LoggerFactory.getLogger(this::class.java)
 
@@ -56,7 +55,7 @@ class LakehouseMetadataExtractor(
         catalogs.forEach { catalog ->
             logger.info("Processing catalog: {}", catalog)
 
-            val schemas = getSchemas(catalog)
+            val schemas = getSchemas(catalog.name)
             logger.info("Schemas: {}", schemas)
 
             val totalSchemaCount = schemas.size
@@ -65,19 +64,22 @@ class LakehouseMetadataExtractor(
             var totalFiles = 0L
 
             schemas.forEach { schema ->
-                val schemaMetrics = processSchema(catalog = catalog, schema = schema)
+                val schemaMetrics = processSchema(catalog = catalog.name, schema = schema)
                 totalTableCount += schemaMetrics.totalTableCount
                 totalSizeInBytes += schemaMetrics.totalSizeInBytes
                 totalFiles += schemaMetrics.totalFiles
             }
 
             val catalogMetadata = CatalogMetadata(
-                catalog = catalog,
+                catalog = catalog.name,
+                type = catalog.type.toSet(),
+                location = catalog.location,
+                storageEndpoint = catalog.storageEndpoint,
                 totalSchemaCount = totalSchemaCount,
                 totalTableCount = totalTableCount,
                 totalSizeInBytes = totalSizeInBytes,
                 totalFiles = totalFiles,
-
+                domainsAllowed = catalog.domainsAllowed.toSet()
             )
             dataSync.syncCatalogData(catalogMetadata)
 
@@ -285,11 +287,9 @@ class LakehouseMetadataExtractor(
         )
     }
 
-    private fun getCatalog(): List<String> {
+    private fun getCatalog(): List<CoreServiceClient.CatalogDetails> {
         logger.info("Fetching catalogs...")
-        // return spark.sql("show catalogs").collectAsList().map { it.getString(0) }
-        val domain = Optional.ofNullable(System.getenv("IOMETE_DOMAIN")).orElse("default")
-        return sqlClient.catalogs(domain).toList()
+        return coreServiceClient.catalogs().toList()
     }
 
     private fun getSchemas(catalog: String): List<String> {

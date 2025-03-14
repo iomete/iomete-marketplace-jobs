@@ -4,10 +4,14 @@ import com.iomete.catalogsync.extract.ColumnStat
 
 data class CatalogMetadata(
     val catalog: String,
+    val type: Set<String>, // ex. ["INTERNAL", "ICEBERG"] or ["EXTERNAL", "JDBC"]
+    val location: String?,
+    val storageEndpoint: String?,
     val totalSchemaCount: Int,
     val totalTableCount: Int,
     val totalSizeInBytes: Long,
-    val totalFiles: Long
+    val totalFiles: Long,
+    val domainsAllowed: Set<String> = setOf()
 )
 
 data class SchemaMetadata(

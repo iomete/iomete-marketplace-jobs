@@ -36,7 +36,6 @@ class App(
 class SparkSessionProvider {
     // we couldn't make this exposed as a bean. Quarkus had a problem with it! This wrapping it with provider class
     val sparkSession: SparkSession = SparkSession.builder()
-        .appName("Lakehouse Metadata Extraction")
         .enableHiveSupport()
         .orCreate
 }
