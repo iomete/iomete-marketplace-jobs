@@ -37,6 +37,8 @@ class SparkSessionProvider {
     // we couldn't make this exposed as a bean. Quarkus had a problem with it! This wrapping it with provider class
     val sparkSession: SparkSession = SparkSession.builder()
         .enableHiveSupport()
+        // Disable ranger for catalog sync
+        .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions,org.projectnessie.spark.extensions.NessieSparkSessionExtensions")
         .orCreate
 }
 
