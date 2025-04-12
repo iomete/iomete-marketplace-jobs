@@ -1,9 +1,9 @@
 plugins {
     id("java")
 
-    kotlin("jvm")  version "1.9.22"
-    kotlin("plugin.allopen") version "1.9.22"
-    kotlin("plugin.jpa") version "1.9.22"
+    kotlin("jvm")  version "2.1.20"
+    kotlin("plugin.allopen") version "2.1.20"
+    kotlin("plugin.jpa") version "2.1.20"
 }
 
 allprojects {
