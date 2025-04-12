@@ -14,7 +14,7 @@ dependencies {
     implementation("io.quarkus:quarkus-micrometer-registry-prometheus")
 
     //Apache Spark
-    compileOnly("org.apache.spark:spark-sql_2.12:3.5.1")
+    compileOnly("org.apache.spark:spark-sql_2.12:3.5.3")
 
     // runtimeOnly("org.apache.logging.log4j:log4j-jul:2.20.0")
     // implementation("org.apache.logging.log4j:log4j-core:2.20.0")
