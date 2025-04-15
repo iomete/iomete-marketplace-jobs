@@ -1,5 +1,5 @@
 # Choose the IOMETE managed Spark image as the base image
-FROM iomete/spark-py:3.5.1
+FROM iomete/spark-py:3.5.3-v7
 
 
 # Set the working directory to /app
@@ -10,7 +10,7 @@ USER 0
 
 # add requirements.txt first to leverage Docker cache
 COPY infra/requirements.txt ./
-RUN pip install -r requirements.txt
+RUN pip install -r requirements.txt --break-system-packages
 
 # Copy the application files
 COPY config.py job.py ./
@@ -25,9 +25,9 @@ COPY jars/lz4-java-1.7.1.jar /opt/spark/jars/lz4-java-1.7.1.jar
 COPY jars/scala-library-2.12.15.jar /opt/spark/jars/scala-library-2.12.15.jar
 COPY jars/slf4j-api-1.7.30.jar /opt/spark/jars/slf4j-api-1.7.30.jar
 COPY jars/snappy-java-1.1.8.1.jar /opt/spark/jars/snappy-java-1.1.8.1.jar
-COPY jars/spark-sql-kafka-0-10_2.12-3.3.3.jar /opt/spark/jars/spark-sql-kafka-0-10_2.12-3.3.3.jar
-COPY jars/spark-tags_2.12-3.3.3.jar /opt/spark/jars/spark-tags_2.12-3.3.3.jar
-COPY jars/spark-token-provider-kafka-0-10_2.12-3.3.3.jar /opt/spark/jars/spark-token-provider-kafka-0-10_2.12-3.3.3.jar
+COPY jars/spark-sql-kafka-0-10_2.12-3.5.3.jar /opt/spark/jars/spark-sql-kafka-0-10_2.12-3.5.3.jar
+COPY jars/spark-tags_2.12-3.5.3.jar /opt/spark/jars/spark-tags_2.12-3.5.3.jar
+COPY jars/spark-token-provider-kafka-0-10_2.12-3.5.3.jar /opt/spark/jars/spark-token-provider-kafka-0-10_2.12-3.5.3.jar
 COPY jars/unused-1.0.0.jar /opt/spark/jars/unused-1.0.0.jar
 
 # Copy log4j confgiration. To use this log4j configuration, set JAVA options: -Dlog4j.configurationFile=/opt/spark/iomete/log4j2.properties

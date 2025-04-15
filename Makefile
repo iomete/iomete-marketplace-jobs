@@ -1,5 +1,5 @@
-docker_image := iomete/kafka-iceberg-stream
-docker_tag := 1.0.0
+docker_image := iomete.azurecr.io/iomete/kafka-iceberg-stream
+docker_tag := 1.2.0
 
 export APP_CONFIG_PATH=application.conf
 export SPARK_CONF_DIR=./spark_conf
