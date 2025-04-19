@@ -17,7 +17,7 @@ class IcebergTableExtractor(
     schema: String,
     table: String
 ) : TableExtractor, SupportTableStatistics, SupportColumnTags {
-    private val fullName = "$catalog.$schema.$table"
+    private val fullName = "`$catalog`.`$schema`.`$table`"
 
     override val getTableType: String
         get() = "MANAGED"

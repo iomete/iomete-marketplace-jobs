@@ -296,7 +296,7 @@ class LakehouseMetadataExtractor(
         logger.info("Fetching schemas in catalog: {}... excludeSchemas: {}", catalog, excludeSchemas)
 
         try {
-            return spark.sql("show databases in $catalog")
+            return spark.sql("show databases in `$catalog`")
                 .collectAsList().map { it.getString(0) }
                 .filter { schemaName -> schemaName.isNotBlank() } // filter out empty schema names
                 .filter { schemaName -> !excludeSchemas.contains(schemaName) }
@@ -308,7 +308,7 @@ class LakehouseMetadataExtractor(
     }
 
     private fun getTables(catalog: String, schema: String): List<Row> {
-        return spark.sql("show tables from $catalog.$schema").collectAsList()
+        return spark.sql("show tables from `$catalog`.`$schema`").collectAsList()
     }
 
     private fun describeTable(catalog: String, schema: String, tableName: String): TableDescription {
@@ -316,7 +316,7 @@ class LakehouseMetadataExtractor(
 
         var rawColumns: List<Row> = listOf()
         try {
-            rawColumns = spark.sql("describe extended $catalog.$schema.`$tableName`").collectAsList()
+            rawColumns = spark.sql("describe extended `$catalog`.`$schema`.`$tableName`").collectAsList()
         } catch (ex: Exception) {
             logger.warn("Couldn't describeTable for {}.{}.{}", catalog, schema, tableName, ex)
         }

@@ -19,7 +19,7 @@ class DatasourceV1LikeTableExtractor(
 ) : TableExtractor, SupportTableStatistics, SupportColumnStatistics, SupportColumnTags {
 
     private val catalog = spark.sessionState().catalog()
-    private val fullName = "$schema.$tableName"
+    private val fullName = "`$schema`.`$tableName`"
     private val catalogTable = catalog.getTempViewOrPermanentTableMetadata(
         TableIdentifier(tableName, Option.apply(schema.removePrefix(SPARK_CATALOG_PREFIX)))
     )

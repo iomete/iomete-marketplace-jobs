@@ -10,7 +10,7 @@ class ViewExtractor(
     schema: String,
     table: String
 ) : TableExtractor, SupportColumnTags {
-    private val fullName = "$catalog.$schema.$table"
+    private val fullName = "`$catalog`.`$schema`.`$table`"
     override fun extractColumnTags(columns: List<String>): Map<String, List<String>> =
         columnTagExtractor.extract(fullName, columns)
 
