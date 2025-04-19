@@ -16,8 +16,14 @@ MOCK_ENDPOINTS = {
         "spark_catalog",
         "iceberg_catalog",
     ],
-    "/api/internal/domains/default/spark/settings/catalog-names": [
-        "iceberg_catalog",
+    "/internal/v1/spark-settings/catalogs": [
+        {
+            "name" : "iceberg_catalog",
+            "type" : ["INTERNAL", "ICEBERG"],
+            "location" : "",
+            "storageEndpoint" : "",
+            "domainsAllowed" : [],
+        }
     ],
     "/api/v1/authz/lakehouses/test": {}
 }

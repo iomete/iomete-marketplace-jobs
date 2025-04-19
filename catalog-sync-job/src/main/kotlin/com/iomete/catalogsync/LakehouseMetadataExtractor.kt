@@ -308,7 +308,12 @@ class LakehouseMetadataExtractor(
     }
 
     private fun getTables(catalog: String, schema: String): List<Row> {
-        return spark.sql("show tables from `$catalog`.`$schema`").collectAsList()
+        try {
+            return spark.sql("show tables from `$catalog`.`$schema`").collectAsList()
+        } catch (ex: Exception) {
+            logger.warn("Couldn't fetch tables for catalog {} & schema {}", catalog, schema, ex)
+            return emptyList()
+        }
     }
 
     private fun describeTable(catalog: String, schema: String, tableName: String): TableDescription {
