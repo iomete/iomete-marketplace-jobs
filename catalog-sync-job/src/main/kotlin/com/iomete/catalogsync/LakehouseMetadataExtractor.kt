@@ -133,10 +133,10 @@ class LakehouseMetadataExtractor(
                         totalFiles += it.numFiles ?: 0L
                     }
                 }
-            } catch (e: Exception) {
+            } catch (th: Throwable) {
                 // Record the failure but continue processing other tables
-                failedTables[tableName] = e.message ?: "Unknown error"
-                logger.error("Failed to process table {}.{}.{}: {}", catalog, schema, tableName, e.message, e)
+                failedTables[tableName] = th.message ?: "Unknown error"
+                logger.error("Failed to process table {}.{}.{}: {}", catalog, schema, tableName, th.message, th)
                 synchronized(this) {
                     failedTableCount++
                 }
@@ -301,8 +301,8 @@ class LakehouseMetadataExtractor(
                 .filter { schemaName -> schemaName.isNotBlank() } // filter out empty schema names
                 .filter { schemaName -> !excludeSchemas.contains(schemaName) }
 
-        } catch (ex: Exception) {
-            logger.warn("Couldn't fetch schemas in catalog: {}", catalog, ex)
+        } catch (th: Throwable) {
+            logger.warn("Couldn't fetch schemas in catalog: {}", catalog, th)
             return emptyList()
         }
     }
@@ -310,8 +310,8 @@ class LakehouseMetadataExtractor(
     private fun getTables(catalog: String, schema: String): List<Row> {
         try {
             return spark.sql("show tables from `$catalog`.`$schema`").collectAsList()
-        } catch (ex: Exception) {
-            logger.warn("Couldn't fetch tables for catalog {} & schema {}", catalog, schema, ex)
+        } catch (th: Throwable) {
+            logger.warn("Couldn't fetch tables for catalog {} & schema {}", catalog, schema, th)
             return emptyList()
         }
     }
@@ -322,8 +322,8 @@ class LakehouseMetadataExtractor(
         var rawColumns: List<Row> = listOf()
         try {
             rawColumns = spark.sql("describe extended `$catalog`.`$schema`.`$tableName`").collectAsList()
-        } catch (ex: Exception) {
-            logger.warn("Couldn't describeTable for {}.{}.{}", catalog, schema, tableName, ex)
+        } catch (th: Throwable) {
+            logger.warn("Couldn't describeTable for {}.{}.{}", catalog, schema, tableName, th)
         }
         var sortOrder = 0
         var columnFlag = true
