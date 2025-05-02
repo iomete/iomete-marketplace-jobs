@@ -60,3 +60,10 @@ data class ColumnMetadata(
     var stats: List<ColumnStat> = listOf(),
     var tags: List<String> = listOf()
 )
+
+enum class TableColumnSection {
+    COLUMNS,
+    PARTITIONS,
+    METADATA,
+    TABLE_INFO
+}

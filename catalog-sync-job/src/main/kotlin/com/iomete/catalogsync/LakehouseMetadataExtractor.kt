@@ -326,28 +326,38 @@ class LakehouseMetadataExtractor(
             logger.warn("Couldn't describeTable for {}.{}.{}", catalog, schema, tableName, th)
         }
         var sortOrder = 0
-        var columnFlag = true
-        var partitionFlag = false
-        var metadataFlag = false
+        var currentSection: TableColumnSection = TableColumnSection.COLUMNS
 
         val columnsMap = mutableMapOf<String, ColumnMetadata>()
         val metadataMap = mutableMapOf<String, String>()
         for (row in rawColumns) {
-            val columnName = row.getString("col_name").orEmpty()
-            val dataType = row.getString("data_type").orEmpty()
-            val comment = row.getString("comment")
+            val columnName = row.getString(0).orEmpty()
+            val dataType = row.getString(1).orEmpty()
+            val comment = row.getString(2)
 
             when {
-                columnName == "" -> columnFlag = false
-                columnName.contains("# Partitioning") -> partitionFlag = true
-                columnName.contains("# Detailed Table Information") -> {
-                    metadataFlag = true
-                    partitionFlag = false
+                columnName.contains("# Partition Information", ignoreCase = true) -> {
+                    currentSection = TableColumnSection.PARTITIONS
+                    continue
+                }
+
+                columnName.contains("# Metadata Columns", ignoreCase = true) -> {
+                    currentSection = TableColumnSection.METADATA
+                    continue
+                }
+
+                columnName.contains("# Detailed Table Information", ignoreCase = true) -> {
+                    currentSection = TableColumnSection.TABLE_INFO
+                    continue
+                }
+
+                columnName.isBlank() || columnName.startsWith("#") -> {
+                    continue
                 }
             }
 
-            when {
-                columnFlag -> {
+            when (currentSection) {
+                TableColumnSection.COLUMNS -> {
                     val columnMetadata = ColumnMetadata(
                         name = columnName,
                         description = comment,
@@ -358,8 +368,7 @@ class LakehouseMetadataExtractor(
                     columnsMap[columnName] = columnMetadata
                     sortOrder += 1
                 }
-
-                partitionFlag -> {
+                TableColumnSection.PARTITIONS -> {
                     // sometimes partition name is in columnName, but sometimes it in dataType (iceberg, delta)
                     val partitionColName =
                         if (columnName.contains("Part "))
@@ -368,9 +377,11 @@ class LakehouseMetadataExtractor(
                             columnName
                     columnsMap[partitionColName]?.isPartitionKey = true
                 }
-
-                metadataFlag -> {
+                TableColumnSection.TABLE_INFO -> {
                     metadataMap[columnName] = dataType
+                }
+                TableColumnSection.METADATA -> {
+                    // Not processing as of now
                 }
             }
         }
