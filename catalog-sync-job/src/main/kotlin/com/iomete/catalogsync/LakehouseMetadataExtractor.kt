@@ -327,6 +327,11 @@ class LakehouseMetadataExtractor(
         }
         var sortOrder = 0
         var currentSection: TableColumnSection = TableColumnSection.COLUMNS
+        val sectionHeaders = mapOf(
+            "# Partition Information" to TableColumnSection.PARTITIONS,
+            "# Metadata Columns" to TableColumnSection.METADATA,
+            "# Detailed Table Information" to TableColumnSection.TABLE_INFO
+        )
 
         val columnsMap = mutableMapOf<String, ColumnMetadata>()
         val metadataMap = mutableMapOf<String, String>()
@@ -335,25 +340,16 @@ class LakehouseMetadataExtractor(
             val dataType = row.getString(1).orEmpty()
             val comment = row.getString(2)
 
-            when {
-                columnName.contains("# Partition Information", ignoreCase = true) -> {
-                    currentSection = TableColumnSection.PARTITIONS
-                    continue
+            if (columnName.startsWith("#") || columnName.isBlank()) {
+                val matchedSection = sectionHeaders.entries.find { entry ->
+                    columnName.contains(entry.key, ignoreCase = true)
+                }?.value
+
+                if (matchedSection != null) {
+                    currentSection = matchedSection
                 }
 
-                columnName.contains("# Metadata Columns", ignoreCase = true) -> {
-                    currentSection = TableColumnSection.METADATA
-                    continue
-                }
-
-                columnName.contains("# Detailed Table Information", ignoreCase = true) -> {
-                    currentSection = TableColumnSection.TABLE_INFO
-                    continue
-                }
-
-                columnName.isBlank() || columnName.startsWith("#") -> {
-                    continue
-                }
+                continue
             }
 
             when (currentSection) {
