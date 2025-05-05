@@ -325,12 +325,53 @@ class LakehouseMetadataExtractor(
         } catch (th: Throwable) {
             logger.warn("Couldn't describeTable for {}.{}.{}", catalog, schema, tableName, th)
         }
+
+        return processTableColumns(rawColumns);
+    }
+
+    private fun printMetrics() {
+        val logMetrics = registry.meters
+            .asSequence()
+            .filter { it.id.type == Meter.Type.TIMER && METRIC_NAMES.contains(it.id.name) }
+            .map { meter ->
+                LogMetric(
+                    name = meter.id.name,
+                    tag = meter.id.tags.joinToString(".") { tag -> tag.value },
+                    totalTime = meter.measure().firstOrNull { it.statistic.name == "TOTAL_TIME" }?.value
+                )
+            }
+            .groupBy { it.tag }
+            .toList()
+            .sortedBy { (_, value) -> value.maxOf { it.totalTime ?: 0.0 } }
+            .toList().toMap()
+            .toMap()
+
+
+        val report = StringBuilder()
+        logMetrics.forEach { logMetricGroup ->
+            logMetricGroup.value.sortedWith(compareBy { it.name }).forEach {
+                val formattedValue = "%.2f".format(it.totalTime)
+                report.append("Timer: $formattedValue sec, ${it.tag}, ${it.name}\n")
+            }
+            report.append("\n")
+        }
+
+        logger.info("Report: {}", report)
+    }
+
+    private fun getTimer(name: String, catalog: String, schema: String, tableName: String): Timer {
+        return registry.timer(name, "catalog", catalog, "schema", schema, "table", tableName)
+    }
+
+    fun processTableColumns(rawColumns: List<Row>): TableDescription {
         var sortOrder = 0
         var currentSection: TableColumnSection = TableColumnSection.COLUMNS
         val sectionHeaders = mapOf(
             "# Partition Information" to TableColumnSection.PARTITIONS,
+            "# Partitioning" to TableColumnSection.PARTITIONS,
             "# Metadata Columns" to TableColumnSection.METADATA,
-            "# Detailed Table Information" to TableColumnSection.TABLE_INFO
+            "# Detailed Table Information" to TableColumnSection.TABLE_INFO,
+            "# Detailed View Information" to TableColumnSection.TABLE_INFO
         )
 
         val columnsMap = mutableMapOf<String, ColumnMetadata>()
@@ -386,40 +427,6 @@ class LakehouseMetadataExtractor(
             columns = columnsMap.values.toList(),
             metadata = metadataMap
         )
-    }
-
-    private fun printMetrics() {
-        val logMetrics = registry.meters
-            .asSequence()
-            .filter { it.id.type == Meter.Type.TIMER && METRIC_NAMES.contains(it.id.name) }
-            .map { meter ->
-                LogMetric(
-                    name = meter.id.name,
-                    tag = meter.id.tags.joinToString(".") { tag -> tag.value },
-                    totalTime = meter.measure().firstOrNull { it.statistic.name == "TOTAL_TIME" }?.value
-                )
-            }
-            .groupBy { it.tag }
-            .toList()
-            .sortedBy { (_, value) -> value.maxOf { it.totalTime ?: 0.0 } }
-            .toList().toMap()
-            .toMap()
-
-
-        val report = StringBuilder()
-        logMetrics.forEach { logMetricGroup ->
-            logMetricGroup.value.sortedWith(compareBy { it.name }).forEach {
-                val formattedValue = "%.2f".format(it.totalTime)
-                report.append("Timer: $formattedValue sec, ${it.tag}, ${it.name}\n")
-            }
-            report.append("\n")
-        }
-
-        logger.info("Report: {}", report)
-    }
-
-    private fun getTimer(name: String, catalog: String, schema: String, tableName: String): Timer {
-        return registry.timer(name, "catalog", catalog, "schema", schema, "table", tableName)
     }
 
     data class TableDescription(val columns: List<ColumnMetadata>, val metadata: Map<String, String>)
