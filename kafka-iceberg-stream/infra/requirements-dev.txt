@@ -1,0 +1,6 @@
+pyspark-iomete==0.0.3
+pyhocon~=0.3.59
+
+# dev dependencies
+pyspark==3.3.3
+pytest==7.1.2

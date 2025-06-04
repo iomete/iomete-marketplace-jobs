@@ -1,0 +1,22 @@
+{
+  "spark_cluster": {
+    "endpoint": "sc://dev.iomete.cloud:443/;cluster=testconnect;data_plane=spark-resources;use_ssl=true;user_id=admin;api_token={access_token}",
+    "token": "brPJYnJAekBt1_O56pEqBWgYkYFodZWfvYtg26pX7Us"
+  },
+  "kafka": {
+    "options": {
+      "bootstrap_servers": "localhost:9092",
+      "subscribe_topic": "person"
+    },
+    "trigger": {
+      "processing_time": "10 seconds"
+    },
+    "checkpoint_location": "checkpoint"
+  },
+  "destination": {
+    "catalog": "test_abhishek_catalog",
+    "database": "marketplace",
+    "table": "person",
+    "primary_key": "id"
+  }
+}
