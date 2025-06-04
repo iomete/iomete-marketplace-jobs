@@ -1,0 +1,1 @@
+{"channel":"server","context":{"library":{"name":"analytics-java","version":"3.3.1"}},"event":"Event number3","integrations":{},"receivedAt":"2022-10-11T10:58:02.110Z","sentAt":"2022-10-11T10:58:00.103Z","timestamp":"2022-10-11T10:57:52.135Z","type":"track"}
