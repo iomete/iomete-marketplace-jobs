@@ -1,0 +1,9 @@
+FROM python:3.12-slim
+
+WORKDIR "/app"
+
+COPY iomete_oracle_sync ./iomete_oracle_sync
+COPY driver.py .
+COPY requirements/spark_connect_requirements.txt .
+
+RUN pip install -r spark_connect_requirements.txt

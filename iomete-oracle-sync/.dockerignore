@@ -1,0 +1,5 @@
+Dockerfile
+.git/
+.venv/
+app_conf.json
+docker
