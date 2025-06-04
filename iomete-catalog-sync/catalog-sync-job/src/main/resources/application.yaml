@@ -1,0 +1,30 @@
+application:
+  exclude-schemas: []
+  catalog-endpoint: "http://iom-catalog.${IOMETE_RELEASE_NAMESPACE}.svc.${IOMETE_CLUSTER_DNS}"
+
+"presidio/mp-rest/url": http://presidio-analyzer.${IOMETE_RELEASE_NAMESPACE}.svc.${IOMETE_CLUSTER_DNS}
+"core-service/mp-rest/url": http://iom-core.${IOMETE_RELEASE_NAMESPACE}.svc.${IOMETE_CLUSTER_DNS}
+
+quarkus:
+  package:
+    type: uber-jar
+  http:
+    port: 0
+  banner:
+    enabled: false
+  log:
+    level: INFO
+    category:
+      com.iomete:
+        level: INFO
+    console:
+      json: false
+
+"%dev":
+  quarkus:
+    log:
+      category:
+        com:
+          level: INFO
+      console:
+        json: false
