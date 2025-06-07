@@ -1,0 +1,109 @@
+name: Integration Test on K8s
+
+on:
+  schedule:
+    - cron: '0 23 * * 6'  # Every Saturday at 11 PM UTC
+  workflow_dispatch:
+
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        services: [data-compaction-job, debezium-server-iomete, file-streaming, iomete-catalog-sync, iomete-mysql-sync, iomete-oracle-sync, kafka-iceberg-stream, kinesis-streaming-job, kubernetes-event-controller, query-scheduler-job]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_ACR_CREDENTIALS }}
+
+      - name: Log in to ACR
+        run: |
+          az acr login --name ${{ secrets.ACR_NAME }}
+
+      - name: Build and Push container
+        run: |
+          cd ${{ matrix.package }}
+          make docker-push
+
+      - name: Set up Kubeconfig
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_DEV }}" > kubeconfig
+          export KUBECONFIG=$PWD/kubeconfig
+
+      # Trigger Deployment Workflow in Infra Repository
+      - name: Trigger Deployment in Infra Repo
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.API_TOKEN }}
+          repository: iomete/infra
+          event-type: deploy
+          client-payload: |
+            {
+              "services": ["service-a", "service-b", "service-c"],
+              "commit_sha": "${{ github.sha }}",
+            }
+
+      - name: Wait for deployment result from infra repo
+        id: wait-for-infra
+        run: |
+          echo "Waiting for the infra deployment workflow to start..."
+      
+          # Configuration
+          TARGET_REPO="iomete/infra"
+          WORKFLOW_NAME="deploy.yml"  # Change if your file is named differently
+          POLL_INTERVAL=15  # seconds
+          MAX_WAIT_MINUTES=10
+          MAX_TRIES=$((60 * MAX_WAIT_MINUTES / POLL_INTERVAL))
+      
+          attempt=0
+          run_id=""
+      
+          # Wait for the workflow to be triggered and get the run ID
+          while [[ -z "$run_id" && $attempt -lt $MAX_TRIES ]]; do
+            run_id=$(gh run list -R "$TARGET_REPO" --workflow "$WORKFLOW_NAME" --json databaseId,headSha,status,createdAt -q '.[0].databaseId')
+            if [[ -z "$run_id" ]]; then
+              echo "Waiting for workflow to start... (attempt $attempt)"
+              sleep $POLL_INTERVAL
+              ((attempt++))
+            fi
+          done
+      
+          if [[ -z "$run_id" ]]; then
+            echo "Timed out waiting for the workflow to start."
+            exit 1
+          fi
+      
+          echo "Workflow started with run_id: $run_id"
+          echo "Polling for completion..."
+      
+          # Now wait for it to complete
+          while true; do
+            status=$(gh run view "$run_id" -R "$TARGET_REPO" --json status,conclusion -q '.status')
+            if [[ "$status" == "completed" ]]; then
+              conclusion=$(gh run view "$run_id" -R "$TARGET_REPO" --json status,conclusion -q '.conclusion')
+              echo "Workflow completed with status: $conclusion"
+              [[ "$conclusion" == "success" ]] && exit 0 || exit 1
+            else
+              echo "Still running... checking again in $POLL_INTERVAL seconds"
+              sleep $POLL_INTERVAL
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.API_TOKEN }}
+
+      - name: Wait for Pod to be Ready
+        run: |
+          kubectl wait --for=condition=ready pod -l app=my-app --timeout=60s
+
+      - name: Clean up
+        if: always()
+        run: |
+          kubectl delete -f k8s/integration-deployment.yaml
