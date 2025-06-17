@@ -48,8 +48,8 @@ class LakehouseMetadataExtractor(
     private val spark = sparkSessionProvider.sparkSession
     private val excludeSchemas: Set<String> = applicationConfig.excludeSchemas().orElse(setOf())
 
-    fun scrape() {
-        val catalogs = getCatalog()
+    fun scrape(appConfig: AppConfig) {
+        val catalogs = getCatalog(appConfig)
         logger.info("Catalogs: {}", catalogs)
 
         catalogs.forEach { catalog ->
@@ -287,9 +287,18 @@ class LakehouseMetadataExtractor(
         )
     }
 
-    private fun getCatalog(): List<CoreServiceClient.CatalogDetails> {
+    private fun getCatalog(appConfig: AppConfig): List<CoreServiceClient.CatalogDetails> {
         logger.info("Fetching catalogs...")
-        return coreServiceClient.catalogs().toList()
+
+        val allCatalogs = coreServiceClient.catalogs().toList()
+        val include = appConfig.catalog.include
+        val exclude = appConfig.catalog.exclude.toSet()
+
+        return if (include.isNotEmpty()) {
+            allCatalogs.filter { it.name in include }
+        } else {
+            allCatalogs.filterNot { it.name in exclude }
+        }
     }
 
     private fun getSchemas(catalog: String): List<String> {
