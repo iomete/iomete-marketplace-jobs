@@ -13,13 +13,15 @@ import jakarta.inject.Singleton
 @QuarkusMain
 class App(
     private val sparkSessionProvider: SparkSessionProvider,
-    private val lakehouseMetadataExtractor: LakehouseMetadataExtractor
+    private val lakehouseMetadataExtractor: LakehouseMetadataExtractor,
+    private val applicationConfigExtractor: ApplicationConfigExtractor
 ) : QuarkusApplication {
     private val logger = LoggerFactory.getLogger(this::class.java)
 
     override fun run(vararg args: String): Int {
         logger.info("Sync started...")
-        lakehouseMetadataExtractor.scrape()
+        val config = applicationConfigExtractor.load("/etc/configs/application.json")
+        lakehouseMetadataExtractor.scrape(config)
         logger.info("Sync finished...")
         return 0
     }
