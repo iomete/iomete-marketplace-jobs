@@ -11,6 +11,7 @@ class ExpireSnapshotConfig:
 @dataclass
 class RemoveOrphanFilesConfig:
     older_than_days: int = 1
+    max_files_per_record: int = 100
 
 
 @dataclass
@@ -80,7 +81,8 @@ def get_config(application_config_path) -> ApplicationConfig:
 
     if "remove_orphan_files" in config:
         app_config.remove_orphan_files=RemoveOrphanFilesConfig(
-            older_than_days=config["remove_orphan_files"].get("older_than_days", 1)
+            older_than_days=config["remove_orphan_files"].get("older_than_days", 1),
+            max_files_per_record=config["remove_orphan_files"].get("max_files_per_record", 100)
         )
 
     if "gc_handling" in config:

@@ -38,7 +38,9 @@ class SqlCompaction:
                 if tables:
                     db_table_mapping[database] = tables
 
-            init_emitter(self.spark, batch_size=self.config.stats_batch_size)
+            init_emitter(self.spark,
+                         batch_size=self.config.stats_batch_size,
+                         max_files_per_record=self.config.remove_orphan_files.max_files_per_record)
             for database in databases:
                 for table in db_table_mapping[database]:
                     futures.append(executor.submit(self.__process_table_if_iceberg, catalog, database, table))

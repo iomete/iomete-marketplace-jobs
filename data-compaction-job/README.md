@@ -119,7 +119,13 @@ You can specify additional configurations
     remove_orphan_files: {
         // Orphan files older than the provided number of days will be removed
         // Defaults to 1
-        older_than_days: 1
+        older_than_days: 1,
+        
+        // Maximum number of orphan files to include in a single metrics record
+        // When the number of removed files exceeds this threshold, the file list
+        // will be split into multiple records to avoid character length limits
+        // Defaults to 100
+        max_files_per_record: 100
     },
     
     // Used to override operation configs for specific tables
