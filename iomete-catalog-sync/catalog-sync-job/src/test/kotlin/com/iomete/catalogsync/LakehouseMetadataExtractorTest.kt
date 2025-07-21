@@ -66,7 +66,7 @@ class LakehouseMetadataExtractorTest {
         every { tablesDataset.collectAsList() } returns listOf(mockTableRow1, mockTableRow2)
         every { viewsDataset.collectAsList() } returns listOf(mockViewRow1, mockViewRow2)
 
-        val result = extractor.getTables("catalog1", "schema1")
+        val result = extractor.getTables("catalog1", "schema1", listOf("iceberg"))
 
         assertEquals(3, result.size) // Should have 3 unique items (table1, table2, view1)
         assertTrue(result.contains(mockTableRow1))
@@ -85,7 +85,7 @@ class LakehouseMetadataExtractorTest {
         every { mockSparkSession.sql("show views from `catalog1`.`schema1`") } returns viewsDataset
         every { viewsDataset.collectAsList() } returns listOf(mockViewRow)
 
-        val result = extractor.getTables("catalog1", "schema1")
+        val result = extractor.getTables("catalog1", "schema1", listOf("iceberg"))
 
         assertEquals(1, result.size)
         assertTrue(result.contains(mockViewRow))
@@ -102,7 +102,7 @@ class LakehouseMetadataExtractorTest {
         every { mockSparkSession.sql("show views from `catalog1`.`schema1`") } throws RuntimeException("Views query failed")
         every { tablesDataset.collectAsList() } returns listOf(mockTableRow)
 
-        val result = extractor.getTables("catalog1", "schema1")
+        val result = extractor.getTables("catalog1", "schema1", listOf("iceberg"))
 
         assertEquals(1, result.size)
         assertTrue(result.contains(mockTableRow))
@@ -113,8 +113,53 @@ class LakehouseMetadataExtractorTest {
         every { mockSparkSession.sql("show tables from `catalog1`.`schema1`") } throws RuntimeException("Tables query failed")
         every { mockSparkSession.sql("show views from `catalog1`.`schema1`") } throws RuntimeException("Views query failed")
 
-        val result = extractor.getTables("catalog1", "schema1")
+        val result = extractor.getTables("catalog1", "schema1", listOf("iceberg"))
 
         assertEquals(emptyList<Row>(), result)
+    }
+    
+    @Test
+    fun `should skip view fetching for unsupported catalog types`() {
+        val mockTableRow = mockk<Row>()
+        every { mockTableRow.getString(1) } returns "table1"
+
+        val tablesDataset = mockk<Dataset<Row>>()
+        every { mockSparkSession.sql("show tables from `catalog1`.`schema1`") } returns tablesDataset
+        every { tablesDataset.collectAsList() } returns listOf(mockTableRow)
+
+        // Call getTables with JDBC catalog type (unsupported)
+        val result = extractor.getTables("catalog1", "schema1", listOf("jdbc"))
+
+        assertEquals(1, result.size)
+        assertTrue(result.contains(mockTableRow))
+        
+        // Verify that show views was never called
+        verify(exactly = 0) { mockSparkSession.sql("show views from `catalog1`.`schema1`") }
+    }
+    
+    @Test
+    fun `should check for combined supported and non-supported catalog types`() {
+        val mockTableRow = mockk<Row>()
+        every { mockTableRow.getString(1) } returns "table1"
+
+        val tablesDataset = mockk<Dataset<Row>>()
+        every { mockSparkSession.sql("show tables from `catalog1`.`schema1`") } returns tablesDataset
+        every { mockSparkSession.sql("show tables from `catalog1`.`schema2`") } returns tablesDataset
+        every { tablesDataset.collectAsList() } returns listOf(mockTableRow)
+
+        // First call with unsupported catalog type - should determine view support
+        val result1 = extractor.getTables("catalog1", "schema1", listOf("jdbc"))
+        assertEquals(1, result1.size)
+        
+        // Second call for same catalog but different schema - should use cached decision
+        val result2 = extractor.getTables("catalog1", "schema2", listOf("jdbc"))  
+        assertEquals(1, result2.size)
+        
+        // Third call with different catalog but same unsupported type - should determine again
+        every { mockSparkSession.sql("show tables from `catalog2`.`schema1`") } returns tablesDataset
+        val result3 = extractor.getTables("catalog2", "schema1", listOf("iceberg"))
+        assertEquals(1, result3.size)
+
+        verify(exactly = 1) { mockSparkSession.sql(match { it.contains("show views") }) }
     }
 }
