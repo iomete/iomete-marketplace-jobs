@@ -316,7 +316,7 @@ class LakehouseMetadataExtractor(
         }
     }
 
-    private fun getTables(catalog: String, schema: String): List<Row> {
+    fun getTables(catalog: String, schema: String): List<Row> {
         val tables = fetchTables(catalog, schema)
         val views = fetchViews(catalog, schema)
         
