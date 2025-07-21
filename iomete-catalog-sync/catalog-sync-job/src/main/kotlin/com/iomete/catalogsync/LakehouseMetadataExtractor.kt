@@ -317,11 +317,27 @@ class LakehouseMetadataExtractor(
     }
 
     private fun getTables(catalog: String, schema: String): List<Row> {
-        try {
-            return spark.sql("show tables from `$catalog`.`$schema`").collectAsList()
+        val tables = fetchTables(catalog, schema)
+        val views = fetchViews(catalog, schema)
+        
+        return (tables + views).distinctBy { it.getString(1) }
+    }
+
+    private fun fetchTables(catalog: String, schema: String): List<Row> {
+        return try {
+            spark.sql("show tables from `$catalog`.`$schema`").collectAsList()
         } catch (th: Throwable) {
-            logger.warn("Couldn't fetch tables for catalog {} & schema {}", catalog, schema, th)
-            return emptyList()
+            logger.warn("Failed to fetch tables for catalog {} & schema {}", catalog, schema, th)
+            emptyList()
+        }
+    }
+
+    private fun fetchViews(catalog: String, schema: String): List<Row> {
+        return try {
+            spark.sql("show views from `$catalog`.`$schema`").collectAsList()
+        } catch (th: Throwable) {
+            logger.warn("Failed to fetch views for catalog {} & schema {}", catalog, schema, th)
+            emptyList()
         }
     }
 
