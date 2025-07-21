@@ -127,13 +127,11 @@ class LakehouseMetadataExtractorTest {
         every { mockSparkSession.sql("show tables from `catalog1`.`schema1`") } returns tablesDataset
         every { tablesDataset.collectAsList() } returns listOf(mockTableRow)
 
-        // Call getTables with JDBC catalog type (unsupported)
         val result = extractor.getTables("catalog1", "schema1", listOf("jdbc"))
 
         assertEquals(1, result.size)
         assertTrue(result.contains(mockTableRow))
         
-        // Verify that show views was never called
         verify(exactly = 0) { mockSparkSession.sql("show views from `catalog1`.`schema1`") }
     }
     
@@ -147,15 +145,12 @@ class LakehouseMetadataExtractorTest {
         every { mockSparkSession.sql("show tables from `catalog1`.`schema2`") } returns tablesDataset
         every { tablesDataset.collectAsList() } returns listOf(mockTableRow)
 
-        // First call with unsupported catalog type - should determine view support
         val result1 = extractor.getTables("catalog1", "schema1", listOf("jdbc"))
         assertEquals(1, result1.size)
         
-        // Second call for same catalog but different schema - should use cached decision
-        val result2 = extractor.getTables("catalog1", "schema2", listOf("jdbc"))  
+        val result2 = extractor.getTables("catalog1", "schema2", listOf("jdbc"))
         assertEquals(1, result2.size)
         
-        // Third call with different catalog but same unsupported type - should determine again
         every { mockSparkSession.sql("show tables from `catalog2`.`schema1`") } returns tablesDataset
         val result3 = extractor.getTables("catalog2", "schema1", listOf("iceberg"))
         assertEquals(1, result3.size)
