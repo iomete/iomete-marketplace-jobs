@@ -47,6 +47,9 @@ class LakehouseMetadataExtractor(
 
     private val spark = sparkSessionProvider.sparkSession
     private val excludeSchemas: Set<String> = applicationConfig.excludeSchemas().orElse(setOf())
+    
+    private val catalogViewSupport = ConcurrentHashMap<String, Boolean>()
+    private val viewSupportedCatalogTypes = setOf("iceberg", "glue")
 
     fun scrape(appConfig: AppConfig) {
         val catalogs = getCatalog(appConfig)
@@ -64,7 +67,7 @@ class LakehouseMetadataExtractor(
             var totalFiles = 0L
 
             schemas.forEach { schema ->
-                val schemaMetrics = processSchema(catalog = catalog.name, schema = schema)
+                val schemaMetrics = processSchema(catalog = catalog.name, schema = schema, catalogType = catalog.type)
                 totalTableCount += schemaMetrics.totalTableCount
                 totalSizeInBytes += schemaMetrics.totalSizeInBytes
                 totalFiles += schemaMetrics.totalFiles
@@ -92,9 +95,9 @@ class LakehouseMetadataExtractor(
         printMetrics()
     }
 
-    private fun processSchema(catalog: String, schema: String): SchemaMetadata {
+    private fun processSchema(catalog: String, schema: String, catalogType: List<String>): SchemaMetadata {
         logger.info("Processing schema: {}.{}", catalog, schema)
-        val tables = getTables(catalog, schema)
+        val tables = getTables(catalog, schema, catalogType)
         val totalTableCount = tables.size
         var totalViewCount = 0
         var totalSizeInBytes = 0L
@@ -316,13 +319,49 @@ class LakehouseMetadataExtractor(
         }
     }
 
-    private fun getTables(catalog: String, schema: String): List<Row> {
-        try {
-            return spark.sql("show tables from `$catalog`.`$schema`").collectAsList()
+    fun getTables(catalog: String, schema: String, catalogType: List<String>): List<Row> {
+        val tables = fetchTables(catalog, schema)
+        val views = fetchViews(catalog, schema, catalogType)
+
+        return (tables + views).distinctBy { it.getString(1) }
+    }
+
+    private fun fetchTables(catalog: String, schema: String): List<Row> {
+        return try {
+            spark.sql("show tables from `$catalog`.`$schema`").collectAsList()
         } catch (th: Throwable) {
-            logger.warn("Couldn't fetch tables for catalog {} & schema {}", catalog, schema, th)
-            return emptyList()
+            logger.warn("Failed to fetch tables for catalog {} & schema {}", catalog, schema, th)
+            emptyList()
         }
+    }
+
+    private fun fetchViews(catalog: String, schema: String, catalogType: List<String>): List<Row> {
+        return try {
+            if (!shouldFetchViews(catalog, catalogType)) {
+                return emptyList()
+            }
+            spark.sql("show views from `$catalog`.`$schema`").collectAsList()
+        } catch (th: Throwable) {
+            logger.warn("Failed to fetch views for catalog {} & schema {}", catalog, schema, th)
+            emptyList()
+        }
+    }
+
+    private fun shouldFetchViews(catalog: String, catalogType: List<String>): Boolean {
+        return catalogViewSupport.computeIfAbsent(catalog) {
+            checkViewSupport(catalog, catalogType)
+        }
+    }
+
+    private fun checkViewSupport(catalog: String, catalogType: List<String>): Boolean {
+        val hasViewSupport = catalogType.any { type ->
+            viewSupportedCatalogTypes.contains(type.lowercase())
+        }
+        if (!hasViewSupport) {
+            logger.info("Skipping views for catalog '{}' with unsupported types: {}", catalog, catalogType)
+        }
+
+        return hasViewSupport
     }
 
     private fun describeTable(catalog: String, schema: String, tableName: String): TableDescription {
