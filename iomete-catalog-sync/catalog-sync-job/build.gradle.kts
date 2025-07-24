@@ -17,6 +17,14 @@ dependencies {
     //Apache Spark
     compileOnly("org.apache.spark:spark-sql_2.12:3.5.3")
 
+    // Test dependencies
+    testImplementation("io.quarkus:quarkus-junit5")
+    testImplementation("io.mockk:mockk:1.13.12")
+    testImplementation("org.apache.spark:spark-sql_2.12:3.5.3")
+    testImplementation("org.apache.spark:spark-core_2.12:3.5.3")
+    testImplementation("org.scala-lang:scala-library:2.12.10")
+    testRuntimeOnly("org.scala-lang:scala-library:2.12.10")
+
     // runtimeOnly("org.apache.logging.log4j:log4j-jul:2.20.0")
     // implementation("org.apache.logging.log4j:log4j-core:2.20.0")
     // implementation("org.apache.logging.log4j:log4j-api:2.20.0")
@@ -39,13 +47,21 @@ tasks {
     quarkusDev {
         // setSourceDir("$projectDir/src/main/kotlin")
     }
-
-    test {
-        systemProperty("java.util.logging.manager", "org.apache.logging.log4j.jul.LogManager")
-    }
 }
 
 configurations.compileClasspath {
+    resolutionStrategy {
+        force("org.scala-lang:scala-library:2.12.10")
+    }
+}
+
+configurations.testCompileClasspath {
+    resolutionStrategy {
+        force("org.scala-lang:scala-library:2.12.10")
+    }
+}
+
+configurations.testRuntimeClasspath {
     resolutionStrategy {
         force("org.scala-lang:scala-library:2.12.10")
     }
