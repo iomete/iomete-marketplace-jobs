@@ -2,12 +2,16 @@
 
 """Tests for `data_compaction_job` package."""
 
+from unittest.mock import patch, MagicMock
+from datetime import datetime, timezone
+
 from data_compaction_job.config import get_config
 from data_compaction_job.main import start_job
+from data_compaction_job.stats_emitter import init_emitter, _add_orphan_files_metrics, StatsBatcher
 from data_compaction_job.tests._spark_session import get_spark_session
 
-
-def test_spark_session():
+@patch('data_compaction_job.sql_compaction.SqlClient.catalogs', return_value={'spark_catalog'})
+def test_spark_session(mock_catalogs):
     config = get_config("application.conf")
 
     # create test spark instance
@@ -236,8 +240,8 @@ VALUES
     spark.sql("DROP TABLE IF EXISTS default.copy_on_write_table")
     spark.sql("DROP TABLE IF EXISTS default.merge_on_read_table")
 
-
-def test_gc_handling_feature():
+@patch('data_compaction_job.sql_compaction.SqlClient.catalogs', return_value={'spark_catalog'})
+def test_gc_handling_feature(mock_catalogs):
     """Test the G.C. handling feature when G.C. is disabled for a table."""
     config = get_config("application.conf")
     config.gc_handling.enabled = True
@@ -298,6 +302,73 @@ def test_gc_handling_feature():
     spark.sql("DROP DATABASE IF EXISTS test_gc")
 
 
+@patch('data_compaction_job.sql_compaction.SqlClient.catalogs', return_value={'spark_catalog'})
+def test_orphan_files_metrics_tracking(mock_catalogs):
+    """Test that orphan files metrics now track both count and exact file paths."""
+    config = get_config("application.conf")
+    spark = get_spark_session()
+
+    init_emitter(spark)
+
+    # Create test database and table
+    spark.sql("CREATE DATABASE IF NOT EXISTS test_orphan")
+    spark.sql("""
+    CREATE TABLE IF NOT EXISTS test_orphan.orphan_test_table (
+        id BIGINT,
+        name STRING
+    )
+    USING iceberg
+    """)
+
+    # Insert some data to create files
+    spark.sql("""
+    INSERT INTO test_orphan.orphan_test_table VALUES
+        (1, 'test1'),
+        (2, 'test2'),
+        (3, 'test3')
+    """)
+
+    # Run complete compaction job
+    start_job(spark, config)
+
+    # Give some time for the metrics to be processed
+    import time
+    time.sleep(0.1)
+
+    # Check that metrics were stored correctly
+    metrics_df = spark.sql("""
+    SELECT metrics FROM spark_catalog.iomete_system_db.table_optimisation_run_metrics 
+    WHERE operation = 'REMOVE_ORPHAN_FILES' 
+    AND catalog_name = 'spark_catalog' 
+    AND database_name = 'test_orphan' 
+    AND table_name = 'orphan_test_table'
+    ORDER BY start_time DESC
+    LIMIT 1
+    """)
+
+    metrics_rows = metrics_df.collect()
+    assert len(metrics_rows) > 0, "No metrics found for REMOVE_ORPHAN_FILES operation"
+
+    metrics_map = metrics_rows[0]['metrics']
+
+    # Verify that we have both count and file paths metrics
+    assert 'removed file count' in metrics_map
+    assert 'removed files' in metrics_map
+
+    # The count should be '0' since there are no orphan files in a clean table
+    removed_count = int(metrics_map['removed file count'])
+    removed_files = metrics_map['removed files']
+
+    # Verify the structure is correct even when no orphan files exist
+    assert isinstance(metrics_map['removed file count'], str)
+    assert isinstance(metrics_map['removed files'], str)
+
+    # Clean up test table
+    spark.sql("DROP TABLE IF EXISTS test_orphan.orphan_test_table")
+    spark.sql("DROP DATABASE IF EXISTS test_orphan")
+
+
 if __name__ == '__main__':
     test_spark_session()
     test_gc_handling_feature()
+    test_orphan_files_metrics_tracking()
