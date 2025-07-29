@@ -3,6 +3,19 @@ from typing import Any
 from pyhocon import ConfigFactory
 
 
+def clean_option_keys(options_dict: dict) -> dict:
+    """Remove quotes from option keys that were preserved from HOCON parsing."""
+    if not options_dict:
+        return options_dict
+    
+    cleaned = {}
+    for key, value in options_dict.items():
+        # Remove single quotes from keys if present
+        clean_key = key.strip("'\"") if isinstance(key, str) else key
+        cleaned[clean_key] = value
+    return cleaned
+
+
 @dataclass
 class ExpireSnapshotConfig:
     retain_last: int = 1
@@ -67,8 +80,9 @@ def get_config(application_config_path) -> ApplicationConfig:
         )
 
     if "rewrite_data_files" in config:
+        raw_options = dict(config["rewrite_data_files"].get("options", {}))
         app_config.rewrite_data_files=RewriteDataFilesConfig(
-            options=dict(config["rewrite_data_files"].get("options", {})),
+            options=clean_option_keys(raw_options),
             strategy=config["rewrite_data_files"].get("strategy", None),
             sort_order=config["rewrite_data_files"].get("sort_order", None),
             where=config["rewrite_data_files"].get("where", None)
