@@ -49,7 +49,7 @@ class LakehouseMetadataExtractor(
     private val excludeSchemas: Set<String> = applicationConfig.excludeSchemas().orElse(setOf())
     
     private val catalogViewSupport = ConcurrentHashMap<String, Boolean>()
-    private val viewSupportedCatalogTypes = setOf("iceberg", "glue")
+    private val viewSupportedCatalogTypes = setOf("iceberg", "glue", "rest")
 
     fun scrape(appConfig: AppConfig) {
         val catalogs = getCatalog(appConfig)
@@ -419,7 +419,7 @@ class LakehouseMetadataExtractor(
             "# Partitioning" to TableColumnSection.PARTITIONS,
             "# Metadata Columns" to TableColumnSection.METADATA,
             "# Detailed Table Information" to TableColumnSection.TABLE_INFO,
-            "# Detailed View Information" to TableColumnSection.TABLE_INFO
+            "# Detailed View Information" to TableColumnSection.VIEW_INFO
         )
 
         val columnsMap = mutableMapOf<String, ColumnMetadata>()
@@ -436,6 +436,10 @@ class LakehouseMetadataExtractor(
 
                 if (matchedSection != null) {
                     currentSection = matchedSection
+                    
+                    if (currentSection == TableColumnSection.VIEW_INFO) {
+                        metadataMap["Type"] = "view"
+                    }
                 }
 
                 continue
@@ -462,7 +466,7 @@ class LakehouseMetadataExtractor(
                             columnName
                     columnsMap[partitionColName]?.isPartitionKey = true
                 }
-                TableColumnSection.TABLE_INFO -> {
+                TableColumnSection.TABLE_INFO, TableColumnSection.VIEW_INFO -> {
                     metadataMap[columnName] = dataType
                 }
                 TableColumnSection.METADATA -> {
