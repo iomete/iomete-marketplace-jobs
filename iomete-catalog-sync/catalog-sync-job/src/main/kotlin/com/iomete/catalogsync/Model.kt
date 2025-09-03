@@ -65,5 +65,6 @@ enum class TableColumnSection {
     COLUMNS,
     PARTITIONS,
     METADATA,
-    TABLE_INFO
+    TABLE_INFO,
+    VIEW_INFO
 }
