@@ -1,0 +1,62 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/data-compaction-job"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependabot"
+    commit-message:
+      prefix: "data-compaction-job"
+
+  - package-ecosystem: "pip"
+    directory: "/iomete-mysql-sync"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependabot"
+    commit-message:
+      prefix: "iomete-mysql-sync"
+
+  - package-ecosystem: "pip"
+    directory: "/file-streaming"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependabot"
+    commit-message:
+      prefix: "file-streaming"
+
+  - package-ecosystem: "pip"
+    directory: "/query-scheduler-job"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependabot"
+    commit-message:
+      prefix: "query-scheduler-job"
+
+  - package-ecosystem: "pip"
+    directory: "/kubernetes-event-collector"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependabot"
+    commit-message:
+      prefix: "kubernetes-event-collector"
+
+  - package-ecosystem: "gradle"
+    directory: "/debezium-server-iomete"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependabot"
+
+  - package-ecosystem: "gradle"
+    directory: "/iomete-catalog-sync"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependabot"
