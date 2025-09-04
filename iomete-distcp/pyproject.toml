@@ -1,0 +1,32 @@
+[tool.poetry]
+name = "iomete-distcp"
+version = "0.1.0"
+description = "Distributed file copying tool using PySpark and PyArrow"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+packages = [{include = "iomete_distcp"}]
+
+[tool.poetry.dependencies]
+python = "3.12.8"
+pyspark = "3.5.5"
+pyarrow = "21.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0"
+black = "^23.0"
+flake8 = "^6.0"
+
+[tool.poetry.scripts]
+distcp = "distcp:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = ["E203", "W503"]
