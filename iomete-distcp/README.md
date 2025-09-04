@@ -58,7 +58,7 @@ distcp hdfs://namenode:9000/source gs://bucket/destination
 
 ## Architecture
 
-1. **Driver Process**: 
+1. **Driver Process**:
    - Lists all files in the source directory recursively
    - Creates a Spark DataFrame with file metadata
    - Distributes copy tasks to executors
@@ -70,21 +70,52 @@ distcp hdfs://namenode:9000/source gs://bucket/destination
 
 ## Development
 
-### Running Tests
+### Setup
 
 ```bash
-# Using Poetry
-poetry run python tests/test_distcp.py
+# Install dependencies
+make install
 
-# Or with pytest
-poetry run pytest tests/
+# Or manually
+poetry install
 ```
 
-### Code Formatting
+### Code Quality
 
 ```bash
-poetry run black .
-poetry run flake8 .
+# Run all linting and formatting checks
+make all
+
+# Format code
+make format
+
+# Check formatting without changing files
+make format-check
+
+# Run linting
+make lint
+
+# Type checking
+make type-check
+```
+
+### Testing
+
+```bash
+# Run tests
+make test
+
+# Run tests with coverage
+make test-cov
+
+# Or with poetry directly
+poetry run pytest tests/ -v
+```
+
+### Available Make Commands
+
+```bash
+make help  # Show all available commands
 ```
 
 ## Supported Filesystems
