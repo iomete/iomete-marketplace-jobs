@@ -12,7 +12,7 @@ dependencies {
     implementation("io.quarkus:quarkus-kotlin")
     implementation("io.quarkus:quarkus-rest-client")
     implementation("io.quarkus:quarkus-micrometer-registry-prometheus")
-    implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.17.0")
+    implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.20.0")
 
     //Apache Spark
     compileOnly("org.apache.spark:spark-sql_2.12:3.5.3")
