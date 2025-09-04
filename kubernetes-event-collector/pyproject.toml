@@ -24,7 +24,7 @@ requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.group.dev.dependencies]
-pyspark = "3.5.3"
+pyspark = "4.0.0"
 pytest = ">=7.0.0"
 bandit = "^1.7.5"
 blue = ">=0.9.1, <1.0.0"
