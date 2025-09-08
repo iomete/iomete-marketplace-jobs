@@ -1,9 +1,12 @@
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("java")
 
-    kotlin("jvm")  version "2.1.20"
-    kotlin("plugin.allopen") version "2.1.20"
-    kotlin("plugin.jpa") version "2.1.20"
+    kotlin("jvm")  version "2.2.10"
+    kotlin("plugin.allopen") version "2.2.10"
+    kotlin("plugin.jpa") version "2.2.10"
 }
 
 allprojects {
@@ -17,14 +20,16 @@ allprojects {
 
     apply(plugin = "org.jetbrains.kotlin.jvm")
 
-    tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-        kotlinOptions.jvmTarget = "11"
-        kotlinOptions.javaParameters = true
+    tasks.withType<KotlinCompile> {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_17)
+            javaParameters.set(true)
+        }
     }
 
     java {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     val quarkusPlatformGroupId: String by project
