@@ -174,7 +174,7 @@ asset_mappings: {
 
 3. **Docker Image Configuration**
    ```yaml
-   Image: iomete.azurecr.io/iomete/ras-onboarding:1.0.0
+   Image: iomete.azurecr.io/iomete/ras-onboarding:1.0.1
    Main Application File: local:///app/driver.py
    ```
 
