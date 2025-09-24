@@ -28,9 +28,10 @@ This job is designed for IOMETE customers migrating from domain-based asset mana
 ### Migration Steps (Per Domain)
 
 1. **Validation Phase**
-   - Checks if domain exists and contains assets
-   - Validates database connections
-   - Handles existing bundles based on configuration
+   - **Owner Validation**: Verifies that the specified owner exists and owner type is valid
+   - **Domain Validation**: Checks if domain exists and contains assets
+   - **Database Validation**: Validates database connections
+   - **Bundle Validation**: Handles existing bundles based on configuration
 
 2. **Bundle Creation**
    - Creates a default bundle named `{domain_id}_default`
@@ -87,7 +88,7 @@ The job supports multiple asset types through configurable mappings:
         }
     }
 
-    # Asset Type Mappings - How to query each asset type (Please keep this as is without any change)
+    # Asset Type Mappings - How to query each asset type (Please keep this section as is without any change)
     asset_mappings: {
         COMPUTE: {
             table: "lakehouse"           # Table containing compute assets
@@ -258,6 +259,8 @@ duplicate_bundle_action: "UPDATE"
 
 2. For Each Domain:
    ├── Validation Phase
+   │   ├── Validate owner exists (USER in iam_user or GROUP in iam_group)
+   │   ├── Validate owner_type is 'USER' or 'GROUP'
    │   ├── Check domain exists
    │   ├── Count assets in domain
    │   ├── Check for existing bundle
@@ -339,7 +342,39 @@ psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c "SELECT 1"
 ```
 
 
-#### 2. Duplicate Bundle Issues
+#### 2. Owner Validation Failures
+
+**Error:** `Owner validation failed: Invalid owner_type 'ADMIN'. Must be one of: USER, GROUP`
+
+**Solutions:**
+- Check the `owner_type` in your configuration
+- Ensure it's exactly `"USER"` or `"GROUP"` (case-sensitive)
+- Fix configuration and restart migration
+
+**Error:** `Owner validation failed: Owner user 'nonexistent_user' not found or is deleted`
+
+**Solutions:**
+- Verify the username exists in IOMETE IAM
+- Check the user hasn't been deleted
+- Ensure username matches exactly (case-sensitive)
+- For groups, verify group name exists and is active
+
+**Error:** `Owner validation failed: Owner group 'old_team' not found or is deleted`
+
+**Solutions:**
+- Verify the group exists in IOMETE IAM
+- Check the group hasn't been deleted or archived
+- Ensure group name matches exactly (case-sensitive)
+- Create the group in IAM if it should exist
+
+**Error:** `Owner validation failed: Database error while validating owner`
+
+**Solutions:**
+- Check database connectivity to IAM database
+- Verify database permissions for reading iam_user/iam_group tables
+- Check database logs for connection issues
+
+#### 3. Duplicate Bundle Issues
 
 **Error:** `Default bundle already exists for domain`
 

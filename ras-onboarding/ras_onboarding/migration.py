@@ -267,7 +267,58 @@ class AssetOnboardingMigration:
 
         return results[0] if results else None
 
-    def validate_domain_migration(self, connection, domain_id: str, asset_type: str) -> Dict[str, Any]:
+    def validate_owner(self, connection, owner_id: str, owner_type: str) -> Dict[str, Any]:
+        """
+        Validate that the owner exists and owner type is valid.
+
+        Args:
+            connection: Database connection
+            owner_id: Owner identifier
+            owner_type: Owner type (USER or GROUP)
+
+        Returns:
+            Dictionary with validation result and error message if invalid
+        """
+        # Validate owner_type is valid
+        valid_owner_types = ['USER', 'GROUP']
+        if owner_type not in valid_owner_types:
+            return {
+                "is_valid": False,
+                "error": f"Invalid owner_type '{owner_type}'. Must be one of: {', '.join(valid_owner_types)}"
+            }
+
+        # Validate owner exists in database based on owner_type
+        if owner_type == 'USER':
+            owner_query = """
+                SELECT username FROM iam_user
+                WHERE username = %s AND is_deleted = false
+            """
+        else:  # owner_type == 'GROUP'
+            owner_query = """
+                SELECT name FROM iam_group
+                WHERE name = %s AND is_deleted = false
+            """
+
+        try:
+            results = self.bundle_migration_db.execute_query(connection, owner_query, (owner_id,))
+            if not results:
+                entity_type = "user" if owner_type == 'USER' else "group"
+                return {
+                    "is_valid": False,
+                    "error": f"Owner {entity_type} '{owner_id}' not found or is deleted"
+                }
+
+            logger.info(f"Owner validation successful: {owner_type}:{owner_id}")
+            return {"is_valid": True}
+
+        except Exception as e:
+            logger.error(f"Error validating owner {owner_type}:{owner_id}: {e}")
+            return {
+                "is_valid": False,
+                "error": f"Database error while validating owner: {str(e)}"
+            }
+
+    def validate_domain_migration(self, connection, domain_id: str, asset_type: str, owner_id: str = None, owner_type: str = None) -> Dict[str, Any]:
         """
         Validate that domain migration can proceed.
 
@@ -275,10 +326,19 @@ class AssetOnboardingMigration:
             connection: Database connection
             domain_id: Domain identifier
             asset_type: Asset type to validate
+            owner_id: Owner identifier (optional for validation)
+            owner_type: Owner type (optional for validation)
 
         Returns:
             Dictionary with validation result and existing bundle info
         """
+        # Validate owner if provided
+        if owner_id and owner_type:
+            owner_validation = self.validate_owner(connection, owner_id, owner_type)
+            if not owner_validation["is_valid"]:
+                logger.error(f"Owner validation failed: {owner_validation['error']}")
+                return {"can_proceed": False, "owner_validation_error": owner_validation['error']}
+
         # Check if domain exists and has assets
         asset_db = self.asset_dbs.get(asset_type)
         if not asset_db:
@@ -388,7 +448,7 @@ class AssetOnboardingMigration:
         try:
             with self.bundle_migration_db.get_transaction() as mig_conn:
                 # Validation
-                validation = self.validate_domain_migration(mig_conn, domain_id, asset_type)
+                validation = self.validate_domain_migration(mig_conn, domain_id, asset_type, owner_id, owner_type)
                 if not validation["can_proceed"]:
                     return validation.get("skip", False)
 
