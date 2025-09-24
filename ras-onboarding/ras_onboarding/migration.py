@@ -113,59 +113,63 @@ class AssetOnboardingMigration:
         if not mapping:
             raise ValueError(f"Unknown asset type: {asset_type}")
 
-        permission_filter = mapping["permissions_filter"]
-
-        # Make sure LIKE works as intended
-        if not permission_filter.startswith("%"):
-            permission_filter = f"%{permission_filter}%"
-
         user_permissions_query = """
-            WITH user_permissions AS (
-                SELECT DISTINCT
-                    u.username,
-                    ARRAY_AGG(DISTINCT perm) as new_permissions
-                FROM iam_user u
-                JOIN user_role_mapping_v2 urm ON urm.username = u.username
-                JOIN iam_role r ON r.name = urm.role_name AND r.domain = urm.domain
-                CROSS JOIN LATERAL (
-                    SELECT unnest(ARRAY[
-                        CASE WHEN r.permissions::text LIKE '%%"list"%%' THEN 'VIEW' END,
-                        CASE WHEN r.permissions::text LIKE '%%"view"%%' THEN 'VIEW' END,
-                        CASE WHEN r.permissions::text LIKE '%%"manage"%%' THEN 'UPDATE' END,
-                        CASE WHEN r.permissions::text LIKE '%%"manage"%%' THEN 'DELETE' END,
-                        CASE WHEN r.permissions::text LIKE '%%"manage"%%' THEN 'EXECUTE' END,
-                        CASE WHEN r.permissions::text LIKE '%%"manage"%%' THEN 'CONSUME' END
-                    ]) as perm
-                ) perms
-                WHERE r.domain = %s
-                AND u.is_deleted = false
-                AND r.is_deleted = false
-                AND r.permissions::text LIKE %s
-                AND perm IS NOT NULL
-                GROUP BY u.username
-            )
+            WITH all_domain_users AS (
+                SELECT dm.identity_id as username
+                FROM domain_member dm
+                         JOIN iam_user u ON u.username = dm.identity_id
+                WHERE dm.domain_id = %s
+                  AND dm.identity_type = 'USER'
+                  AND u.is_deleted = false
+            ),
+             user_all_permissions AS (
+                 SELECT
+                     adu.username,
+                     ARRAY_AGG(DISTINCT perm) FILTER (WHERE perm IS NOT NULL) as all_permissions
+                 FROM all_domain_users adu
+                          LEFT JOIN user_role_mapping_v2 urm ON urm.username = adu.username AND urm.domain = %s
+                          LEFT JOIN iam_role r ON (r.name = urm.role_name AND r.domain = urm.domain AND r.is_deleted = false)
+                     OR (r.name = 'default' AND r.domain = %s AND r.is_deleted = false)
+                          CROSS JOIN LATERAL (
+                     WITH lakehouse_service AS (
+                         SELECT jsonb_path_query(r.permissions::jsonb, '$[*] ? (@.service == "lakehouse")') as lakehouse_perms
+                     )
+                     SELECT unnest(ARRAY[
+                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "list")') THEN 'VIEW' END,
+                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "view")') THEN 'VIEW' END,
+                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'UPDATE' END,
+                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'DELETE' END,
+                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'EXECUTE' END,
+                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'CONSUME' END
+                         ]) as perm
+                     FROM lakehouse_service
+                     WHERE lakehouse_perms IS NOT NULL
+                     ) perms
+                 GROUP BY adu.username
+             )
             INSERT INTO bundle_permission (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
             SELECT
                 %s,
                 %s,
                 'USER',
                 username,
-                new_permissions,
+                all_permissions,
                 current_timestamp,
                 'system',
                 current_timestamp,
                 'system'
-            FROM user_permissions
+            FROM user_all_permissions
+            WHERE all_permissions IS NOT NULL
             ORDER BY username
         """
 
 
         affected_rows = 0
         logger.debug(f"update: {user_permissions_query}")
-        logger.debug(f"Parameters: ({domain_id}, {permission_filter}, {bundle_id}, {asset_type})")
+        logger.debug(f"Parameters: ({domain_id}, {domain_id}, {domain_id}, {bundle_id}, {asset_type})")
 
         with connection.cursor() as cursor:
-                cursor.execute(user_permissions_query, (domain_id, permission_filter,bundle_id, asset_type))
+                cursor.execute(user_permissions_query, (domain_id, domain_id, domain_id, bundle_id, asset_type))
                 affected_rows = cursor.rowcount
 
         logger.info(f"Set permissions for {affected_rows} users in domain {domain_id}")
@@ -184,56 +188,61 @@ class AssetOnboardingMigration:
         if not mapping:
             raise ValueError(f"Unknown asset type: {asset_type}")
 
-        permission_filter = mapping["permissions_filter"]
-
-        # Make sure LIKE works as intended
-        if not permission_filter.startswith("%"):
-            permission_filter = f"%{permission_filter}%"
 
         group_permissions_query = """
-            WITH group_permissions AS (
-                SELECT DISTINCT
-                    g.name as group_name,
-                    ARRAY_AGG(DISTINCT perm) as new_permissions
-                FROM iam_group g
-                JOIN group_role_mapping_v2 grm ON grm.group_name = g.name
-                JOIN iam_role r ON r.name = grm.role_name AND r.domain = grm.domain
-                CROSS JOIN LATERAL (
-                    SELECT unnest(ARRAY[
-                        CASE WHEN r.permissions::text LIKE '%%"list"%%' THEN 'VIEW' END,
-                        CASE WHEN r.permissions::text LIKE '%%"view"%%' THEN 'VIEW' END,
-                        CASE WHEN r.permissions::text LIKE '%%"manage"%%' THEN 'UPDATE' END,
-                        CASE WHEN r.permissions::text LIKE '%%"manage"%%' THEN 'DELETE' END,
-                        CASE WHEN r.permissions::text LIKE '%%"manage"%%' THEN 'EXECUTE' END,
-                        CASE WHEN r.permissions::text LIKE '%%"manage"%%' THEN 'CONSUME' END
-                    ]) as perm
-                ) perms
-                WHERE r.domain = %s
-                AND g.is_deleted = false
-                AND r.is_deleted = false
-                AND r.permissions::text LIKE %s
-                AND perm IS NOT NULL
-                GROUP BY g.name
-            )
+            WITH all_domain_groups AS (
+                SELECT dm.identity_id as group_name
+                FROM domain_member dm
+                         JOIN iam_group g ON g.name = dm.identity_id
+                WHERE dm.domain_id = %s
+                  AND dm.identity_type = 'GROUP'
+                  AND g.is_deleted = false
+            ),
+             group_all_permissions AS (
+                 SELECT
+                     adg.group_name,
+                     ARRAY_AGG(DISTINCT perm) FILTER (WHERE perm IS NOT NULL) as all_permissions
+                 FROM all_domain_groups adg
+                          LEFT JOIN group_role_mapping_v2 grm ON grm.group_name = adg.group_name AND grm.domain = %s
+                          LEFT JOIN iam_role r ON (r.name = grm.role_name AND r.domain = grm.domain AND r.is_deleted = false)
+                     OR (r.name = 'default' AND r.domain = %s AND r.is_deleted = false)
+                          CROSS JOIN LATERAL (
+                     WITH lakehouse_service AS (
+                         SELECT jsonb_path_query(r.permissions::jsonb, '$[*] ? (@.service == "lakehouse")') as lakehouse_perms
+                     )
+                     SELECT unnest(ARRAY[
+                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "list")') THEN 'VIEW' END,
+                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "view")') THEN 'VIEW' END,
+                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'UPDATE' END,
+                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'DELETE' END,
+                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'EXECUTE' END,
+                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'CONSUME' END
+                         ]) as perm
+                     FROM lakehouse_service
+                     WHERE lakehouse_perms IS NOT NULL
+                     ) perms
+                 GROUP BY adg.group_name
+             )
             INSERT INTO bundle_permission (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
             SELECT
                 %s,
                 %s,
                 'GROUP',
                 group_name,
-                new_permissions,
+                all_permissions,
                 current_timestamp,
                 'system',
                 current_timestamp,
                 'system'
-            FROM group_permissions
+            FROM group_all_permissions
+            WHERE all_permissions IS NOT NULL
             ORDER BY group_name
         """
 
 
         affected_rows = 0
         with connection.cursor() as cursor:
-            cursor.execute(group_permissions_query, (domain_id, permission_filter, bundle_id, asset_type))
+            cursor.execute(group_permissions_query, (domain_id, domain_id, domain_id, bundle_id, asset_type))
             affected_rows = cursor.rowcount
 
         logger.info(f"Set permissions for {affected_rows} groups in domain {domain_id}")

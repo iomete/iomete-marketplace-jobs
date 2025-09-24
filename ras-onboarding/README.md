@@ -93,7 +93,6 @@ The job supports multiple asset types through configurable mappings:
             table: "lakehouse"           # Table containing compute assets
             id_column: "id"              # Primary key column
             domain_column: "domain"      # Domain association column
-            permissions_filter: "lakehouse" # Role permission filter pattern
         }
     }
 
@@ -147,7 +146,6 @@ asset_mappings: {
         table: "your_table_name"           # Database table containing assets
         id_column: "your_id_column"        # Primary key column name
         domain_column: "your_domain_col"   # Column linking to domain
-        permissions_filter: "filter_text"  # Text to match in role permissions
     }
 }
 ```
