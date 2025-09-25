@@ -88,7 +88,7 @@ The job supports multiple asset types through configurable mappings:
         }
     }
 
-    # Asset Type Mappings - How to query each asset type (Please keep this section as is without any change)
+    # Asset Type Mappings - (Please keep this section as is without any change)
     asset_mappings: {
         COMPUTE: {
             table: "lakehouse"           # Table containing compute assets
@@ -150,7 +150,7 @@ asset_mappings: {
     }
 }
 ```
-**use the mapping shared in the above configuration example for COMPUTE as is with any changes**
+**use the mapping shared in the above configuration example for COMPUTE as is without any changes**
 
 
 ### Optional Configuration Overrides
@@ -185,6 +185,7 @@ asset_mappings: {
 1. **Under ConfigMap**
    - Select Add config
    - copy the example config provided above and edit the DB host and credentials and other parameters if required
+   - enter `/etc/configs/application.conf` in the File Path 
 
 
 ### Step 4: Configure Instance
