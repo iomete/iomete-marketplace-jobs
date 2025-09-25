@@ -60,6 +60,9 @@ The job supports multiple asset types through configurable mappings:
 
 ## Configuration Reference
 
+### File path
+File path value should be this: `/etc/configs/application.conf`
+
 ### Complete Configuration Example
 
 ```hocon
@@ -87,6 +90,7 @@ The job supports multiple asset types through configurable mappings:
             # Add more asset databases as needed (for future use)
         }
     }
+
 
     # Asset Type Mappings - (Please keep this section as is without any change)
     asset_mappings: {
