@@ -1,6 +1,13 @@
 # Asset RAS Onboarding Migration Job
 
-A PySpark job that automates migration from **domain-based access control** to the new **bundle-based Resource Access Security (RAS)** system in IOMETE.
+A dynamic PySpark job that automates migration from **domain-based access control** to the new **bundle-based Resource Access Security (RAS)** system in IOMETE.
+
+**Key Features:**
+- **Dynamic Asset Type Support**: Handles multiple asset types (COMPUTE, SPARK_JOB etc.) through configuration
+- **Multi-Asset Domain Migration**: Migrates multiple asset types per domain in a single execution
+- **Configuration-Driven Architecture**: Add new asset types without code changes
+- **Dynamic Query Generation**: Automatically builds queries based on asset type configuration
+- **Dynamic Permission Mapping**: Maps permissions based on service types and asset configurations
 
 This README will guide you through creating and running the job template in the IOMETE Console, following the same flow as the **Create Job Template** page.
 
@@ -13,7 +20,7 @@ This README will guide you through creating and running the job template in the 
 4. [Step 2 – Docker Image Configuration](#step-2--docker-image-configuration)
 5. [Step 3 – Config Map](#step-3--config-map)
 6. [Step 4 – Instance Configuration](#step-4--instance-configuration)
-7. [Step 5 – Run or Schedule](#step-5--run-or-schedule)
+7. [Step 5 – Run Job](#step-5--run-job)
 8. [Step 6 – Monitor Execution](#step-6--monitor-execution)
 9. [Migration Logic Explained](#migration-logic-explained)
 10. [Duplicate Bundle Handling](#duplicate-bundle-handling)
@@ -24,11 +31,19 @@ This README will guide you through creating and running the job template in the 
 ---
 
 ## Overview
-This job helps IOMETE customers migrate assets (compute, pipelines, datasets, etc.) into the new **RAS bundle model**.  
-It automatically:
-- Creates default bundles per domain
-- Moves assets into bundles
-- Migrates permissions (user/group → bundle permissions)
+This job helps IOMETE customers migrate assets (compute, spark jobs, pipelines, datasets, notebooks, etc.) into the new **RAS bundle model**.
+
+### Core Capabilities
+- **Creates default bundles per domain**
+- **Moves assets into bundles** with dynamic asset type support
+- **Migrates permissions** (user/group → bundle permissions)
+- **Supports multiple asset types per domain** in a single migration run
+
+### Supported Asset Types
+- **COMPUTE**: Lakehouse compute resources
+- **SPARK_JOB**: Spark job definitions
+
+*Additional asset types can be added through configuration without code changes.*
 
 ---
 
@@ -37,8 +52,9 @@ It automatically:
 - **Python** 3.12+ (provided by runtime)
 - **PySpark** 3.5.5 (provided by runtime)
 - **Databases**: PostgreSQL access with proper read/write permissions
-- **IAM validation**: Ensure users/groups defined as owners exist in IAM (`iam_user` / `iam_group`)
-- **Config Map setup**: Database credentials and migration domains correctly defined
+- **IAM validation**: Ensure users/groups defined as owners exist in IAM 
+- **Config Map setup**: Database credentials, asset type configurations, and migration domains correctly defined
+- **Asset Type Configuration**: Properly configured asset mappings for each asset type to migrate
 
 ---
 
@@ -60,7 +76,7 @@ In the IOMETE Console:
 ## Step 2 – Docker Image Configuration
 Under **Image settings**:
 ```yaml
-Image: iomete.azurecr.io/iomete/ras-onboarding:1.0.1
+Image: iomete.azurecr.io/iomete/ras-onboarding:1.0.2
 Main Application File: local:///app/driver.py
 ```
 ℹ️ **Note:** If you are using a self-hosted registry or a mirror, point to the `ras-onboarding` image in your registry/mirror.
@@ -74,6 +90,7 @@ Main Application File: local:///app/driver.py
 
 ```hocon
 {
+  # Database configuration - will be overridden by environment variables
   databases: {
     bundle_db: {
       host: "your-db-host"
@@ -81,59 +98,106 @@ Main Application File: local:///app/driver.py
       name: "iomete_iam_db"
       user: ${?DB_USER}
       password: ${?DB_PASSWORD}
-      ssl_mode: disable                  # Can be set to require/disable based on how your DB is configured
     }
-    assets: {
-      COMPUTE: {
-        host: "your-db-host"
-        port: 5432
-        name: "iomete_core_db"
-        user: ${?ASSET_DB_USER}
-        password: ${?ASSET_DB_PASSWORD}
-        ssl_mode: disable                # Can be set to require/disable based on how your DB is configured
-      }
+
+    # asset database
+    asset_db: {
+      host: "your-db-host"
+      port: 5432
+      name: "iomete_core_db"
+      user: ${?ASSET_DB_USER}
+      password: ${?ASSET_DB_PASSWORD}
     }
   }
 
-  asset_mappings: {
-    COMPUTE: {
-      table: "lakehouse"
-      id_column: "id"
-      domain_column: "domain"
-    }
-  }
-
+  # Migration configuration
   migration: {
+    # List of domains to migrate with their configurations
     domains: [
-      { domain_id: "production", owner_id: "admin_user", owner_type: "USER", asset_type: "COMPUTE" },
-      { domain_id: "staging", owner_id: "data_engineering", owner_type: "GROUP", asset_type: "COMPUTE" }
+        {
+            domain_id: "production"
+            owner_id: "admin_user"
+            owner_type: "USER"  # USER or GROUP
+            asset_types: ["COMPUTE", "SPARK_JOB"]  # Multiple asset types - all use same asset_db
+        }
+        {
+            domain_id: "staging"
+            owner_id: "data_engineering"
+            owner_type: "GROUP"
+            asset_types: ["COMPUTE"]  # Different combinations per domain
+        }
+        {
+            domain_id: "development"
+            owner_id: "dev_team"
+            owner_type: "GROUP"
+            asset_types: ["SPARK_JOB"]  # Single asset type (also supported)
+        }
+        # Add more domains as needed
     ]
+
+    # Transaction settings
     batch_size: 1000
     retry_attempts: 3
+
+    # Validation settings
     validate_before_migration: true
+    dry_run: false
+
+    # Debug mode - enables detailed logging and query output
     debug_mode: false
-    duplicate_bundle_action: "UPDATE"   # FAIL | SKIP | UPDATE
+
+    # Duplicate bundle behavior: FAIL, SKIP, or UPDATE
+    # FAIL: Stop execution if default bundle already exists (default behavior)
+    # SKIP: Skip migration for domains where default bundle already exists
+    # UPDATE: Update existing bundle ownership and re-process assets/permissions
+    duplicate_bundle_action: "UPDATE"
+  }
+
+  # INTERNAL USE ONLY: Do not edit or change the below CONFIGS WITHOUT CHECKING WITH SUPPORT FIRST
+  # Asset type mappings - defines how to query assets for each type
+  # All asset types use the same asset_db connection but different tables
+  asset_mappings: {
+      COMPUTE: {
+          table: "lakehouse"
+          id_column: "id"
+          domain_column: "domain"
+          filter_condition: "is_deleted = false"
+          service: "lakehouse"
+          permission_mappings: {
+              list: ["VIEW"]
+              view: ["VIEW"]
+              manage: ["UPDATE", "DELETE", "EXECUTE", "CONSUME"]
+          }
+      }
+      SPARK_JOB: {
+          table: "spark_job"
+          id_column: "id"
+          domain_column: "domain"
+          filter_condition: "is_deleted = false"
+          service: "spark_job"
+          permission_mappings: {
+              list: ["VIEW"]
+              view: ["VIEW"]
+              manage: ["UPDATE", "DELETE", "RUN", "CONSUME"]
+          }
+      }
   }
 }
 ```
-
-ℹ️ **Note:** Keep the `asset_mappings` as-is (for internal use, will be deprecated soon).
+⚠️ **INTERNAL USE ONLY**: The `asset_mappings` section contains critical internal configurations. Do not modify without consulting IOMETE support team.
 
 ---
 
 ## Step 4 – Instance Configuration
 Choose the instance to run on:
-- For small migrations, a **single minimal instance** is sufficient.
-- For large domains, allocate more resources.
+- For migrations, a **single minimal instance** is sufficient.
 
 ---
 
-## Step 5 – Run or Schedule
+## Step 5 – Run Job
 - **Save template**
 - To run immediately:
-    - Go to **Applications tab** → Select template → **Run**
-- To schedule:
-    - Configure a schedule in the Job Template page
+    - Select template → **Applications tab** → **Run**
 
 ---
 
@@ -153,13 +217,94 @@ INFO: Set permissions for 12 users, 3 groups
 
 ---
 
+
+### Adding New Asset Types (Reachout to IOMETE support team for this)
+
+To add a new asset type, simply add a new entry to `asset_mappings`:
+
+```hocon
+asset_mappings: {
+  # ... existing mappings ...
+
+  NEW_ASSET_TYPE: {
+    table: "new_asset_table"
+    id_column: "id"
+    domain_column: "domain"
+    filter_condition: "is_active = true"
+    service: "new_service"
+    permission_mappings: {
+      list: ["VIEW"]
+      view: ["VIEW"]
+      manage: ["UPDATE", "DELETE", "EXECUTE"]
+    }
+  }
+}
+```
+
+**No code changes required** - the job will automatically handle the new asset type.
+
+---
+
+
+### Migration Flow for Multi-Asset Domains
+
+For each domain with multiple asset types, the job will:
+
+1. **Validate** all asset types and configurations
+2. **Create/Update** a single default bundle for the domain
+3. **Process each asset type sequentially**:
+   - Query assets of the current type
+   - Move assets to the bundle
+   - Migrate permissions for that asset type
+4. **Report** results for each asset type separately
+
+### Example Multi-Asset Migration Log Output
+```
+INFO: Starting migration for domain: production
+INFO: Found 25 COMPUTE assets in domain production
+INFO: Found 15 SPARK_JOB assets in domain production
+INFO: Found 8 PIPELINE assets in domain production
+INFO: Created default bundle abc-123-def for domain production
+INFO: Processed 25 COMPUTE assets for bundle abc-123-def
+INFO: Set permissions for 12 users, 3 groups for COMPUTE assets
+INFO: Processed 15 SPARK_JOB assets for bundle abc-123-def
+INFO: Set permissions for 8 users, 2 groups for SPARK_JOB assets
+INFO: Processed 8 PIPELINE assets for bundle abc-123-def
+INFO: Set permissions for 5 users, 2 groups for PIPELINE assets
+INFO: Domain production migrated: 25 COMPUTE, 15 SPARK_JOB, 8 PIPELINE assets
+```
+
+---
+
 ## Migration Logic Explained
-The job performs:
-1. **Validation**: Owner, domain, DB connections, bundle existence
-2. **Bundle Creation/Update**
-3. **Asset Migration**
-4. **Permission Migration**
-5. **Reporting & Cleanup**
+
+### Enhanced Migration Flow
+
+The job performs a **multi-phase migration process** with dynamic asset type support:
+
+#### Phase 1: Validation & Preparation
+- **Configuration Validation**: Validates all asset type configurations in `asset_mappings`
+- **Owner Validation**: Ensures all domain owners exist in IAM (USER/GROUP)
+- **Database Connections**: Tests connections to bundle DB and asset DB
+- **Asset Type Discovery**: Parses and validates all asset types for each domain
+- **Dry Run Support**: Can validate without making changes when `dry_run: true`
+
+#### Phase 2: Bundle Management (Per Domain)
+- **Bundle Detection**: Checks if default bundle already exists for domain
+- **Duplicate Handling**: Applies configured `duplicate_bundle_action` (FAIL/SKIP/UPDATE)
+- **Bundle Creation/Update**: Creates new bundle or updates existing bundle ownership
+- **Transaction Safety**: Uses database transactions for atomicity
+
+#### Phase 3: Multi-Asset Migration (Per Domain, Per Asset Type)
+For each domain with multiple asset types, the job processes **sequentially**
+
+
+#### Phase 4: Reporting & Cleanup
+- **Per Asset Type Results**: Detailed counts and success/failure reporting
+- **Domain Summary**: Consolidated results across all asset types
+- **Transaction Cleanup**: Commits successful migrations, rolls back failures
+- **Debug Logging**: Detailed query and operation logging when `debug_mode: true`
+
 
 ---
 
@@ -199,16 +344,36 @@ duplicate_bundle_action: "UPDATE"
 ---
 
 ## Troubleshooting
-- **DB connection failures** → Check DB creds, test via `psql`
-- **Owner validation errors** → Ensure owner exists in IAM (`USER` or `GROUP`)
-- **Duplicate bundle errors** → Adjust `duplicate_bundle_action`
-- **No assets found** → Confirm domain has assets, check domain name spelling
-- **Permission issues** → Verify IAM role mappings
 
-Enable debug logs:
-```bash
-export LOG_LEVEL="DEBUG"
-```
+### Database Issues
+- **DB connection failures** → Check DB creds, test via `psql`
+- **Single asset DB connection** → Verify `asset_db` configuration (not per-asset databases)
+- **Table not found errors** → Confirm table names in `asset_mappings` match actual database schema
+
+### Configuration Issues
+- **Asset type not found** → Verify asset type exists in `asset_mappings` configuration
+- **Invalid asset configuration** → Ensure all required fields (table, id_column, domain_column, service) are present
+- **Permission mapping errors** → Confirm all permission levels (list, view, manage) have valid permission arrays
+
+### Domain & Owner Issues
+- **Owner validation errors** → Ensure owner exists in IAM (`USER` or `GROUP`)
+- **Duplicate bundle errors** → Adjust `duplicate_bundle_action` (FAIL/SKIP/UPDATE)
+- **Invalid owner_type** → Must be exactly "USER" or "GROUP" (case-sensitive)
+
+### Multi-Asset Issues
+- **Asset types array parsing** → Ensure `asset_types` is a proper array: `["COMPUTE", "SPARK_JOB"]`
+- **Mixed asset type failures** → Check logs for per-asset-type errors; some may succeed while others fail
+- **No assets found for asset type** → Confirm domain contains assets for each specified asset type
+
+### Permission Issues
+- **Permission migration failures** → Verify IAM role mappings and service permissions
+- **Service mapping errors** → Ensure `service` field matches expected service names in permission system
+- **Dynamic permission resolution** → Check that permission_mappings contain valid permission names for each service
+
+### Performance Issues
+- **Large domain migrations** → Adjust `batch_size` for better performance
+- **Multi-asset timeouts** → Consider migrating fewer asset types per domain execution
+- **Memory issues** → Use smaller batch sizes for domains with many assets
 
 ---
 
@@ -227,24 +392,77 @@ export LOG_LEVEL="DEBUG"
 export LOG_LEVEL="DEBUG"  # DEBUG, INFO, WARNING, ERROR
 ```
 
+### Enhanced Logging for Multi-Asset Support
+
 ### Key Log Messages
 
 **Migration Start:**
 ```
 INFO: Starting Asset Onboarding Migration Job
 INFO: Migration DB connection successful
-INFO: Asset DB connections successful
+INFO: Asset DB connection successful
 ```
 
-**Per Domain:**
+**Configuration Validation:**
 ```
+INFO: Asset type configuration validated: 5 asset types configured
+DEBUG: Validated asset type COMPUTE: table=lakehouse, service=lakehouse
+DEBUG: Validated asset type SPARK_JOB: table=spark_job, service=spark_job
+DEBUG: Validated asset type PIPELINE: table=pipeline, service=pipeline
+```
+
+**Per Domain (Multi-Asset):**
+```
+INFO: Starting migration for domain: production
 INFO: Owner validation successful: USER:admin_user
-INFO: Found 25 compute assets in domain production
+INFO: Validating asset types for domain: ['COMPUTE', 'SPARK_JOB', 'PIPELINE']
+INFO: Found 25 COMPUTE assets in domain production
+INFO: Found 15 SPARK_JOB assets in domain production
+INFO: Found 8 PIPELINE assets in domain production
 INFO: Created default bundle abc-123-def for domain production
-INFO: Moved 25 compute assets to bundle abc-123-def
-INFO: Set permissions for 12 users in domain production
-INFO: Set permissions for 3 groups in domain production
-INFO: Domain production migrated with 25 COMPUTE assets
+
+# Per asset type processing
+INFO: Processing COMPUTE assets for domain production
+INFO: Moved 25 COMPUTE assets to bundle abc-123-def
+INFO: Set permissions for 12 users, 3 groups for COMPUTE assets in domain production
+
+INFO: Processing SPARK_JOB assets for domain production
+INFO: Moved 15 SPARK_JOB assets to bundle abc-123-def
+INFO: Set permissions for 8 users, 2 groups for SPARK_JOB assets in domain production
+
+INFO: Processing PIPELINE assets for domain production
+INFO: Moved 8 PIPELINE assets to bundle abc-123-def
+INFO: Set permissions for 5 users, 2 groups for PIPELINE assets in domain production
+
+INFO: Domain production migrated: 25 COMPUTE, 15 SPARK_JOB, 8 PIPELINE assets
+```
+
+**Dynamic Query Generation (Debug Mode):**
+```
+DEBUG: Generated asset query for COMPUTE: SELECT id, domain FROM lakehouse WHERE domain = ? AND is_deleted = false
+DEBUG: Generated permission subquery for COMPUTE: service = 'lakehouse' AND permission IN ('UPDATE', 'DELETE', 'EXECUTE', 'CONSUME')
+DEBUG: Generated asset query for SPARK_JOB: SELECT id, domain FROM spark_job WHERE domain = ? AND is_deleted = false
+DEBUG: Generated permission subquery for SPARK_JOB: service = 'spark_job' AND permission IN ('UPDATE', 'DELETE', 'RUN', 'CONSUME')
+```
+
+**Single Asset Type Domain:**
+```
+INFO: Starting migration for domain: simple-domain
+INFO: Owner validation successful: GROUP:data_team
+INFO: Validating asset types for domain: ['NOTEBOOK']
+INFO: Found 12 NOTEBOOK assets in domain simple-domain
+INFO: Created default bundle def-456-ghi for domain simple-domain
+INFO: Processing NOTEBOOK assets for domain simple-domain
+INFO: Moved 12 NOTEBOOK assets to bundle def-456-ghi
+INFO: Set permissions for 6 users, 1 groups for NOTEBOOK assets in domain simple-domain
+INFO: Domain simple-domain migrated: 12 NOTEBOOK assets
+```
+
+**Configuration Validation Errors:**
+```
+ERROR: Asset type INVALID_TYPE not found in asset_mappings configuration
+ERROR: Invalid asset configuration for COMPUTE: missing required field 'table'
+ERROR: Invalid permission mapping for SPARK_JOB: 'manage' permissions cannot be empty
 ```
 
 **Owner Validation Errors:**
@@ -254,7 +472,37 @@ ERROR: Owner validation failed: Owner user 'deleted_user' not found or is delete
 ERROR: Owner validation failed: Owner group 'nonexistent_team' not found or is deleted
 ```
 
-**Final Summary:**
+**Multi-Asset Migration Errors:**
+```
+ERROR: Failed to migrate COMPUTE assets for domain production: Database connection lost
+WARNING: Skipping SPARK_JOB migration for domain production: No assets found
+ERROR: Permission migration failed for PIPELINE assets in domain production: Invalid service mapping
+```
+
+**Final Summary (Enhanced):**
 ```
 INFO: Migration completed: 3/3 domains successful
+INFO: Total assets migrated: 125 (45 COMPUTE, 35 SPARK_JOB, 25 PIPELINE, 20 DATASET)
+INFO: Total bundles created: 3
+INFO: Total permissions migrated: 156 (users: 89, groups: 67)
 ```
+
+### Troubleshooting Multi-Asset Issues
+
+**Asset Type Not Found:**
+```
+ERROR: Asset type INVALID_TYPE not found in asset_mappings configuration
+```
+**Solution:** Add the asset type to `asset_mappings` or remove from domain configuration.
+
+**Database Table Not Found:**
+```
+ERROR: Table 'nonexistent_table' doesn't exist for asset type CUSTOM_ASSET
+```
+**Solution:** Verify table name in asset_mappings configuration.
+
+**Permission Mapping Issues:**
+```
+ERROR: Invalid permission mapping for CUSTOM_ASSET: manage permissions list is empty
+```
+**Solution:** Ensure all permission mappings (list, view, manage) are properly configured.

@@ -20,17 +20,15 @@ def start_job(spark, config):
             raise Exception("Failed to connect to migration database")
         logger.info("Migration DB connection successful")
 
-        # Initialize asset DBs
-        asset_dbs = {}
-        for asset_type, db_conf in config["databases"].get("assets", {}).items():
-            dbm = DatabaseManager(db_conf, debug_mode)
-            if not dbm.test_connection():
-                raise Exception(f"Failed to connect to asset DB for {asset_type}")
-            asset_dbs[asset_type] = dbm
-        logger.info("Asset DB connections successful")
+        # Initialize single asset DB
+        asset_db_conf = config["databases"]["asset_db"]
+        asset_db = DatabaseManager(asset_db_conf, debug_mode)
+        if not asset_db.test_connection():
+            raise Exception("Failed to connect to asset database")
+        logger.info("Asset DB connection successful")
 
         # Run migration
-        migration = AssetOnboardingMigration(bundle_migration_db, asset_dbs, config)
+        migration = AssetOnboardingMigration(bundle_migration_db, asset_db, config)
         success = migration.run_migration()
 
         if success:

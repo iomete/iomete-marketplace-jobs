@@ -10,9 +10,9 @@ logger = get_logger(__name__)
 class AssetOnboardingMigration:
     """Handles the asset onboarding migration process for any asset type."""
 
-    def __init__(self, bundle_migration_db: DatabaseManager, asset_dbs: Dict[str, DatabaseManager], config: Dict[str, Any]):
+    def __init__(self, bundle_migration_db: DatabaseManager, asset_db: DatabaseManager, config: Dict[str, Any]):
         self.bundle_migration_db = bundle_migration_db
-        self.asset_dbs = asset_dbs
+        self.asset_db = asset_db
         self.migration_config = config.get("migration", {})
         self.asset_mappings = config.get("asset_mappings", {})
         self.debug_mode = self.migration_config.get("debug_mode", False)
@@ -44,9 +44,15 @@ class AssetOnboardingMigration:
         logger.info(f"Created default bundle {bundle_id} for domain {domain_id}")
         return bundle_id
 
-    def get_domain_assets(self, asset_db: DatabaseManager, domain_id: str, asset_type: str) -> List[str]:
+    def build_asset_query(self, asset_type: str) -> str:
         """
-        Fetch assets for a given domain from the correct asset DB.
+        Build dynamic asset query from configuration.
+
+        Args:
+            asset_type: Asset type to build query for
+
+        Returns:
+            SQL query string for fetching assets
         """
         mapping = self.asset_mappings.get(asset_type)
         if not mapping:
@@ -56,11 +62,28 @@ class AssetOnboardingMigration:
         id_column = mapping["id_column"]
         domain_column = mapping["domain_column"]
 
-        query = f"""
+        base_query = f"""
             SELECT {id_column}
             FROM {table}
-            WHERE is_deleted = false AND {domain_column} = %s
+            WHERE {domain_column} = %s
         """
+
+        # Add optional filter condition
+        if filter_condition := mapping.get('filter_condition'):
+            base_query += f" AND {filter_condition}"
+
+        return base_query
+
+    def get_domain_assets(self, asset_db: DatabaseManager, domain_id: str, asset_type: str) -> List[str]:
+        """
+        Fetch assets for a given domain from the correct asset DB.
+        """
+        mapping = self.asset_mappings.get(asset_type)
+        if not mapping:
+            raise ValueError(f"Unknown asset type: {asset_type}")
+
+        id_column = mapping["id_column"]
+        query = self.build_asset_query(asset_type)
 
         with asset_db.get_connection() as conn:
             results = asset_db.execute_query(conn, query, (domain_id,))
@@ -98,6 +121,99 @@ class AssetOnboardingMigration:
             cursor.execute(insert_bundle_assets_query)
         logger.info(f"Moved {len(asset_ids)} {asset_type.lower()} assets to bundle {bundle_id}")
 
+    def build_permission_subquery(self, asset_type: str) -> str:
+        """
+        Build dynamic permission extraction subquery based on asset type configuration.
+
+        Args:
+            asset_type: Asset type to build permissions for
+
+        Returns:
+            SQL subquery for extracting permissions
+        """
+        mapping = self.asset_mappings.get(asset_type)
+        if not mapping:
+            raise ValueError(f"Unknown asset type: {asset_type}")
+
+        service = mapping['service']
+        permission_mappings = mapping.get('permission_mappings', {})
+
+        # Build CASE statements dynamically
+        case_statements = []
+        for action, permissions in permission_mappings.items():
+            for perm in permissions:
+                case_statements.append(
+                    f"CASE WHEN jsonb_path_exists({service}_perms, '$.actions[*] ? (@.action == \"{action}\")') THEN '{perm}' END"
+                )
+
+        case_statements_joined = ',\n                         '.join(case_statements)
+        return f"""
+                     WITH {service}_service AS (
+                         SELECT jsonb_path_query(r.permissions::jsonb, '$[*] ? (@.service == "{service}")') as {service}_perms
+                     )
+                     SELECT unnest(ARRAY[
+                         {case_statements_joined}
+                         ]) as perm
+                     FROM {service}_service
+                     WHERE {service}_perms IS NOT NULL
+        """
+
+    def validate_asset_configuration(self, asset_type: str) -> Dict[str, Any]:
+        """
+        Validate asset type configuration.
+
+        Args:
+            asset_type: Asset type to validate
+
+        Returns:
+            Validation result dictionary
+        """
+        mapping = self.asset_mappings.get(asset_type)
+        if not mapping:
+            return {
+                "is_valid": False,
+                "error": f"Asset type '{asset_type}' not found in configuration"
+            }
+
+        required_fields = ['table', 'id_column', 'domain_column', 'service']
+        for field in required_fields:
+            if not mapping.get(field):
+                return {
+                    "is_valid": False,
+                    "error": f"Missing required field '{field}' for asset type '{asset_type}'"
+                }
+
+        # Validate permission mappings exist
+        if not mapping.get('permission_mappings'):
+            return {
+                "is_valid": False,
+                "error": f"Missing permission_mappings for asset type '{asset_type}'"
+            }
+
+        return {"is_valid": True}
+
+    def get_asset_types_from_config(self, domain_config: Dict[str, Any]) -> List[str]:
+        """
+        Extract asset types from domain configuration.
+
+        Args:
+            domain_config: Domain configuration dictionary
+
+        Returns:
+            List of asset types to migrate
+        """
+        # Support both 'asset_types' (preferred) and 'asset_type' (backward compatibility)
+        if 'asset_types' in domain_config:
+            asset_types = domain_config['asset_types']
+            if isinstance(asset_types, list):
+                return asset_types
+            else:
+                return [asset_types]  # Convert single item to list
+        elif 'asset_type' in domain_config:
+            # Backward compatibility: convert single asset_type to list
+            return [domain_config['asset_type']]
+        else:
+            return ["COMPUTE"]  # Default fallback
 
     def set_user_permissions(self, connection, bundle_id: str, domain_id: str, asset_type: str):
         """
@@ -109,11 +225,15 @@ class AssetOnboardingMigration:
             domain_id: Domain identifier
             asset_type: Asset type (COMPUTE, PIPELINE, DATASET, etc.)
         """
-        mapping = self.asset_mappings.get(asset_type)
-        if not mapping:
-            raise ValueError(f"Unknown asset type: {asset_type}")
+        # Validate asset configuration
+        validation = self.validate_asset_configuration(asset_type)
+        if not validation["is_valid"]:
+            raise ValueError(f"Asset configuration validation failed: {validation['error']}")
 
-        user_permissions_query = """
+        # Build dynamic permission subquery
+        permission_subquery = self.build_permission_subquery(asset_type)
+
+        user_permissions_query = f"""
             WITH all_domain_users AS (
                 SELECT dm.identity_id as username
                 FROM domain_member dm
@@ -130,20 +250,7 @@ class AssetOnboardingMigration:
                           LEFT JOIN user_role_mapping_v2 urm ON urm.username = adu.username AND urm.domain = %s
                           LEFT JOIN iam_role r ON (r.name = urm.role_name AND r.domain = urm.domain AND r.is_deleted = false)
                      OR (r.name = 'default' AND r.domain = %s AND r.is_deleted = false)
-                          CROSS JOIN LATERAL (
-                     WITH lakehouse_service AS (
-                         SELECT jsonb_path_query(r.permissions::jsonb, '$[*] ? (@.service == "lakehouse")') as lakehouse_perms
-                     )
-                     SELECT unnest(ARRAY[
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "list")') THEN 'VIEW' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "view")') THEN 'VIEW' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'UPDATE' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'DELETE' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'EXECUTE' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'CONSUME' END
-                         ]) as perm
-                     FROM lakehouse_service
-                     WHERE lakehouse_perms IS NOT NULL
+                          CROSS JOIN LATERAL ({permission_subquery.strip()}
                      ) perms
                  GROUP BY adu.username
              )
@@ -182,14 +289,17 @@ class AssetOnboardingMigration:
             connection: Database connection
             bundle_id: Bundle identifier
             domain_id: Domain identifier
-            asset_type: Asset type (typically 'COMPUTE')
+            asset_type: Asset type (COMPUTE, PIPELINE, DATASET, etc.)
         """
-        mapping = self.asset_mappings.get(asset_type)
-        if not mapping:
-            raise ValueError(f"Unknown asset type: {asset_type}")
+        # Validate asset configuration
+        validation = self.validate_asset_configuration(asset_type)
+        if not validation["is_valid"]:
+            raise ValueError(f"Asset configuration validation failed: {validation['error']}")
 
+        # Build dynamic permission subquery
+        permission_subquery = self.build_permission_subquery(asset_type)
 
-        group_permissions_query = """
+        group_permissions_query = f"""
             WITH all_domain_groups AS (
                 SELECT dm.identity_id as group_name
                 FROM domain_member dm
@@ -206,20 +316,7 @@ class AssetOnboardingMigration:
                           LEFT JOIN group_role_mapping_v2 grm ON grm.group_name = adg.group_name AND grm.domain = %s
                           LEFT JOIN iam_role r ON (r.name = grm.role_name AND r.domain = grm.domain AND r.is_deleted = false)
                      OR (r.name = 'default' AND r.domain = %s AND r.is_deleted = false)
-                          CROSS JOIN LATERAL (
-                     WITH lakehouse_service AS (
-                         SELECT jsonb_path_query(r.permissions::jsonb, '$[*] ? (@.service == "lakehouse")') as lakehouse_perms
-                     )
-                     SELECT unnest(ARRAY[
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "list")') THEN 'VIEW' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "view")') THEN 'VIEW' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'UPDATE' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'DELETE' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'EXECUTE' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'CONSUME' END
-                         ]) as perm
-                     FROM lakehouse_service
-                     WHERE lakehouse_perms IS NOT NULL
+                          CROSS JOIN LATERAL ({permission_subquery.strip()}
                      ) perms
                  GROUP BY adg.group_name
              )
@@ -340,9 +437,7 @@ class AssetOnboardingMigration:
                 return {"can_proceed": False, "owner_validation_error": owner_validation['error']}
 
         # Check if domain exists and has assets
-        asset_db = self.asset_dbs.get(asset_type)
-        if not asset_db:
-            raise ValueError(f"No database configured for asset type: {asset_type}")
+        asset_db = self.asset_db
 
         assets = self.get_domain_assets(asset_db, domain_id, asset_type)
         if not assets:
@@ -439,13 +534,26 @@ class AssetOnboardingMigration:
 
         logger.info(f"Cleared {affected_rows} existing permissions for {asset_type.lower()} from bundle {bundle_id}")
 
-    def migrate_domain(self, domain_config: Dict[str, Any]) -> bool:
-        domain_id = domain_config["domain_id"]
-        owner_id = domain_config["owner_id"]
-        owner_type = domain_config["owner_type"]
-        asset_type = domain_config.get("asset_type", "COMPUTE")
+    def migrate_single_asset_type(self, domain_id: str, owner_id: str, owner_type: str, asset_type: str) -> bool:
+        """
+        Migrate a single asset type for a domain.
 
+        Args:
+            domain_id: Domain identifier
+            owner_id: Owner identifier
+            owner_type: Owner type (USER or GROUP)
+            asset_type: Asset type to migrate
+
+        Returns:
+            True if migration successful, False otherwise
+        """
         try:
+            # Validate asset configuration before starting migration
+            asset_validation = self.validate_asset_configuration(asset_type)
+            if not asset_validation["is_valid"]:
+                logger.error(f"Asset configuration validation failed for {asset_type}: {asset_validation['error']}")
+                return False
+
             with self.bundle_migration_db.get_transaction() as mig_conn:
                 # Validation
                 validation = self.validate_domain_migration(mig_conn, domain_id, asset_type, owner_id, owner_type)
@@ -464,9 +572,7 @@ class AssetOnboardingMigration:
                     bundle_id = self.create_default_bundle(mig_conn, domain_id, owner_id, owner_type)
 
                 # Use asset DB for fetching assets
-                asset_db = self.asset_dbs.get(asset_type)
-                if not asset_db:
-                    raise Exception(f"No asset DB configured for {asset_type}")
+                asset_db = self.asset_db
 
                 asset_ids = self.get_domain_assets(asset_db, domain_id, asset_type)
 
@@ -478,8 +584,45 @@ class AssetOnboardingMigration:
                 logger.info(f"Domain {domain_id} migrated with {len(asset_ids)} {asset_type} assets")
                 return True
         except Exception as e:
-            logger.error(f"Migration failed for domain {domain_id}: {e}")
+            logger.error(f"Migration failed for domain {domain_id}, asset type {asset_type}: {e}")
             return False
+
+    def migrate_domain(self, domain_config: Dict[str, Any]) -> bool:
+        """
+        Migrate a domain with one or more asset types.
+
+        Args:
+            domain_config: Domain configuration dictionary
+
+        Returns:
+            True if all asset types migrated successfully, False otherwise
+        """
+        domain_id = domain_config["domain_id"]
+        owner_id = domain_config["owner_id"]
+        owner_type = domain_config["owner_type"]
+
+        # Get list of asset types to migrate (supports both single and multiple)
+        asset_types = self.get_asset_types_from_config(domain_config)
+
+        logger.info(f"Starting migration for domain {domain_id} with asset types: {asset_types}")
+
+        success_count = 0
+        for asset_type in asset_types:
+            logger.info(f"Migrating {asset_type} assets for domain {domain_id}")
+            if self.migrate_single_asset_type(domain_id, owner_id, owner_type, asset_type):
+                success_count += 1
+            else:
+                logger.error(f"Failed to migrate {asset_type} assets for domain {domain_id}")
+
+        total_types = len(asset_types)
+        success = success_count == total_types
+
+        if success:
+            logger.info(f"Domain {domain_id} migration completed successfully: {success_count}/{total_types} asset types")
+        else:
+            logger.error(f"Domain {domain_id} migration partially failed: {success_count}/{total_types} asset types successful")
+
+        return success
 
     def run_migration(self) -> bool:
         """
