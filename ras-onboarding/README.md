@@ -150,7 +150,7 @@ asset_mappings: {
     }
 }
 ```
-**use the mapping shared in the above configuration example for COMPUTE as is without any changes**
+**use the asset mapping shared in the above configuration example for COMPUTE as is without any changes, this is for internal use and will be deprecated in the next release**
 
 
 ### Optional Configuration Overrides
