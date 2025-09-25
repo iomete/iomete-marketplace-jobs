@@ -53,15 +53,12 @@ This job is designed for IOMETE customers migrating from domain-based asset mana
 
 The job supports multiple asset types through configurable mappings:
 
-| Asset Type | Default Table | Description                                       |
-|------------|---------------|---------------------------------------------------|
-| **COMPUTE** | `lakehouse` | Lakehouse compute resources                       |
-| **Custom Types** | Configurable | Any asset type via configuration (for future use) |
+| Asset Type | Default Table | Description                                           |
+|------------|---------------|-------------------------------------------------------|
+| **COMPUTE** | `lakehouse` | Lakehouse compute resources                           |
+| **Custom Types** | Configurable | Any asset type via configuration **(for future use)** |
 
 ## Configuration Reference
-
-### File path
-File path value should be this: `/etc/configs/application.conf`
 
 ### Complete Configuration Example
 
@@ -90,7 +87,6 @@ File path value should be this: `/etc/configs/application.conf`
             # Add more asset databases as needed (for future use)
         }
     }
-
 
     # Asset Type Mappings - (Please keep this section as is without any change)
     asset_mappings: {
