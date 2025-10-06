@@ -24,9 +24,10 @@ This README will guide you through creating and running the job template in the 
 8. [Step 6 – Monitor Execution](#step-6--monitor-execution)
 9. [Migration Logic Explained](#migration-logic-explained)
 10. [Duplicate Bundle Handling](#duplicate-bundle-handling)
-11. [Troubleshooting](#troubleshooting)
-12. [Security Notes](#security-notes)
-13. [Monitoring and Logging](#monitoring-and-logging)
+11. [Per-Asset-Type Duplicate Handling](#per-asset-type-duplicate-handling)
+12. [Troubleshooting](#troubleshooting)
+13. [Security Notes](#security-notes)
+14. [Monitoring and Logging](#monitoring-and-logging)
 
 ---
 
@@ -168,6 +169,12 @@ Main Application File: local:///app/driver.py
               view: ["VIEW"]
               manage: ["UPDATE", "DELETE", "EXECUTE", "CONSUME"]
           }
+          # Action when asset already exists in bundle: SKIP, UPDATE, ERROR, or RESET
+          # SKIP: Skip assets that already exist in the bundle
+          # UPDATE: Add new assets, merge permissions for existing ones
+          # ERROR: Raise error if any asset already exists
+          # RESET: Clear all assets and permissions for this asset type before migration
+          asset_action_on_duplicate: "UPDATE"
       }
       SPARK_JOB: {
           table: "spark_job"
@@ -180,6 +187,12 @@ Main Application File: local:///app/driver.py
               view: ["VIEW"]
               manage: ["UPDATE", "DELETE", "RUN", "CONSUME"]
           }
+          # Action when asset already exists in bundle: SKIP, UPDATE, ERROR, or RESET
+          # SKIP: Skip assets that already exist in the bundle
+          # UPDATE: Add new assets, merge permissions for existing ones
+          # ERROR: Raise error if any asset already exists
+          # RESET: Clear all assets and permissions for this asset type before migration
+          asset_action_on_duplicate: "UPDATE"
       }
   }
 }
@@ -312,7 +325,7 @@ For each domain with multiple asset types, the job processes **sequentially**
 
 When a default bundle already exists for a domain, behavior is controlled by `duplicate_bundle_action`:
 
-### FAIL (Recommended for first-time migrations)
+### FAIL (Recommended for strict checks if necessary)
 ```hocon
 duplicate_bundle_action: "FAIL"
 ```
@@ -320,7 +333,7 @@ duplicate_bundle_action: "FAIL"
 - **Use Case**: Strict mode where duplicates indicate errors
 - **Result**: Migration fails with clear error message
 
-### SKIP (Recommended for incremental migrations)
+### SKIP (Recommended for incremental migrations to skip domains if already present and no action needs to be done)
 ```hocon
 duplicate_bundle_action: "SKIP"
 ```
@@ -328,18 +341,259 @@ duplicate_bundle_action: "SKIP"
 - **Use Case**: Incremental migrations, partial re-runs
 - **Result**: Logs warning, continues with next domain
 
-### UPDATE (Recommended for ownership changes)
+### UPDATE (Recommended for ownership changes and re-migrations)
 ```hocon
 duplicate_bundle_action: "UPDATE"
 ```
-- **Behavior**: Update existing bundle and reprocess
-- **Use Case**: Ownership changes, configuration updates
+- **Behavior**: Update existing bundle and reprocess assets
+- **Use Case**: Ownership changes, configuration updates, re-migrations
 - **Actions Performed**:
     - Updates bundle ownership (owner_id, owner_type)
-    - Clears existing assets of specified type
-    - Clears existing permissions for asset type
-    - Re-adds assets with current configuration
-    - Re-processes permissions with current mappings
+    - Processes each asset type according to its `asset_action_on_duplicate` setting
+    - Re-processes permissions based on asset-specific actions
+
+---
+
+## Per-Asset-Type Duplicate Handling
+
+When `duplicate_bundle_action` is set to `UPDATE`, each asset type can have its own behavior for handling duplicate assets and permissions within the bundle. This is controlled by the `asset_action_on_duplicate` parameter in each asset mapping.
+
+### Overview
+
+Different asset types may require different migration strategies:
+- **COMPUTE** resources might need a full refresh to remove stale configurations
+- **SPARK_JOB** definitions might need incremental updates to preserve existing permissions
+- **PIPELINE** configurations might need strict validation to prevent conflicts
+
+The `asset_action_on_duplicate` parameter enables granular control per asset type within the same domain migration.
+
+### Configuration
+
+⚠️ **INTERNAL USE ONLY**: The `asset_action_on_duplicate` parameter is configured in the `asset_mappings` section and should only be modified in consultation with IOMETE support.
+
+Each asset type in `asset_mappings` must specify an `asset_action_on_duplicate` value:
+
+```hocon
+asset_mappings: {
+  COMPUTE: {
+    # ... other configuration ...
+    asset_action_on_duplicate: "RESET"  # Full refresh for compute resources
+  }
+  SPARK_JOB: {
+    # ... other configuration ...
+    asset_action_on_duplicate: "UPDATE"  # Merge permissions for job definitions
+  }
+}
+```
+
+### Available Actions
+
+#### SKIP - Incremental Asset Addition
+```hocon
+asset_action_on_duplicate: "SKIP"
+```
+- **Asset Behavior**: Only insert assets that don't already exist in the bundle
+- **Permission Behavior**: Skip permission setting if any permissions exist for this asset type
+- **Use Case**: Incremental additions where existing assets should remain unchanged
+- **Example**: Adding new compute resources without affecting existing ones
+
+**Example Log Output:**
+```
+INFO: Skipping 15 existing assets, inserting 5 new COMPUTE assets
+INFO: Skipping permission setting for COMPUTE as 12 records already exist
+```
+
+#### UPDATE - Merge and Enhance (Recommended Default)
+```hocon
+asset_action_on_duplicate: "UPDATE"
+```
+- **Asset Behavior**: Insert new assets, keep existing ones (uses SQL `ON CONFLICT DO NOTHING`)
+- **Permission Behavior**: Merge new permissions with existing ones using PostgreSQL array union
+- **Use Case**: Additive migrations where new permissions enhance existing ones
+- **Permission Merge Logic**: `existing_permissions ∪ new_permissions` (no duplicates)
+
+**Example Log Output:**
+```
+INFO: Moved 25 SPARK_JOB assets to bundle (action: UPDATE)
+INFO: Set permissions for 12 users in domain production (action: UPDATE)
+```
+
+
+#### ERROR - Strict Validation
+```hocon
+asset_action_on_duplicate: "ERROR"
+```
+- **Asset Behavior**: Raise exception if any asset already exists in the bundle
+- **Permission Behavior**: Raise exception if any permissions exist for this asset type
+- **Use Case**: Strict validation to prevent accidental overwrites
+- **Result**: Migration fails immediately with detailed error message
+
+**Example Error:**
+```
+ERROR: Asset action is ERROR and 15 compute assets already exist in bundle abc-123: ['asset-1', 'asset-2', 'asset-3', 'asset-4', 'asset-5']
+```
+
+#### RESET - Full Refresh
+```hocon
+asset_action_on_duplicate: "RESET"
+```
+- **Asset Behavior**: Clear ALL assets of this type from bundle, then insert fresh
+- **Permission Behavior**: Clear ALL permissions for this type, then set fresh
+- **Use Case**: Complete refresh to remove stale configurations
+- **Important**: Only affects the specific asset type, other asset types in the bundle remain unchanged
+
+**Example Log Output:**
+```
+INFO: RESET action: clearing COMPUTE assets and permissions from bundle abc-123
+INFO: Cleared 20 existing compute assets from bundle abc-123
+INFO: Cleared 15 existing permissions for compute from bundle abc-123
+INFO: Moved 25 compute assets to bundle abc-123 (action: RESET)
+```
+
+### Multi-Asset Type Migration Example
+
+When migrating a domain with multiple asset types and different duplicate handling strategies:
+
+**Configuration:**
+```hocon
+migration: {
+  domains: [
+    {
+      domain_id: "production"
+      owner_id: "admin_user"
+      owner_type: "USER"
+      asset_types: ["COMPUTE", "SPARK_JOB"]
+    }
+  ]
+  duplicate_bundle_action: "UPDATE"
+}
+
+asset_mappings: {
+  COMPUTE: {
+    # ... config ...
+    asset_action_on_duplicate: "RESET"    # Full refresh
+  }
+  SPARK_JOB: {
+    # ... config ...
+    asset_action_on_duplicate: "UPDATE"   # Incremental merge
+  }
+}
+```
+
+**Migration Flow:**
+```
+INFO: Starting migration for domain: production
+INFO: Found existing bundle abc-123 for domain production
+INFO: Updating bundle ownership to USER:admin_user
+
+# COMPUTE assets with RESET action
+INFO: RESET action: clearing COMPUTE assets and permissions from bundle abc-123
+INFO: Cleared 20 existing COMPUTE assets from bundle abc-123
+INFO: Cleared 15 existing COMPUTE permissions from bundle abc-123
+INFO: Moved 25 COMPUTE assets to bundle abc-123 (action: RESET)
+INFO: Set permissions for 12 users, 3 groups for COMPUTE (action: RESET)
+
+# SPARK_JOB assets with UPDATE action (merge)
+INFO: Moved 15 SPARK_JOB assets to bundle abc-123 (action: UPDATE)
+INFO: Set permissions for 8 users, 2 groups for SPARK_JOB (action: UPDATE)
+
+INFO: Domain production migrated: 25 COMPUTE (reset), 15 SPARK_JOB (merged)
+```
+
+### Decision Matrix
+
+Choose the appropriate action based on your migration scenario:
+
+| Scenario | Recommended Action | Reason |
+|----------|-------------------|---------|
+| First-time migration | `UPDATE` or `SKIP` | Safe for initial setup |
+| Re-running after failure | `SKIP` | Avoids re-processing completed assets |
+| Ownership change only | `UPDATE` | Merges new permissions with existing |
+| Configuration cleanup | `RESET` | Removes stale configurations |
+| Strict validation mode | `ERROR` | Prevents accidental overwrites |
+| Adding new resources | `SKIP` or `UPDATE` | Preserves existing assets |
+| Full system refresh | `RESET` | Clean slate for asset type |
+
+### Common Patterns
+
+#### Pattern 1: Safe Incremental Migration
+```hocon
+asset_mappings: {
+  COMPUTE: { asset_action_on_duplicate: "SKIP" }
+  SPARK_JOB: { asset_action_on_duplicate: "SKIP" }
+}
+```
+- Adds only new assets
+- Never modifies existing assets or permissions
+- Safe for repeated executions
+
+#### Pattern 2: Enhanced Permission Merge
+```hocon
+asset_mappings: {
+  COMPUTE: { asset_action_on_duplicate: "UPDATE" }
+  SPARK_JOB: { asset_action_on_duplicate: "UPDATE" }
+}
+```
+- Merges new permissions with existing ones
+- Ideal for rolling out new access controls
+- Preserves existing permissions
+
+#### Pattern 3: Selective Refresh
+```hocon
+asset_mappings: {
+  COMPUTE: { asset_action_on_duplicate: "RESET" }      # Full refresh
+  SPARK_JOB: { asset_action_on_duplicate: "UPDATE" }   # Incremental
+}
+```
+- Refreshes compute resources completely
+- Merges job permissions incrementally
+- Useful for cleaning up specific asset types
+
+#### Pattern 4: Strict Validation
+```hocon
+asset_mappings: {
+  COMPUTE: { asset_action_on_duplicate: "ERROR" }
+  SPARK_JOB: { asset_action_on_duplicate: "ERROR" }
+}
+```
+- Fails if any duplicates exist
+- Useful for testing configurations
+- Ensures clean bundle state
+
+### Troubleshooting Asset Action Issues
+
+**Issue: All assets being skipped**
+```
+INFO: All 25 compute assets already exist in bundle (action: SKIP)
+```
+**Solution**: Change action to `UPDATE` or `RESET` if you want to reprocess them.
+
+**Issue: Permission merge not working**
+```
+ERROR: Asset action is ERROR and 15 permission records already exist
+```
+**Solution**: Change from `ERROR` to `UPDATE` to enable permission merging.
+
+**Issue: Unexpected asset clearance**
+```
+INFO: Cleared 100 existing assets from bundle
+```
+**Solution**: Verify `asset_action_on_duplicate` is not set to `RESET` unless intended.
+
+**Issue: Different asset types using same action**
+```
+WARNING: All asset types configured with RESET - this will clear the entire bundle
+```
+**Solution**: Use different actions per asset type for granular control.
+
+### Best Practices
+
+1. **Start Conservative**: Use `SKIP` or `ERROR` for initial migrations to understand existing state
+2. **Use UPDATE for Normal Operations**: Most re-migrations benefit from permission merging
+3. **Reserve RESET for Cleanup**: Only use when you need to clear stale configurations
+4. **Test in Non-Production First**: Validate action combinations before production migrations
+5. **Review Logs Carefully**: Monitor per-asset-type results to ensure expected behavior
+6. **Document Your Strategy**: Keep track of which actions are used for which asset types
 
 ---
 

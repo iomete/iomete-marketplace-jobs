@@ -92,7 +92,57 @@ class AssetOnboardingMigration:
         logger.info(f"Found {len(asset_ids)} {asset_type.lower()} assets in domain {domain_id}")
         return asset_ids
 
-    def move_assets_to_bundle(self, connection, bundle_id: str, asset_ids: List[str], asset_type: str):
+    def get_existing_bundle_assets(self, connection, bundle_id: str, asset_type: str, asset_ids: List[str]) -> List[str]:
+        """
+        Get assets that already exist in the bundle.
+
+        Args:
+            connection: Database connection
+            bundle_id: Bundle identifier
+            asset_type: Asset type
+            asset_ids: List of asset IDs to check
+
+        Returns:
+            List of asset IDs that already exist in the bundle
+        """
+        if not asset_ids:
+            return []
+
+        # Build query to check which assets already exist
+        asset_ids_str = ', '.join(f"'{asset_id}'" for asset_id in asset_ids)
+        check_existing_query = f"""
+            SELECT asset_id FROM bundle_asset
+            WHERE bundle_id = %s AND asset_type = %s AND asset_id IN ({asset_ids_str})
+        """
+
+        results = self.bundle_migration_db.execute_query(connection, check_existing_query, (bundle_id, asset_type))
+        existing_asset_ids = [row['asset_id'] for row in results] if results else []
+
+        logger.info(f"Found {len(existing_asset_ids)} existing {asset_type.lower()} assets in bundle {bundle_id}")
+        return existing_asset_ids
+
+    def get_existing_bundle_permissions(self, connection, bundle_id: str, asset_type: str) -> List[Dict[str, Any]]:
+        """
+        Get existing permissions for an asset type in the bundle.
+
+        Args:
+            connection: Database connection
+            bundle_id: Bundle identifier
+            asset_type: Asset type
+
+        Returns:
+            List of existing permission records
+        """
+        check_permissions_query = """
+            SELECT actor_type, actor_id, permissions FROM bundle_permission
+            WHERE bundle_id = %s AND asset_type = %s
+        """
+
+        results = self.bundle_migration_db.execute_query(connection, check_permissions_query, (bundle_id, asset_type))
+        logger.info(f"Found {len(results)} existing permission records for {asset_type.lower()} in bundle {bundle_id}")
+        return results if results else []
+
+    def move_assets_to_bundle(self, connection, bundle_id: str, asset_ids: List[str], asset_type: str, asset_action_on_duplicate: str = 'UPDATE'):
         """
         Move assets to the default bundle.
 
@@ -101,11 +151,33 @@ class AssetOnboardingMigration:
             bundle_id: Bundle identifier
             asset_ids: List of asset IDs to move
             asset_type: Asset type (COMPUTE, PIPELINE, DATASET, etc.)
+            asset_action_on_duplicate: Action for duplicate assets (SKIP, UPDATE, ERROR, RESET)
         """
         if not asset_ids:
             logger.info(f"No {asset_type.lower()} assets to move")
             return
 
+        asset_action = asset_action_on_duplicate.upper()
+
+        # Check for existing assets
+        existing_asset_ids = self.get_existing_bundle_assets(connection, bundle_id, asset_type, asset_ids)
+
+        # Handle ERROR action
+        if asset_action == 'ERROR' and existing_asset_ids:
+            raise ValueError(
+                f"Asset action is ERROR and {len(existing_asset_ids)} {asset_type.lower()} assets already exist in bundle {bundle_id}: {existing_asset_ids[:5]}"
+            )
+
+        # Handle SKIP action - only insert new assets
+        if asset_action == 'SKIP':
+            asset_ids_to_insert = [aid for aid in asset_ids if aid not in existing_asset_ids]
+            if not asset_ids_to_insert:
+                logger.info(f"All {len(asset_ids)} {asset_type.lower()} assets already exist in bundle (action: SKIP)")
+                return
+            logger.info(f"Skipping {len(existing_asset_ids)} existing assets, inserting {len(asset_ids_to_insert)} new {asset_type.lower()} assets")
+            asset_ids = asset_ids_to_insert
+
+        # For UPDATE and RESET: insert with ON CONFLICT DO NOTHING (RESET already cleared assets)
         # Build the values clause for the insert
         values_clause = ', '.join(
             f"('{bundle_id}', '{asset_type}', '{asset_id}', current_timestamp, 'system', current_timestamp, 'system')"
@@ -115,11 +187,12 @@ class AssetOnboardingMigration:
         insert_bundle_assets_query = f"""
             INSERT INTO bundle_asset (bundle_id, asset_type, asset_id, created_at, created_by, updated_at, updated_by)
             VALUES {values_clause}
+            ON CONFLICT (bundle_id, asset_type, asset_id) DO NOTHING
         """
 
         with connection.cursor() as cursor:
             cursor.execute(insert_bundle_assets_query)
-        logger.info(f"Moved {len(asset_ids)} {asset_type.lower()} assets to bundle {bundle_id}")
+        logger.info(f"Moved {len(asset_ids)} {asset_type.lower()} assets to bundle {bundle_id} (action: {asset_action})")
 
     def build_permission_subquery(self, asset_type: str) -> str:
         """
@@ -175,7 +248,7 @@ class AssetOnboardingMigration:
                 "error": f"Asset type '{asset_type}' not found in configuration"
             }
 
-        required_fields = ['table', 'id_column', 'domain_column', 'service']
+        required_fields = ['table', 'id_column', 'domain_column', 'service', 'asset_action_on_duplicate']
         for field in required_fields:
             if not mapping.get(field):
                 return {
@@ -188,6 +261,15 @@ class AssetOnboardingMigration:
             return {
                 "is_valid": False,
                 "error": f"Missing permission_mappings for asset type '{asset_type}'"
+            }
+
+        # Validate asset_action_on_duplicate has valid value
+        valid_actions = ['SKIP', 'UPDATE', 'ERROR', 'RESET']
+        asset_action = mapping.get('asset_action_on_duplicate', '').upper()
+        if asset_action not in valid_actions:
+            return {
+                "is_valid": False,
+                "error": f"Invalid asset_action_on_duplicate '{asset_action}' for asset type '{asset_type}'. Must be one of: {', '.join(valid_actions)}"
             }
 
         return {"is_valid": True}
@@ -215,7 +297,7 @@ class AssetOnboardingMigration:
         else:
             return ["COMPUTE"]  # Default fallback
 
-    def set_user_permissions(self, connection, bundle_id: str, domain_id: str, asset_type: str):
+    def set_user_permissions(self, connection, bundle_id: str, domain_id: str, asset_type: str, asset_action_on_duplicate: str = 'UPDATE'):
         """
         Set user permissions for the bundle based on existing role mappings.
 
@@ -224,14 +306,45 @@ class AssetOnboardingMigration:
             bundle_id: Bundle identifier
             domain_id: Domain identifier
             asset_type: Asset type (COMPUTE, PIPELINE, DATASET, etc.)
+            asset_action_on_duplicate: Action for duplicate permissions (SKIP, UPDATE, ERROR, RESET)
         """
         # Validate asset configuration
         validation = self.validate_asset_configuration(asset_type)
         if not validation["is_valid"]:
             raise ValueError(f"Asset configuration validation failed: {validation['error']}")
 
+        asset_action = asset_action_on_duplicate.upper()
+
+        # Check for existing permissions
+        existing_permissions = self.get_existing_bundle_permissions(connection, bundle_id, asset_type)
+
+        # Handle ERROR action
+        if asset_action == 'ERROR' and existing_permissions:
+            raise ValueError(
+                f"Asset action is ERROR and {len(existing_permissions)} permission records already exist for {asset_type.lower()} in bundle {bundle_id}"
+            )
+
+        # Handle SKIP action
+        if asset_action == 'SKIP' and existing_permissions:
+            logger.info(f"Skipping permission setting for {asset_type.lower()} as {len(existing_permissions)} records already exist (action: SKIP)")
+            return
+
         # Build dynamic permission subquery
         permission_subquery = self.build_permission_subquery(asset_type)
+
+        # For UPDATE: merge permissions using array concatenation and deduplication
+        # For RESET: RESET already cleared permissions, so just insert
+        on_conflict_clause = ""
+        if asset_action == 'UPDATE':
+            on_conflict_clause = """
+            ON CONFLICT (bundle_id, asset_type, actor_type, actor_id)
+            DO UPDATE SET
+                permissions = ARRAY(SELECT DISTINCT unnest(bundle_permission.permissions || EXCLUDED.permissions)),
+                updated_at = current_timestamp,
+                updated_by = 'system'
+            """
+        elif asset_action == 'RESET':
+            on_conflict_clause = "ON CONFLICT (bundle_id, asset_type, actor_type, actor_id) DO NOTHING"
 
         user_permissions_query = f"""
             WITH all_domain_users AS (
@@ -268,8 +381,8 @@ class AssetOnboardingMigration:
             FROM user_all_permissions
             WHERE all_permissions IS NOT NULL
             ORDER BY username
+            {on_conflict_clause}
         """
-
 
         affected_rows = 0
         logger.debug(f"update: {user_permissions_query}")
@@ -279,9 +392,9 @@ class AssetOnboardingMigration:
                 cursor.execute(user_permissions_query, (domain_id, domain_id, domain_id, bundle_id, asset_type))
                 affected_rows = cursor.rowcount
 
-        logger.info(f"Set permissions for {affected_rows} users in domain {domain_id}")
+        logger.info(f"Set permissions for {affected_rows} users in domain {domain_id} (action: {asset_action})")
 
-    def set_group_permissions(self, connection, bundle_id: str, domain_id: str, asset_type: str):
+    def set_group_permissions(self, connection, bundle_id: str, domain_id: str, asset_type: str, asset_action_on_duplicate: str = 'UPDATE'):
         """
         Set group permissions for the bundle based on existing role mappings.
 
@@ -290,14 +403,45 @@ class AssetOnboardingMigration:
             bundle_id: Bundle identifier
             domain_id: Domain identifier
             asset_type: Asset type (COMPUTE, PIPELINE, DATASET, etc.)
+            asset_action_on_duplicate: Action for duplicate permissions (SKIP, UPDATE, ERROR, RESET)
         """
         # Validate asset configuration
         validation = self.validate_asset_configuration(asset_type)
         if not validation["is_valid"]:
             raise ValueError(f"Asset configuration validation failed: {validation['error']}")
 
+        asset_action = asset_action_on_duplicate.upper()
+
+        # Check for existing permissions
+        existing_permissions = self.get_existing_bundle_permissions(connection, bundle_id, asset_type)
+
+        # Handle ERROR action
+        if asset_action == 'ERROR' and existing_permissions:
+            raise ValueError(
+                f"Asset action is ERROR and {len(existing_permissions)} permission records already exist for {asset_type.lower()} in bundle {bundle_id}"
+            )
+
+        # Handle SKIP action
+        if asset_action == 'SKIP' and existing_permissions:
+            logger.info(f"Skipping permission setting for {asset_type.lower()} groups as {len(existing_permissions)} records already exist (action: SKIP)")
+            return
+
         # Build dynamic permission subquery
         permission_subquery = self.build_permission_subquery(asset_type)
+
+        # For UPDATE: merge permissions using array concatenation and deduplication
+        # For RESET: RESET already cleared permissions, so just insert
+        on_conflict_clause = ""
+        if asset_action == 'UPDATE':
+            on_conflict_clause = """
+            ON CONFLICT (bundle_id, asset_type, actor_type, actor_id)
+            DO UPDATE SET
+                permissions = ARRAY(SELECT DISTINCT unnest(bundle_permission.permissions || EXCLUDED.permissions)),
+                updated_at = current_timestamp,
+                updated_by = 'system'
+            """
+        elif asset_action == 'RESET':
+            on_conflict_clause = "ON CONFLICT (bundle_id, asset_type, actor_type, actor_id) DO NOTHING"
 
         group_permissions_query = f"""
             WITH all_domain_groups AS (
@@ -334,15 +478,15 @@ class AssetOnboardingMigration:
             FROM group_all_permissions
             WHERE all_permissions IS NOT NULL
             ORDER BY group_name
+            {on_conflict_clause}
         """
-
 
         affected_rows = 0
         with connection.cursor() as cursor:
             cursor.execute(group_permissions_query, (domain_id, domain_id, domain_id, bundle_id, asset_type))
             affected_rows = cursor.rowcount
 
-        logger.info(f"Set permissions for {affected_rows} groups in domain {domain_id}")
+        logger.info(f"Set permissions for {affected_rows} groups in domain {domain_id} (action: {asset_action})")
 
     def check_existing_bundle(self, connection, domain_id: str) -> Dict[str, Any]:
         """
@@ -554,6 +698,11 @@ class AssetOnboardingMigration:
                 logger.error(f"Asset configuration validation failed for {asset_type}: {asset_validation['error']}")
                 return False
 
+            # Get asset-specific duplicate action from configuration
+            asset_mapping = self.asset_mappings.get(asset_type)
+            asset_action_on_duplicate = asset_mapping.get('asset_action_on_duplicate', 'UPDATE').upper()
+            logger.info(f"Asset action on duplicate for {asset_type}: {asset_action_on_duplicate}")
+
             with self.bundle_migration_db.get_transaction() as mig_conn:
                 # Validation
                 validation = self.validate_domain_migration(mig_conn, domain_id, asset_type, owner_id, owner_type)
@@ -566,8 +715,12 @@ class AssetOnboardingMigration:
                 if is_update and existing_bundle:
                     bundle_id = existing_bundle["id"]
                     self.update_existing_bundle(mig_conn, bundle_id, owner_id, owner_type, domain_id)
-                    self.clear_bundle_assets(mig_conn, bundle_id, asset_type)
-                    self.clear_bundle_permissions(mig_conn, bundle_id, asset_type)
+
+                    # Handle RESET action - clear assets and permissions for this asset type only
+                    if asset_action_on_duplicate == 'RESET':
+                        logger.info(f"RESET action: clearing {asset_type} assets and permissions from bundle {bundle_id}")
+                        self.clear_bundle_assets(mig_conn, bundle_id, asset_type)
+                        self.clear_bundle_permissions(mig_conn, bundle_id, asset_type)
                 else:
                     bundle_id = self.create_default_bundle(mig_conn, domain_id, owner_id, owner_type)
 
@@ -576,12 +729,12 @@ class AssetOnboardingMigration:
 
                 asset_ids = self.get_domain_assets(asset_db, domain_id, asset_type)
 
-                # Insert assets + permissions into migration DB
-                self.move_assets_to_bundle(mig_conn, bundle_id, asset_ids, asset_type)
-                self.set_user_permissions(mig_conn, bundle_id, domain_id, asset_type)
-                self.set_group_permissions(mig_conn, bundle_id, domain_id, asset_type)
+                # Insert assets + permissions into migration DB with asset-specific action
+                self.move_assets_to_bundle(mig_conn, bundle_id, asset_ids, asset_type, asset_action_on_duplicate)
+                self.set_user_permissions(mig_conn, bundle_id, domain_id, asset_type, asset_action_on_duplicate)
+                self.set_group_permissions(mig_conn, bundle_id, domain_id, asset_type, asset_action_on_duplicate)
 
-                logger.info(f"Domain {domain_id} migrated with {len(asset_ids)} {asset_type} assets")
+                logger.info(f"Domain {domain_id} migrated with {len(asset_ids)} {asset_type} assets (action: {asset_action_on_duplicate})")
                 return True
         except Exception as e:
             logger.error(f"Migration failed for domain {domain_id}, asset type {asset_type}: {e}")

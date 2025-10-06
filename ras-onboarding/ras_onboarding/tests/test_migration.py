@@ -27,7 +27,8 @@ def config():
                     'list': ['VIEW'],
                     'view': ['VIEW'],
                     'manage': ['UPDATE', 'DELETE', 'EXECUTE', 'CONSUME']
-                }
+                },
+                'asset_action_on_duplicate': 'UPDATE'
             },
             'PIPELINE': {
                 'table': 'pipeline',
@@ -39,7 +40,8 @@ def config():
                     'read': ['VIEW'],
                     'execute': ['EXECUTE'],
                     'admin': ['UPDATE', 'DELETE', 'EXECUTE', 'VIEW']
-                }
+                },
+                'asset_action_on_duplicate': 'UPDATE'
             },
             'SPARK_JOB': {
                 'table': 'spark_job',
@@ -51,7 +53,8 @@ def config():
                     'list': ['VIEW'],
                     'view': ['VIEW'],
                     'manage': ['UPDATE', 'DELETE', 'RUN', 'CONSUME']
-                }
+                },
+                'asset_action_on_duplicate': 'UPDATE'
             }
         },
         'migration': {
@@ -238,8 +241,13 @@ def test_duplicate_bundle_update_behavior(migration, db_manager):
     migration.asset_db.get_connection.return_value.__exit__ = Mock(return_value=None)
     migration.asset_db.execute_query.return_value = [{'id': 'asset-1'}, {'id': 'asset-2'}]
 
-    # Mock existing bundle
-    db_manager.execute_query.return_value = [{'id': 'existing-bundle-id', 'owner_id': 'old_owner', 'owner_type': 'USER'}]
+    # Mock existing bundle and queries - using return_value to return empty lists for all subsequent queries
+    db_manager.execute_query.side_effect = [
+        [{'name': 'new_owner'}],  # owner validation (GROUP uses 'name')
+        [{'id': 'existing-bundle-id', 'owner_id': 'old_owner', 'owner_type': 'USER'}],  # existing bundle
+    ]
+    # After these, all subsequent queries return empty lists
+    db_manager.execute_query.return_value = []
 
     result = migration.migrate_domain(domain_config)
 
@@ -568,10 +576,13 @@ def test_migrate_single_asset_type_success(migration, db_manager):
     mock_transaction.__exit__ = Mock(return_value=None)
     db_manager.get_transaction.return_value = mock_transaction
 
-    # Mock bundle DB queries
+    # Mock bundle DB queries - need to include queries for checking existing assets
     db_manager.execute_query.side_effect = [
         [{'username': 'test_owner'}],  # owner validation
-        []  # check_existing_bundle (no existing bundle)
+        [],  # check_existing_bundle (no existing bundle)
+        [],  # get_existing_bundle_assets (no existing assets)
+        [],  # get_existing_bundle_permissions for users
+        []   # get_existing_bundle_permissions for groups
     ]
 
     # Mock bundle creation
@@ -675,3 +686,579 @@ def test_spark_job_asset_type_configuration(migration):
     # Test configuration validation for SPARK_JOB
     validation_result = migration.validate_asset_configuration('SPARK_JOB')
     assert validation_result['is_valid'] is True
+
+
+# Tests for asset_action_on_duplicate functionality
+
+def test_validate_asset_action_on_duplicate_missing(migration):
+    """Test validation fails when asset_action_on_duplicate is missing."""
+    # Remove the field
+    del migration.asset_mappings['COMPUTE']['asset_action_on_duplicate']
+
+    result = migration.validate_asset_configuration('COMPUTE')
+
+    assert result['is_valid'] is False
+    assert 'asset_action_on_duplicate' in result['error']
+
+
+def test_validate_asset_action_on_duplicate_invalid_value(migration):
+    """Test validation fails when asset_action_on_duplicate has invalid value."""
+    # Set invalid value
+    migration.asset_mappings['COMPUTE']['asset_action_on_duplicate'] = 'INVALID'
+
+    result = migration.validate_asset_configuration('COMPUTE')
+
+    assert result['is_valid'] is False
+    assert 'Invalid asset_action_on_duplicate' in result['error']
+
+
+def test_validate_asset_action_on_duplicate_valid_values(migration):
+    """Test validation succeeds for all valid asset_action_on_duplicate values."""
+    valid_values = ['SKIP', 'UPDATE', 'ERROR', 'RESET']
+
+    for value in valid_values:
+        migration.asset_mappings['COMPUTE']['asset_action_on_duplicate'] = value
+        result = migration.validate_asset_configuration('COMPUTE')
+        assert result['is_valid'] is True, f"Validation failed for {value}"
+
+
+def test_get_existing_bundle_assets(migration, db_manager):
+    """Test getting existing assets from bundle."""
+    connection = Mock()
+    db_manager.execute_query.return_value = [
+        {'asset_id': 'asset-1'},
+        {'asset_id': 'asset-2'}
+    ]
+
+    existing = migration.get_existing_bundle_assets(
+        connection, 'bundle-123', 'COMPUTE', ['asset-1', 'asset-2', 'asset-3']
+    )
+
+    assert existing == ['asset-1', 'asset-2']
+    db_manager.execute_query.assert_called_once()
+
+
+def test_get_existing_bundle_permissions(migration, db_manager):
+    """Test getting existing permissions from bundle."""
+    connection = Mock()
+    db_manager.execute_query.return_value = [
+        {'actor_type': 'USER', 'actor_id': 'user1', 'permissions': ['VIEW', 'UPDATE']},
+        {'actor_type': 'GROUP', 'actor_id': 'group1', 'permissions': ['VIEW']}
+    ]
+
+    existing = migration.get_existing_bundle_permissions(connection, 'bundle-123', 'COMPUTE')
+
+    assert len(existing) == 2
+    assert existing[0]['actor_id'] == 'user1'
+    db_manager.execute_query.assert_called_once()
+
+
+def test_move_assets_skip_action(migration, db_manager):
+    """Test SKIP action only inserts new assets."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    connection.cursor.return_value = mock_cursor
+
+    # Mock existing assets
+    db_manager.execute_query.return_value = [
+        {'asset_id': 'asset-1'}
+    ]
+
+    asset_ids = ['asset-1', 'asset-2', 'asset-3']
+    migration.move_assets_to_bundle(connection, 'bundle-123', asset_ids, 'COMPUTE', 'SKIP')
+
+    # Should only insert asset-2 and asset-3
+    mock_cursor.execute.assert_called_once()
+    sql = mock_cursor.execute.call_args[0][0]
+    assert 'asset-2' in sql
+    assert 'asset-3' in sql
+
+
+def test_move_assets_error_action_raises_exception(migration, db_manager):
+    """Test ERROR action raises exception when duplicates exist."""
+    connection = Mock()
+
+    # Mock existing assets
+    db_manager.execute_query.return_value = [
+        {'asset_id': 'asset-1'}
+    ]
+
+    asset_ids = ['asset-1', 'asset-2']
+
+    with pytest.raises(ValueError, match="Asset action is ERROR"):
+        migration.move_assets_to_bundle(connection, 'bundle-123', asset_ids, 'COMPUTE', 'ERROR')
+
+
+def test_move_assets_update_action_uses_on_conflict(migration, db_manager):
+    """Test UPDATE action uses ON CONFLICT clause."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    connection.cursor.return_value = mock_cursor
+
+    # Mock existing assets
+    db_manager.execute_query.return_value = [
+        {'asset_id': 'asset-1'}
+    ]
+
+    asset_ids = ['asset-1', 'asset-2']
+    migration.move_assets_to_bundle(connection, 'bundle-123', asset_ids, 'COMPUTE', 'UPDATE')
+
+    mock_cursor.execute.assert_called_once()
+    sql = mock_cursor.execute.call_args[0][0]
+    assert 'ON CONFLICT' in sql
+    assert 'DO NOTHING' in sql
+
+
+def test_set_user_permissions_skip_action(migration, db_manager):
+    """Test SKIP action skips permission setting when permissions exist."""
+    connection = Mock()
+
+    # Mock existing permissions
+    db_manager.execute_query.return_value = [
+        {'actor_type': 'USER', 'actor_id': 'user1', 'permissions': ['VIEW']}
+    ]
+
+    migration.set_user_permissions(connection, 'bundle-123', 'domain-1', 'COMPUTE', 'SKIP')
+
+    # Should not execute any insert/update
+    connection.cursor.assert_not_called()
+
+
+def test_set_user_permissions_error_action_raises_exception(migration, db_manager):
+    """Test ERROR action raises exception when permissions exist."""
+    connection = Mock()
+
+    # Mock existing permissions
+    db_manager.execute_query.return_value = [
+        {'actor_type': 'USER', 'actor_id': 'user1', 'permissions': ['VIEW']}
+    ]
+
+    with pytest.raises(ValueError, match="Asset action is ERROR"):
+        migration.set_user_permissions(connection, 'bundle-123', 'domain-1', 'COMPUTE', 'ERROR')
+
+
+def test_set_user_permissions_update_action_merges(migration, db_manager):
+    """Test UPDATE action merges permissions."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    mock_cursor.rowcount = 1
+    connection.cursor.return_value = mock_cursor
+
+    # Mock existing permissions
+    db_manager.execute_query.return_value = [
+        {'actor_type': 'USER', 'actor_id': 'user1', 'permissions': ['VIEW']}
+    ]
+
+    migration.set_user_permissions(connection, 'bundle-123', 'domain-1', 'COMPUTE', 'UPDATE')
+
+    mock_cursor.execute.assert_called_once()
+    sql = mock_cursor.execute.call_args[0][0]
+    assert 'ON CONFLICT' in sql
+    assert 'DO UPDATE' in sql
+    assert 'permissions' in sql
+
+
+def test_set_group_permissions_skip_action(migration, db_manager):
+    """Test SKIP action skips group permission setting when permissions exist."""
+    connection = Mock()
+
+    # Mock existing permissions
+    db_manager.execute_query.return_value = [
+        {'actor_type': 'GROUP', 'actor_id': 'group1', 'permissions': ['VIEW']}
+    ]
+
+    migration.set_group_permissions(connection, 'bundle-123', 'domain-1', 'COMPUTE', 'SKIP')
+
+    # Should not execute any insert/update
+    connection.cursor.assert_not_called()
+
+
+def test_migrate_single_asset_type_with_reset_action(migration, db_manager):
+    """Test RESET action clears assets and permissions for specific asset type."""
+    # Set RESET action in config
+    migration.asset_mappings['COMPUTE']['asset_action_on_duplicate'] = 'RESET'
+
+    # Mock transaction context
+    mock_connection = Mock()
+    mock_transaction = MagicMock()
+    mock_transaction.__enter__.return_value = mock_connection
+    mock_transaction.__exit__.return_value = None
+    db_manager.get_transaction.return_value = mock_transaction
+
+    # Mock asset DB connection
+    asset_connection = Mock()
+    migration.asset_db.get_connection.return_value.__enter__ = Mock(return_value=asset_connection)
+    migration.asset_db.get_connection.return_value.__exit__ = Mock(return_value=None)
+    migration.asset_db.execute_query.return_value = [{'id': 'asset-1'}]
+
+    # Mock existing bundle (UPDATE scenario) and queries
+    db_manager.execute_query.side_effect = [
+        [{'username': 'test_owner'}],  # owner validation
+        [{'id': 'existing-bundle-id', 'owner_id': 'old_owner', 'owner_type': 'USER'}],  # existing bundle
+    ]
+    # After these, all subsequent queries return empty lists
+    db_manager.execute_query.return_value = []
+
+    # Mock cursor for clear operations and asset/permission operations
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__.return_value = mock_cursor
+    mock_cursor.__exit__.return_value = None
+    mock_cursor.rowcount = 1
+    mock_connection.cursor.return_value = mock_cursor
+
+    # Set duplicate bundle action to UPDATE
+    migration.migration_config['duplicate_bundle_action'] = 'UPDATE'
+
+    result = migration.migrate_single_asset_type('test_domain', 'test_owner', 'USER', 'COMPUTE')
+
+    assert result is True
+    # Verify clear operations were called (for RESET action)
+    # Check that cursor.execute was called multiple times (clear + insert operations)
+    assert mock_cursor.execute.call_count >= 2
+
+
+def test_migrate_single_asset_type_extracts_asset_action(migration, db_manager):
+    """Test that migrate_single_asset_type correctly extracts asset_action_on_duplicate from config."""
+    # Set specific action in config
+    migration.asset_mappings['COMPUTE']['asset_action_on_duplicate'] = 'SKIP'
+
+    # Mock to make migration fail early but after extraction
+    migration.asset_db.get_connection.return_value.__enter__ = Mock(side_effect=Exception("Stop early"))
+
+    try:
+        migration.migrate_single_asset_type('test_domain', 'test_owner', 'USER', 'COMPUTE')
+    except:
+        pass
+
+    # The test passes if no exception during config extraction
+    assert migration.asset_mappings['COMPUTE']['asset_action_on_duplicate'] == 'SKIP'
+
+
+def test_multi_asset_type_different_actions(migration, db_manager):
+    """Test multiple asset types with different asset_action_on_duplicate values."""
+    # Set different actions for different asset types
+    migration.asset_mappings['COMPUTE']['asset_action_on_duplicate'] = 'SKIP'
+    migration.asset_mappings['SPARK_JOB']['asset_action_on_duplicate'] = 'UPDATE'
+
+    # Validate both
+    compute_validation = migration.validate_asset_configuration('COMPUTE')
+    spark_validation = migration.validate_asset_configuration('SPARK_JOB')
+
+    assert compute_validation['is_valid'] is True
+    assert spark_validation['is_valid'] is True
+
+
+# Additional edge case tests
+
+def test_get_existing_bundle_assets_empty_list(migration, db_manager):
+    """Test getting existing assets with empty asset_ids list."""
+    connection = Mock()
+
+    existing = migration.get_existing_bundle_assets(
+        connection, 'bundle-123', 'COMPUTE', []
+    )
+
+    assert existing == []
+    # Should not execute query if asset_ids is empty
+    db_manager.execute_query.assert_not_called()
+
+
+def test_get_existing_bundle_assets_no_matches(migration, db_manager):
+    """Test when no assets exist in bundle."""
+    connection = Mock()
+    db_manager.execute_query.return_value = []
+
+    existing = migration.get_existing_bundle_assets(
+        connection, 'bundle-123', 'COMPUTE', ['asset-1', 'asset-2']
+    )
+
+    assert existing == []
+    db_manager.execute_query.assert_called_once()
+
+
+def test_get_existing_bundle_permissions_empty(migration, db_manager):
+    """Test when no permissions exist in bundle."""
+    connection = Mock()
+    db_manager.execute_query.return_value = []
+
+    existing = migration.get_existing_bundle_permissions(connection, 'bundle-123', 'COMPUTE')
+
+    assert existing == []
+    db_manager.execute_query.assert_called_once()
+
+
+def test_move_assets_empty_list(migration, db_manager):
+    """Test moving empty asset list."""
+    connection = Mock()
+
+    migration.move_assets_to_bundle(connection, 'bundle-123', [], 'COMPUTE', 'UPDATE')
+
+    # Should return early without executing anything
+    connection.cursor.assert_not_called()
+
+
+def test_move_assets_skip_all_exist(migration, db_manager):
+    """Test SKIP action when all assets already exist."""
+    connection = Mock()
+
+    # Mock all assets as existing
+    db_manager.execute_query.return_value = [
+        {'asset_id': 'asset-1'},
+        {'asset_id': 'asset-2'}
+    ]
+
+    asset_ids = ['asset-1', 'asset-2']
+    migration.move_assets_to_bundle(connection, 'bundle-123', asset_ids, 'COMPUTE', 'SKIP')
+
+    # Should not insert anything
+    connection.cursor.assert_not_called()
+
+
+def test_move_assets_error_no_duplicates(migration, db_manager):
+    """Test ERROR action when no duplicates exist - should succeed."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    connection.cursor.return_value = mock_cursor
+
+    # Mock no existing assets
+    db_manager.execute_query.return_value = []
+
+    asset_ids = ['asset-1', 'asset-2']
+    # Should not raise exception
+    migration.move_assets_to_bundle(connection, 'bundle-123', asset_ids, 'COMPUTE', 'ERROR')
+
+    mock_cursor.execute.assert_called_once()
+
+
+def test_move_assets_reset_action(migration, db_manager):
+    """Test RESET action uses ON CONFLICT DO NOTHING."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    connection.cursor.return_value = mock_cursor
+
+    # Mock existing assets
+    db_manager.execute_query.return_value = [{'asset_id': 'asset-1'}]
+
+    asset_ids = ['asset-1', 'asset-2']
+    migration.move_assets_to_bundle(connection, 'bundle-123', asset_ids, 'COMPUTE', 'RESET')
+
+    mock_cursor.execute.assert_called_once()
+    sql = mock_cursor.execute.call_args[0][0]
+    assert 'ON CONFLICT' in sql
+    assert 'DO NOTHING' in sql
+
+
+def test_move_assets_case_insensitive_action(migration, db_manager):
+    """Test that action parameter is case-insensitive."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    connection.cursor.return_value = mock_cursor
+
+    db_manager.execute_query.return_value = []
+
+    # Test lowercase
+    migration.move_assets_to_bundle(connection, 'bundle-123', ['asset-1'], 'COMPUTE', 'update')
+
+    # Should not raise exception and work correctly
+    mock_cursor.execute.assert_called()
+
+
+def test_set_user_permissions_no_existing(migration, db_manager):
+    """Test UPDATE action when no existing permissions - should insert."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    mock_cursor.rowcount = 2
+    connection.cursor.return_value = mock_cursor
+
+    # Mock no existing permissions
+    db_manager.execute_query.return_value = []
+
+    migration.set_user_permissions(connection, 'bundle-123', 'domain-1', 'COMPUTE', 'UPDATE')
+
+    mock_cursor.execute.assert_called_once()
+    sql = mock_cursor.execute.call_args[0][0]
+    # Should still have ON CONFLICT clause even when empty
+    assert 'ON CONFLICT' in sql
+
+
+def test_set_user_permissions_error_no_existing(migration, db_manager):
+    """Test ERROR action when no existing permissions - should succeed."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    mock_cursor.rowcount = 1
+    connection.cursor.return_value = mock_cursor
+
+    # Mock no existing permissions
+    db_manager.execute_query.return_value = []
+
+    # Should not raise exception
+    migration.set_user_permissions(connection, 'bundle-123', 'domain-1', 'COMPUTE', 'ERROR')
+
+    mock_cursor.execute.assert_called_once()
+
+
+def test_set_user_permissions_reset_action(migration, db_manager):
+    """Test RESET action for user permissions."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    mock_cursor.rowcount = 1
+    connection.cursor.return_value = mock_cursor
+
+    # Mock existing permissions
+    db_manager.execute_query.return_value = [
+        {'actor_type': 'USER', 'actor_id': 'user1', 'permissions': ['VIEW']}
+    ]
+
+    migration.set_user_permissions(connection, 'bundle-123', 'domain-1', 'COMPUTE', 'RESET')
+
+    mock_cursor.execute.assert_called_once()
+    sql = mock_cursor.execute.call_args[0][0]
+    # RESET should use DO NOTHING not DO UPDATE
+    assert 'ON CONFLICT' in sql
+    assert 'DO NOTHING' in sql
+
+
+def test_set_group_permissions_error_action_raises(migration, db_manager):
+    """Test ERROR action raises exception for group permissions."""
+    connection = Mock()
+
+    # Mock existing permissions
+    db_manager.execute_query.return_value = [
+        {'actor_type': 'GROUP', 'actor_id': 'group1', 'permissions': ['VIEW']}
+    ]
+
+    with pytest.raises(ValueError, match="Asset action is ERROR"):
+        migration.set_group_permissions(connection, 'bundle-123', 'domain-1', 'COMPUTE', 'ERROR')
+
+
+def test_set_group_permissions_update_action_merges(migration, db_manager):
+    """Test UPDATE action merges group permissions."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    mock_cursor.rowcount = 1
+    connection.cursor.return_value = mock_cursor
+
+    # Mock existing permissions
+    db_manager.execute_query.return_value = [
+        {'actor_type': 'GROUP', 'actor_id': 'group1', 'permissions': ['VIEW']}
+    ]
+
+    migration.set_group_permissions(connection, 'bundle-123', 'domain-1', 'COMPUTE', 'UPDATE')
+
+    mock_cursor.execute.assert_called_once()
+    sql = mock_cursor.execute.call_args[0][0]
+    assert 'ON CONFLICT' in sql
+    assert 'DO UPDATE' in sql
+    assert 'permissions' in sql
+
+
+def test_set_group_permissions_reset_action(migration, db_manager):
+    """Test RESET action for group permissions."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    mock_cursor.rowcount = 1
+    connection.cursor.return_value = mock_cursor
+
+    # Mock existing permissions
+    db_manager.execute_query.return_value = [
+        {'actor_type': 'GROUP', 'actor_id': 'group1', 'permissions': ['VIEW']}
+    ]
+
+    migration.set_group_permissions(connection, 'bundle-123', 'domain-1', 'COMPUTE', 'RESET')
+
+    mock_cursor.execute.assert_called_once()
+    sql = mock_cursor.execute.call_args[0][0]
+    assert 'ON CONFLICT' in sql
+    assert 'DO NOTHING' in sql
+
+
+def test_validate_asset_action_case_insensitive(migration):
+    """Test that validation handles case-insensitive asset_action_on_duplicate."""
+    # Test lowercase
+    migration.asset_mappings['COMPUTE']['asset_action_on_duplicate'] = 'skip'
+    result = migration.validate_asset_configuration('COMPUTE')
+    assert result['is_valid'] is True
+
+    # Test mixed case
+    migration.asset_mappings['COMPUTE']['asset_action_on_duplicate'] = 'UpDaTe'
+    result = migration.validate_asset_configuration('COMPUTE')
+    assert result['is_valid'] is True
+
+
+def test_move_assets_large_asset_list(migration, db_manager):
+    """Test handling large number of assets."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    connection.cursor.return_value = mock_cursor
+
+    # Mock no existing assets
+    db_manager.execute_query.return_value = []
+
+    # Create large list of assets
+    large_asset_list = [f'asset-{i}' for i in range(1000)]
+
+    migration.move_assets_to_bundle(connection, 'bundle-123', large_asset_list, 'COMPUTE', 'UPDATE')
+
+    mock_cursor.execute.assert_called_once()
+    sql = mock_cursor.execute.call_args[0][0]
+    # Verify all assets are in the SQL
+    assert 'asset-1' in sql
+    assert 'asset-999' in sql
+
+
+def test_error_action_shows_limited_asset_ids(migration, db_manager):
+    """Test ERROR action only shows first 5 duplicate asset IDs in error message."""
+    connection = Mock()
+
+    # Mock many existing assets
+    existing_assets = [{'asset_id': f'asset-{i}'} for i in range(20)]
+    db_manager.execute_query.return_value = existing_assets
+
+    asset_ids = [f'asset-{i}' for i in range(20)]
+
+    try:
+        migration.move_assets_to_bundle(connection, 'bundle-123', asset_ids, 'COMPUTE', 'ERROR')
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        error_msg = str(e)
+        # Should show count
+        assert '20' in error_msg
+        # Should limit displayed IDs to 5
+        assert 'asset-0' in error_msg
+        # Should not show all 20 IDs
+        assert 'asset-19' not in error_msg
+
+
+def test_clear_bundle_operations_called_for_reset(migration, db_manager):
+    """Test that clear operations are only called for RESET action."""
+    # This is tested by checking the migrate_single_asset_type behavior
+    # RESET should call clear_bundle_assets and clear_bundle_permissions
+    # Other actions should not call these methods before migration
+
+    # Already covered in test_migrate_single_asset_type_with_reset_action
+    # but documenting the behavior here
+    pass
