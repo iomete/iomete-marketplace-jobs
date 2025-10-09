@@ -8,6 +8,8 @@ from functools import cache
 import requests
 
 from data_compaction_job.config import ApplicationConfig, RewriteManifestsConfig
+from data_compaction_job.constants import CompactionOperation, ConfigProperty
+from data_compaction_job.decorators import operation_enabled, timer
 from data_compaction_job.table_parser import parse_table_list, get_table_config_override
 from stats_emitter import emit_stats, init_emitter, close_emitter
 
@@ -92,7 +94,7 @@ class SqlCompaction:
             self.__run_compaction_operations(catalog, database, table_name)
 
     def __run_compaction_operations(self, catalog, database, table_name):
-        """Run all compaction operations for a table"""
+        """Run enabled compaction operations for a table"""
         self.__rewrite_manifest(catalog, database, table_name)
         self.__rewrite_data_files(catalog, database, table_name)
         self.__expire_snapshots(catalog, database, table_name)
@@ -126,14 +128,15 @@ class SqlCompaction:
             logger.error(f"[{database}.{table_name}] Failed to set G.C. enabled to {enabled}: {e}")
             raise e
 
+    @operation_enabled(CompactionOperation.EXPIRE_SNAPSHOT)
     @emit_stats("EXPIRE_SNAPSHOTS")
     def __expire_snapshots(self, catalog, database, table_name):
         timestamp = datetime.now() - timedelta(minutes=5)
         retain_last = int(get_table_config_override(self.config.table_overrides,
                                                     database,
                                                     table_name,
-                                                    "expire_snapshot",
-                                                    "retain_last")
+                                                    CompactionOperation.EXPIRE_SNAPSHOT.value,
+                                                    ConfigProperty.RETAIN_LAST.value)
                           or self.config.expire_snapshot.retain_last)
         options = (f"table => '`{catalog}`.`{database}`.`{table_name}`',"
                    f" retain_last => {retain_last},"
@@ -142,13 +145,14 @@ class SqlCompaction:
         result = self.spark.sql(query).collect()
         return result, query
 
+    @operation_enabled(CompactionOperation.REMOVE_ORPHAN_FILES)
     @emit_stats("REMOVE_ORPHAN_FILES")
     def __remove_orphan_files(self, catalog, database, table_name):
         days = int(get_table_config_override(self.config.table_overrides,
                                              database,
                                              table_name,
-                                             "remove_orphan_files",
-                                             "older_than_days")
+                                             CompactionOperation.REMOVE_ORPHAN_FILES.value,
+                                             ConfigProperty.OLDER_THAN_DAYS.value)
                    or self.config.remove_orphan_files.older_than_days)
         timestamp = datetime.now(timezone.utc) - timedelta(days=days)
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`', older_than => TIMESTAMP '{timestamp}'"
@@ -156,14 +160,15 @@ class SqlCompaction:
         result = self.spark.sql(query).collect()
         return result, query
 
+    @operation_enabled(CompactionOperation.REWRITE_MANIFESTS)
     @emit_stats("REWRITE_MANIFESTS")
     def __rewrite_manifest(self, catalog, database, table_name):
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`'"
         use_caching = (get_table_config_override(self.config.table_overrides,
                                                  database,
                                                  table_name,
-                                                 "rewrite_manifest",
-                                                 "use_caching")
+                                                 CompactionOperation.REWRITE_MANIFESTS.value,
+                                                 ConfigProperty.USE_CACHING.value)
                        or self.config.rewrite_manifests.use_caching)
         if use_caching:
             use_caching = str(use_caching).lower()
@@ -172,31 +177,32 @@ class SqlCompaction:
         result = self.spark.sql(query).collect()
         return result, query
 
+    @operation_enabled(CompactionOperation.REWRITE_DATA_FILES)
     @emit_stats("REWRITE_DATA_FILES")
     def __rewrite_data_files(self, catalog, database, table_name):
         strategy = (get_table_config_override(self.config.table_overrides,
                                               database,
                                               table_name,
-                                              "rewrite_data_files",
-                                              "strategy")
+                                              CompactionOperation.REWRITE_DATA_FILES.value,
+                                              ConfigProperty.STRATEGY.value)
                     or self.config.rewrite_data_files.strategy)
         sort_order = (get_table_config_override(self.config.table_overrides,
                                                 database,
                                                 table_name,
-                                                "rewrite_data_files",
-                                                "sort_order")
+                                                CompactionOperation.REWRITE_DATA_FILES.value,
+                                                ConfigProperty.SORT_ORDER.value)
                       or self.config.rewrite_data_files.sort_order)
         rewrite_options = (get_table_config_override(self.config.table_overrides,
                                                      database,
                                                      table_name,
-                                                     "rewrite_data_files",
-                                                     "options")
+                                                     CompactionOperation.REWRITE_DATA_FILES.value,
+                                                     ConfigProperty.OPTIONS.value)
                            or self.config.rewrite_data_files.options)
         where = (get_table_config_override(self.config.table_overrides,
                                            database,
                                            table_name,
-                                           "rewrite_data_files",
-                                           "where")
+                                           CompactionOperation.REWRITE_DATA_FILES.value,
+                                           ConfigProperty.WHERE.value)
                  or self.config.rewrite_data_files.where)
 
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`'"
@@ -252,21 +258,6 @@ class SqlCompaction:
     @cache
     def __get_table_includes(self):
         return parse_table_list(self.config.include_exclude.table_include, self._databases)
-
-
-def timer(message: str):
-    def timer_decorator(method):
-        def timer_func(*args, **kw):
-            logger.debug(f"{message} started")
-            start_time = time.time()
-            result = method(*args, **kw)
-            duration = (time.time() - start_time)
-            logger.info(f"{message} completed in {duration:0.2f} seconds")
-            return result
-
-        return timer_func
-
-    return timer_decorator
 
 
 class SqlClient:

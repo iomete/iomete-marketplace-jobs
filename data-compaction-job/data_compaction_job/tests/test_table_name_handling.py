@@ -4,6 +4,7 @@
 
 from unittest.mock import patch
 from data_compaction_job.config import ApplicationConfig, IncludeExcludeConfig
+from data_compaction_job.constants import CompactionOperation, ConfigProperty
 from data_compaction_job.sql_compaction import SqlCompaction
 from data_compaction_job.table_parser import get_table_config_override
 from data_compaction_job.tests._spark_session import get_spark_session
@@ -124,15 +125,15 @@ class TestTableNameHandling:
         config.catalog = "spark_catalog"
         config.table_overrides = {
             "db1.table1": {
-                "expire_snapshot": {
-                    "retain_last": 5
+                CompactionOperation.EXPIRE_SNAPSHOT.value: {
+                    ConfigProperty.RETAIN_LAST.value: 5
                 }
             }
         }
 
         result = get_table_config_override(
             config.table_overrides,
-            "db1", "table1", "expire_snapshot", "retain_last"
+            "db1", "table1", CompactionOperation.EXPIRE_SNAPSHOT.value, ConfigProperty.RETAIN_LAST.value
         )
 
         assert result == 5
@@ -145,8 +146,8 @@ class TestTableNameHandling:
         config.catalog = "spark_catalog"
         config.table_overrides = {
             "table1": {
-                "expire_snapshot": {
-                    "retain_last": 5
+                CompactionOperation.EXPIRE_SNAPSHOT.value: {
+                    ConfigProperty.RETAIN_LAST.value: 5
                 }
             }
         }
@@ -154,11 +155,11 @@ class TestTableNameHandling:
         # Should work for any database
         result1 = get_table_config_override(
             config.table_overrides,
-            "db1", "table1", "expire_snapshot", "retain_last"
+            "db1", "table1", CompactionOperation.EXPIRE_SNAPSHOT.value, ConfigProperty.RETAIN_LAST.value
         )
         result2 = get_table_config_override(
             config.table_overrides,
-            "db2", "table1", "expire_snapshot", "retain_last"
+            "db2", "table1", CompactionOperation.EXPIRE_SNAPSHOT.value, ConfigProperty.RETAIN_LAST.value
         )
 
         assert result1 == 5
@@ -172,13 +173,13 @@ class TestTableNameHandling:
         config.catalog = "spark_catalog"
         config.table_overrides = {
             "table1": {
-                "expire_snapshot": {
-                    "retain_last": 3
+                CompactionOperation.EXPIRE_SNAPSHOT.value: {
+                    ConfigProperty.RETAIN_LAST.value: 3
                 }
             },
             "db1.table1": {
-                "expire_snapshot": {
-                    "retain_last": 10
+                CompactionOperation.EXPIRE_SNAPSHOT.value: {
+                    ConfigProperty.RETAIN_LAST.value: 10
                 }
             }
         }
@@ -186,13 +187,13 @@ class TestTableNameHandling:
         # db1.table1 should get the specific override (10)
         result1 = get_table_config_override(
             config.table_overrides,
-            "db1", "table1", "expire_snapshot", "retain_last"
+            "db1", "table1", CompactionOperation.EXPIRE_SNAPSHOT.value, ConfigProperty.RETAIN_LAST.value
         )
 
         # db2.table1 should get the general override (3)
         result2 = get_table_config_override(
             config.table_overrides,
-            "db2", "table1", "expire_snapshot", "retain_last"
+            "db2", "table1", CompactionOperation.EXPIRE_SNAPSHOT.value, ConfigProperty.RETAIN_LAST.value
         )
 
         assert result1 == 10
