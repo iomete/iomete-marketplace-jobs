@@ -235,10 +235,16 @@ class SqlCompaction:
             tables = available_tables
         return tables
 
-    @cache
-    def __get_table_excludes(self):
+    def __parse_table_list(self, table_list):
+        """
+        Parse a list of table names into a mapping of database -> list of tables.
+
+        Supports two formats:
+        - <database>.<table> - applies to specific table in specific database
+        - <table> - applies to table in all databases specified in config
+        """
         mapping = defaultdict(list)
-        for table in self.config.include_exclude.table_exclude:
+        for table in table_list:
             table_split = table.split('.')
             if len(table_split) == 2:
                 # Table name provided with database prefix (database.table)
@@ -257,25 +263,12 @@ class SqlCompaction:
         return mapping
 
     @cache
+    def __get_table_excludes(self):
+        return self.__parse_table_list(self.config.include_exclude.table_exclude)
+
+    @cache
     def __get_table_includes(self):
-        mapping = defaultdict(list)
-        for table in self.config.include_exclude.table_include:
-            table_split = table.split('.')
-            if len(table_split) == 2:
-                # Table name provided with database prefix (database.table)
-                mapping[table_split[0]].append(table_split[1])
-            elif len(table_split) == 1:
-                # Table name provided without database prefix
-                # Apply to all databases in the config
-                if self.config.include_exclude.databases:
-                    for database in self.config.include_exclude.databases:
-                        mapping[database].append(table_split[0])
-                else:
-                    logger.warning(f"Table '{table}' provided without database prefix and no databases specified in config. "
-                                   f"Please provide table in format <database>.<table> or specify databases in config.")
-            else:
-                logger.warning(f"Invalid table format: {table}. Please provide table in format <database>.<table> or <table>")
-        return mapping
+        return self.__parse_table_list(self.config.include_exclude.table_include)
 
     def __get_final_config_for_table(self, database, table, operation, config_name):
         if self.config.table_overrides:
