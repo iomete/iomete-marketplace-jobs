@@ -5,6 +5,7 @@
 from unittest.mock import patch
 from data_compaction_job.config import ApplicationConfig, IncludeExcludeConfig
 from data_compaction_job.sql_compaction import SqlCompaction
+from data_compaction_job.table_parser import get_table_config_override
 from data_compaction_job.tests._spark_session import get_spark_session
 
 
@@ -42,7 +43,6 @@ class TestTableNameHandling:
         config.include_exclude.table_include = ["table1"]
 
         compaction = SqlCompaction(spark, config)
-        # Simulate setting _databases (as would happen in run_compaction)
         compaction._databases = ["db1", "db2"]
         table_includes = compaction._SqlCompaction__get_table_includes()
 
@@ -63,7 +63,6 @@ class TestTableNameHandling:
         config.include_exclude.table_include = ["db1.specific_table", "common_table"]
 
         compaction = SqlCompaction(spark, config)
-        # Simulate setting _databases (as would happen in run_compaction)
         compaction._databases = ["db1", "db2"]
         table_includes = compaction._SqlCompaction__get_table_includes()
 
@@ -108,7 +107,6 @@ class TestTableNameHandling:
         config.include_exclude.table_exclude = ["table1"]
 
         compaction = SqlCompaction(spark, config)
-        # Simulate setting _databases (as would happen in run_compaction)
         compaction._databases = ["db1", "db2"]
         table_excludes = compaction._SqlCompaction__get_table_excludes()
 
@@ -132,8 +130,8 @@ class TestTableNameHandling:
             }
         }
 
-        compaction = SqlCompaction(spark, config)
-        result = compaction._SqlCompaction__get_final_config_for_table(
+        result = get_table_config_override(
+            config.table_overrides,
             "db1", "table1", "expire_snapshot", "retain_last"
         )
 
@@ -153,13 +151,13 @@ class TestTableNameHandling:
             }
         }
 
-        compaction = SqlCompaction(spark, config)
-
         # Should work for any database
-        result1 = compaction._SqlCompaction__get_final_config_for_table(
+        result1 = get_table_config_override(
+            config.table_overrides,
             "db1", "table1", "expire_snapshot", "retain_last"
         )
-        result2 = compaction._SqlCompaction__get_final_config_for_table(
+        result2 = get_table_config_override(
+            config.table_overrides,
             "db2", "table1", "expire_snapshot", "retain_last"
         )
 
@@ -185,15 +183,15 @@ class TestTableNameHandling:
             }
         }
 
-        compaction = SqlCompaction(spark, config)
-
         # db1.table1 should get the specific override (10)
-        result1 = compaction._SqlCompaction__get_final_config_for_table(
+        result1 = get_table_config_override(
+            config.table_overrides,
             "db1", "table1", "expire_snapshot", "retain_last"
         )
 
         # db2.table1 should get the general override (3)
-        result2 = compaction._SqlCompaction__get_final_config_for_table(
+        result2 = get_table_config_override(
+            config.table_overrides,
             "db2", "table1", "expire_snapshot", "retain_last"
         )
 
@@ -211,7 +209,6 @@ class TestTableNameHandling:
         config.include_exclude.table_include = ["table1"]
 
         compaction = SqlCompaction(spark, config)
-        # Simulate setting _databases (as would happen in run_compaction)
         compaction._databases = ["db1", "db2", "db3"]
 
         table_includes = compaction._SqlCompaction__get_table_includes()
@@ -238,7 +235,7 @@ class TestTableNameHandling:
         # _databases is None (not set yet)
 
         # Should log a warning and not add the table
-        with patch('data_compaction_job.sql_compaction.logger') as mock_logger:
+        with patch('data_compaction_job.table_parser.logger') as mock_logger:
             table_includes = compaction._SqlCompaction__get_table_includes()
 
             # Warning should be logged

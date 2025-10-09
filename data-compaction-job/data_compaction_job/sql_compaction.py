@@ -8,6 +8,7 @@ from functools import cache
 import requests
 
 from data_compaction_job.config import ApplicationConfig, RewriteManifestsConfig
+from data_compaction_job.table_parser import parse_table_list, get_table_config_override
 from stats_emitter import emit_stats, init_emitter, close_emitter
 
 logger = logging.getLogger(__name__)
@@ -127,10 +128,11 @@ class SqlCompaction:
     @emit_stats("EXPIRE_SNAPSHOTS")
     def __expire_snapshots(self, catalog, database, table_name):
         timestamp = datetime.now() - timedelta(minutes=5)
-        retain_last =int(self.__get_final_config_for_table(database,
-                                                           table_name,
-                                                           "expire_snapshot",
-                                                           "retain_last")
+        retain_last =int(get_table_config_override(self.config.table_overrides,
+                                                    database,
+                                                    table_name,
+                                                    "expire_snapshot",
+                                                    "retain_last")
                          or self.config.expire_snapshot.retain_last)
         options = (f"table => '`{catalog}`.`{database}`.`{table_name}`',"
                    f" retain_last => {retain_last},"
@@ -141,10 +143,11 @@ class SqlCompaction:
 
     @emit_stats("REMOVE_ORPHAN_FILES")
     def __remove_orphan_files(self, catalog, database, table_name):
-        days = int(self.__get_final_config_for_table(database,
-                                                     table_name,
-                                                     "remove_orphan_files",
-                                                     "older_than_days")
+        days = int(get_table_config_override(self.config.table_overrides,
+                                             database,
+                                             table_name,
+                                             "remove_orphan_files",
+                                             "older_than_days")
                    or self.config.remove_orphan_files.older_than_days)
         timestamp = datetime.now(timezone.utc) - timedelta(days=days)
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`', older_than => TIMESTAMP '{timestamp}'"
@@ -155,10 +158,11 @@ class SqlCompaction:
     @emit_stats("REWRITE_MANIFESTS")
     def __rewrite_manifest(self, catalog, database, table_name):
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`'"
-        use_caching = (self.__get_final_config_for_table(database,
-                                                     table_name,
-                                                     "rewrite_manifest",
-                                                     "use_caching")
+        use_caching = (get_table_config_override(self.config.table_overrides,
+                                                  database,
+                                                  table_name,
+                                                  "rewrite_manifest",
+                                                  "use_caching")
                     or self.config.rewrite_manifests.use_caching)
         if use_caching:
             use_caching = str(use_caching).lower()
@@ -169,25 +173,29 @@ class SqlCompaction:
 
     @emit_stats("REWRITE_DATA_FILES")
     def __rewrite_data_files(self, catalog, database, table_name):
-        strategy = (self.__get_final_config_for_table(database,
-                                                     table_name,
-                                                     "rewrite_data_files",
-                                                     "strategy")
+        strategy = (get_table_config_override(self.config.table_overrides,
+                                              database,
+                                              table_name,
+                                              "rewrite_data_files",
+                                              "strategy")
                     or self.config.rewrite_data_files.strategy)
-        sort_order = (self.__get_final_config_for_table(database,
-                                                     table_name,
-                                                     "rewrite_data_files",
-                                                     "sort_order")
+        sort_order = (get_table_config_override(self.config.table_overrides,
+                                                database,
+                                                table_name,
+                                                "rewrite_data_files",
+                                                "sort_order")
                     or self.config.rewrite_data_files.sort_order)
-        rewrite_options = (self.__get_final_config_for_table(database,
+        rewrite_options = (get_table_config_override(self.config.table_overrides,
+                                                     database,
                                                      table_name,
                                                      "rewrite_data_files",
                                                      "options")
                     or self.config.rewrite_data_files.options)
-        where = (self.__get_final_config_for_table(database,
-                                                     table_name,
-                                                     "rewrite_data_files",
-                                                     "where")
+        where = (get_table_config_override(self.config.table_overrides,
+                                           database,
+                                           table_name,
+                                           "rewrite_data_files",
+                                           "where")
                     or self.config.rewrite_data_files.where)
 
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`'"
@@ -236,51 +244,14 @@ class SqlCompaction:
             tables = available_tables
         return tables
 
-    def __parse_table_list(self, table_list):
-        """
-        Parse a list of table names into a mapping of database -> list of tables.
-
-        Supports two formats:
-        - <database>.<table> - applies to specific table in specific database
-        - <table> - applies to table in all databases (from config or all available databases)
-        """
-        mapping = defaultdict(list)
-        for table in table_list:
-            table_split = table.split('.')
-            if len(table_split) == 2:
-                # Table name provided with database prefix (database.table)
-                mapping[table_split[0]].append(table_split[1])
-            elif len(table_split) == 1:
-                # Table name provided without database prefix
-                target_databases = self._databases
-                if target_databases:
-                    for database in target_databases:
-                        mapping[database].append(table_split[0])
-                else:
-                    logger.warning(f"Table '{table}' provided without database prefix and no databases available. "
-                                   f"Please provide table in format <database>.<table> or specify databases in config.")
-            else:
-                logger.warning(f"Invalid table format: {table}. Please provide table in format <database>.<table> or <table>")
-        return mapping
-
     @cache
     def __get_table_excludes(self):
-        return self.__parse_table_list(self.config.include_exclude.table_exclude)
+        return parse_table_list(self.config.include_exclude.table_exclude, self._databases)
 
     @cache
     def __get_table_includes(self):
-        return self.__parse_table_list(self.config.include_exclude.table_include)
+        return parse_table_list(self.config.include_exclude.table_include, self._databases)
 
-    def __get_final_config_for_table(self, database, table, operation, config_name):
-        if self.config.table_overrides:
-            # Try with full database.table format first, then fallback to just table name
-            for table_key in [f"{database}.{table}", table]:
-                if (table_key in self.config.table_overrides
-                        and operation in self.config.table_overrides.get(table_key)
-                        and config_name in self.config.table_overrides[table_key][operation]):
-                    return self.config.table_overrides[table_key][operation][config_name]
-
-        return None
 
 
 def timer(message: str):
