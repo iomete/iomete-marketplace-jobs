@@ -279,7 +279,6 @@ class SqlCompaction:
 
         return False
 
-
 def timer(message: str):
     def timer_decorator(method):
         def timer_func(*args, **kw):
