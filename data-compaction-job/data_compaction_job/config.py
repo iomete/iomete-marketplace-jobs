@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any
 from pyhocon import ConfigFactory
-from data_compaction_job.constants import CompactionOperation
+from data_compaction_job.constants import CompactionOperation, ConfigProperty
 
 
 def clean_option_keys(options_dict: dict) -> dict:
@@ -82,30 +82,30 @@ def get_config(application_config_path) -> ApplicationConfig:
 
     if CompactionOperation.EXPIRE_SNAPSHOT.value in config:
         app_config.expire_snapshot = ExpireSnapshotConfig(
-            enabled=config[CompactionOperation.EXPIRE_SNAPSHOT.value].get("enabled", True),
-            retain_last=config[CompactionOperation.EXPIRE_SNAPSHOT.value].get("retain_last", 1)
+            enabled=config[CompactionOperation.EXPIRE_SNAPSHOT.value].get(ConfigProperty.ENABLED.value, True),
+            retain_last=config[CompactionOperation.EXPIRE_SNAPSHOT.value].get(ConfigProperty.RETAIN_LAST.value, 1)
         )
 
     if CompactionOperation.REWRITE_DATA_FILES.value in config:
-        raw_options = dict(config[CompactionOperation.REWRITE_DATA_FILES.value].get("options", {}))
+        raw_options = dict(config[CompactionOperation.REWRITE_DATA_FILES.value].get(ConfigProperty.OPTIONS.value, {}))
         app_config.rewrite_data_files = RewriteDataFilesConfig(
-            enabled=config[CompactionOperation.REWRITE_DATA_FILES.value].get("enabled", True),
+            enabled=config[CompactionOperation.REWRITE_DATA_FILES.value].get(ConfigProperty.ENABLED.value, True),
             options=clean_option_keys(raw_options),
-            strategy=config[CompactionOperation.REWRITE_DATA_FILES.value].get("strategy", None),
-            sort_order=config[CompactionOperation.REWRITE_DATA_FILES.value].get("sort_order", None),
-            where=config[CompactionOperation.REWRITE_DATA_FILES.value].get("where", None)
+            strategy=config[CompactionOperation.REWRITE_DATA_FILES.value].get(ConfigProperty.STRATEGY.value, None),
+            sort_order=config[CompactionOperation.REWRITE_DATA_FILES.value].get(ConfigProperty.SORT_ORDER.value, None),
+            where=config[CompactionOperation.REWRITE_DATA_FILES.value].get(ConfigProperty.WHERE.value, None)
         )
 
     if CompactionOperation.REWRITE_MANIFESTS.value in config:
         app_config.rewrite_manifests = RewriteManifestsConfig(
-            enabled=config[CompactionOperation.REWRITE_MANIFESTS.value].get("enabled", True),
-            use_caching=config[CompactionOperation.REWRITE_MANIFESTS.value].get("use_caching", None)
+            enabled=config[CompactionOperation.REWRITE_MANIFESTS.value].get(ConfigProperty.ENABLED.value, True),
+            use_caching=config[CompactionOperation.REWRITE_MANIFESTS.value].get(ConfigProperty.USE_CACHING.value, None)
         )
 
     if CompactionOperation.REMOVE_ORPHAN_FILES.value in config:
         app_config.remove_orphan_files = RemoveOrphanFilesConfig(
-            enabled=config[CompactionOperation.REMOVE_ORPHAN_FILES.value].get("enabled", True),
-            older_than_days=config[CompactionOperation.REMOVE_ORPHAN_FILES.value].get("older_than_days", 1),
+            enabled=config[CompactionOperation.REMOVE_ORPHAN_FILES.value].get(ConfigProperty.ENABLED.value, True),
+            older_than_days=config[CompactionOperation.REMOVE_ORPHAN_FILES.value].get(ConfigProperty.OLDER_THAN_DAYS.value, 1),
             max_files_per_record=config[CompactionOperation.REMOVE_ORPHAN_FILES.value].get("max_files_per_record", 100)
         )
 

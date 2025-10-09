@@ -8,7 +8,7 @@ from functools import cache
 import requests
 
 from data_compaction_job.config import ApplicationConfig, RewriteManifestsConfig
-from data_compaction_job.constants import CompactionOperation
+from data_compaction_job.constants import CompactionOperation, ConfigProperty
 from data_compaction_job.table_parser import parse_table_list, get_table_config_override
 from stats_emitter import emit_stats, init_emitter, close_emitter
 
@@ -142,7 +142,7 @@ class SqlCompaction:
                                                     database,
                                                     table_name,
                                                     CompactionOperation.EXPIRE_SNAPSHOT.value,
-                                                    "retain_last")
+                                                    ConfigProperty.RETAIN_LAST.value)
                           or self.config.expire_snapshot.retain_last)
         options = (f"table => '`{catalog}`.`{database}`.`{table_name}`',"
                    f" retain_last => {retain_last},"
@@ -157,7 +157,7 @@ class SqlCompaction:
                                              database,
                                              table_name,
                                              CompactionOperation.REMOVE_ORPHAN_FILES.value,
-                                             "older_than_days")
+                                             ConfigProperty.OLDER_THAN_DAYS.value)
                    or self.config.remove_orphan_files.older_than_days)
         timestamp = datetime.now(timezone.utc) - timedelta(days=days)
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`', older_than => TIMESTAMP '{timestamp}'"
@@ -172,7 +172,7 @@ class SqlCompaction:
                                                  database,
                                                  table_name,
                                                  CompactionOperation.REWRITE_MANIFESTS.value,
-                                                 "use_caching")
+                                                 ConfigProperty.USE_CACHING.value)
                        or self.config.rewrite_manifests.use_caching)
         if use_caching:
             use_caching = str(use_caching).lower()
@@ -187,25 +187,25 @@ class SqlCompaction:
                                               database,
                                               table_name,
                                               CompactionOperation.REWRITE_DATA_FILES.value,
-                                              "strategy")
+                                              ConfigProperty.STRATEGY.value)
                     or self.config.rewrite_data_files.strategy)
         sort_order = (get_table_config_override(self.config.table_overrides,
                                                 database,
                                                 table_name,
                                                 CompactionOperation.REWRITE_DATA_FILES.value,
-                                                "sort_order")
+                                                ConfigProperty.SORT_ORDER.value)
                       or self.config.rewrite_data_files.sort_order)
         rewrite_options = (get_table_config_override(self.config.table_overrides,
                                                      database,
                                                      table_name,
                                                      CompactionOperation.REWRITE_DATA_FILES.value,
-                                                     "options")
+                                                     ConfigProperty.OPTIONS.value)
                            or self.config.rewrite_data_files.options)
         where = (get_table_config_override(self.config.table_overrides,
                                            database,
                                            table_name,
                                            CompactionOperation.REWRITE_DATA_FILES.value,
-                                           "where")
+                                           ConfigProperty.WHERE.value)
                  or self.config.rewrite_data_files.where)
 
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`'"
@@ -268,7 +268,7 @@ class SqlCompaction:
                                                    database,
                                                    table_name,
                                                    operation.value,
-                                                   "enabled")
+                                                   ConfigProperty.ENABLED.value)
         if table_override is not None:
             return table_override
 
