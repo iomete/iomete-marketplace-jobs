@@ -13,20 +13,20 @@ from stats_emitter import emit_stats, init_emitter, close_emitter
 
 logger = logging.getLogger(__name__)
 
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pyspark.sql import SparkSession
-
 
 class SqlCompaction:
     def __init__(self, spark: SparkSession, config: ApplicationConfig):
         self.spark = spark
         self.config = config
-        self._databases = None
+        self._databases = None  # Will be set during run_compaction
 
     def run_compaction(self):
         with ThreadPoolExecutor(max_workers=self.config.parallelism) as executor:
             futures = []
-            catalog = self.__get_catalog()
+            catalog  = self.__get_catalog()
             logger.info(f"Starting table optimisation for catalog: {catalog}")
 
             self._databases = self.__get_databases(catalog)
@@ -72,11 +72,11 @@ class SqlCompaction:
     def __process_table(self, catalog, database, table_name):
         if self.config.gc_handling.enabled:
             gc_enabled = self.__check_gc_enabled(catalog, database, table_name)
-
+            
             if gc_enabled is False:  # GC is disabled for this table
                 logger.info(f"[{database}.{table_name}] G.C. is disabled. Temporarily enabling it for compaction.")
                 self.__set_gc_enabled(catalog, database, table_name, True)
-
+                
                 try:
                     # Run all the compaction operations
                     self.__run_compaction_operations(catalog, database, table_name)
@@ -110,12 +110,12 @@ class SqlCompaction:
         try:
             # Get the table properties
             result = self.spark.sql(f"SHOW TBLPROPERTIES {catalog}.{database}.{table_name}").collect()
-
+            
             # Look for the G.C. enabled property (might be named differently depending on implementation)
             for row in result:
                 if row.key.lower() == "gc.enabled":
                     return row.value.lower() == "true"
-
+            
             # Property not found
             return True
         except Exception as e:
@@ -127,8 +127,7 @@ class SqlCompaction:
             # Convert boolean to string value
             value = str(enabled).lower()
             # Set the property
-            self.spark.sql(
-                f"ALTER TABLE {catalog}.{database}.{table_name} SET TBLPROPERTIES ('gc.enabled' = '{value}')").collect()
+            self.spark.sql(f"ALTER TABLE {catalog}.{database}.{table_name} SET TBLPROPERTIES ('gc.enabled' = '{value}')").collect()
             logger.info(f"[{database}.{table_name}] Set G.C. enabled to {value}")
         except Exception as e:
             logger.error(f"[{database}.{table_name}] Failed to set G.C. enabled to {enabled}: {e}")
@@ -137,12 +136,12 @@ class SqlCompaction:
     @emit_stats("EXPIRE_SNAPSHOTS")
     def __expire_snapshots(self, catalog, database, table_name):
         timestamp = datetime.now() - timedelta(minutes=5)
-        retain_last = int(get_table_config_override(self.config.table_overrides,
+        retain_last =int(get_table_config_override(self.config.table_overrides,
                                                     database,
                                                     table_name,
                                                     "expire_snapshot",
                                                     "retain_last")
-                          or self.config.expire_snapshot.retain_last)
+                         or self.config.expire_snapshot.retain_last)
         options = (f"table => '`{catalog}`.`{database}`.`{table_name}`',"
                    f" retain_last => {retain_last},"
                    f" older_than => TIMESTAMP '{timestamp}'")
@@ -168,11 +167,11 @@ class SqlCompaction:
     def __rewrite_manifest(self, catalog, database, table_name):
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`'"
         use_caching = (get_table_config_override(self.config.table_overrides,
-                                                 database,
-                                                 table_name,
-                                                 "rewrite_manifest",
-                                                 "use_caching")
-                       or self.config.rewrite_manifests.use_caching)
+                                                  database,
+                                                  table_name,
+                                                  "rewrite_manifest",
+                                                  "use_caching")
+                    or self.config.rewrite_manifests.use_caching)
         if use_caching:
             use_caching = str(use_caching).lower()
             options += f", use_caching => {use_caching}"
@@ -193,19 +192,19 @@ class SqlCompaction:
                                                 table_name,
                                                 "rewrite_data_files",
                                                 "sort_order")
-                      or self.config.rewrite_data_files.sort_order)
+                    or self.config.rewrite_data_files.sort_order)
         rewrite_options = (get_table_config_override(self.config.table_overrides,
                                                      database,
                                                      table_name,
                                                      "rewrite_data_files",
                                                      "options")
-                           or self.config.rewrite_data_files.options)
+                    or self.config.rewrite_data_files.options)
         where = (get_table_config_override(self.config.table_overrides,
                                            database,
                                            table_name,
                                            "rewrite_data_files",
                                            "where")
-                 or self.config.rewrite_data_files.where)
+                    or self.config.rewrite_data_files.where)
 
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`'"
 
@@ -260,6 +259,7 @@ class SqlCompaction:
     @cache
     def __get_table_includes(self):
         return parse_table_list(self.config.include_exclude.table_include, self._databases)
+
 
     def __is_operation_enabled(self, database, table_name, operation):
         # Check for table-specific override
