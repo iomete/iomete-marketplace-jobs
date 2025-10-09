@@ -1,13 +1,14 @@
 from dataclasses import dataclass, field
 from typing import Any
 from pyhocon import ConfigFactory
+from data_compaction_job.constants import CompactionOperation
 
 
 def clean_option_keys(options_dict: dict) -> dict:
     """Remove quotes from option keys that were preserved from HOCON parsing."""
     if not options_dict:
         return options_dict
-    
+
     cleaned = {}
     for key, value in options_dict.items():
         # Remove single quotes from keys if present
@@ -55,6 +56,7 @@ class IncludeExcludeConfig:
     table_include: list[str] = None
     table_exclude: list[str] = None
 
+
 @dataclass
 class ApplicationConfig:
     catalog: str = ""
@@ -78,37 +80,37 @@ def get_config(application_config_path) -> ApplicationConfig:
         raise Exception("Catalog not provided in config. Please provide catalog for which to run optimisation.")
     app_config.catalog = config["catalog"]
 
-    if "expire_snapshot" in config:
-        app_config.expire_snapshot=ExpireSnapshotConfig(
-            enabled=config["expire_snapshot"].get("enabled", True),
-            retain_last=config["expire_snapshot"].get("retain_last", 1)
+    if CompactionOperation.EXPIRE_SNAPSHOT.value in config:
+        app_config.expire_snapshot = ExpireSnapshotConfig(
+            enabled=config[CompactionOperation.EXPIRE_SNAPSHOT.value].get("enabled", True),
+            retain_last=config[CompactionOperation.EXPIRE_SNAPSHOT.value].get("retain_last", 1)
         )
 
-    if "rewrite_data_files" in config:
-        raw_options = dict(config["rewrite_data_files"].get("options", {}))
-        app_config.rewrite_data_files=RewriteDataFilesConfig(
-            enabled=config["rewrite_data_files"].get("enabled", True),
+    if CompactionOperation.REWRITE_DATA_FILES.value in config:
+        raw_options = dict(config[CompactionOperation.REWRITE_DATA_FILES.value].get("options", {}))
+        app_config.rewrite_data_files = RewriteDataFilesConfig(
+            enabled=config[CompactionOperation.REWRITE_DATA_FILES.value].get("enabled", True),
             options=clean_option_keys(raw_options),
-            strategy=config["rewrite_data_files"].get("strategy", None),
-            sort_order=config["rewrite_data_files"].get("sort_order", None),
-            where=config["rewrite_data_files"].get("where", None)
+            strategy=config[CompactionOperation.REWRITE_DATA_FILES.value].get("strategy", None),
+            sort_order=config[CompactionOperation.REWRITE_DATA_FILES.value].get("sort_order", None),
+            where=config[CompactionOperation.REWRITE_DATA_FILES.value].get("where", None)
         )
 
-    if "rewrite_manifests" in config:
-        app_config.rewrite_manifests=RewriteManifestsConfig(
-            enabled=config["rewrite_manifests"].get("enabled", True),
-            use_caching=config["rewrite_manifests"].get("use_caching", None)
+    if CompactionOperation.REWRITE_MANIFESTS.value in config:
+        app_config.rewrite_manifests = RewriteManifestsConfig(
+            enabled=config[CompactionOperation.REWRITE_MANIFESTS.value].get("enabled", True),
+            use_caching=config[CompactionOperation.REWRITE_MANIFESTS.value].get("use_caching", None)
         )
 
-    if "remove_orphan_files" in config:
-        app_config.remove_orphan_files=RemoveOrphanFilesConfig(
-            enabled=config["remove_orphan_files"].get("enabled", True),
-            older_than_days=config["remove_orphan_files"].get("older_than_days", 1),
-            max_files_per_record=config["remove_orphan_files"].get("max_files_per_record", 100)
+    if CompactionOperation.REMOVE_ORPHAN_FILES.value in config:
+        app_config.remove_orphan_files = RemoveOrphanFilesConfig(
+            enabled=config[CompactionOperation.REMOVE_ORPHAN_FILES.value].get("enabled", True),
+            older_than_days=config[CompactionOperation.REMOVE_ORPHAN_FILES.value].get("older_than_days", 1),
+            max_files_per_record=config[CompactionOperation.REMOVE_ORPHAN_FILES.value].get("max_files_per_record", 100)
         )
 
     if "gc_handling" in config:
-        app_config.gc_handling=GCHandlingConfig(
+        app_config.gc_handling = GCHandlingConfig(
             enabled=config["gc_handling"].get("enabled", False)
         )
 

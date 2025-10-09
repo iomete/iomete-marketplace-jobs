@@ -3,12 +3,12 @@
 """Tests for `data_compaction_job` package."""
 
 from unittest.mock import patch, MagicMock
-from datetime import datetime, timezone
 
 from data_compaction_job.config import get_config
 from data_compaction_job.main import start_job
 from data_compaction_job.stats_emitter import init_emitter, _add_orphan_files_metrics, StatsBatcher
 from data_compaction_job.tests._spark_session import get_spark_session
+
 
 @patch('data_compaction_job.sql_compaction.SqlClient.catalogs', return_value={'spark_catalog'})
 def test_spark_session(mock_catalogs):
@@ -240,6 +240,7 @@ VALUES
     spark.sql("DROP TABLE IF EXISTS default.copy_on_write_table")
     spark.sql("DROP TABLE IF EXISTS default.merge_on_read_table")
 
+
 @patch('data_compaction_job.sql_compaction.SqlClient.catalogs', return_value={'spark_catalog'})
 def test_gc_handling_feature(mock_catalogs):
     """Test the G.C. handling feature when G.C. is disabled for a table."""
@@ -260,7 +261,7 @@ def test_gc_handling_feature(mock_catalogs):
     TBLPROPERTIES (
         'gc.enabled' = 'false'
     )""")
-    
+
     # Insert some data
     spark.sql("""
     INSERT INTO test_gc.disabled_gc_table VALUES
@@ -268,35 +269,35 @@ def test_gc_handling_feature(mock_catalogs):
         (2, 'test2'),
         (3, 'test3')
     """)
-    
+
     # Verify initial state - G.C. should be disabled
     gc_props_before = spark.sql("SHOW TBLPROPERTIES test_gc.disabled_gc_table").collect()
     gc_enabled_before = None
     for row in gc_props_before:
         if row.key.lower() == "gc.enabled":
             gc_enabled_before = row.value.lower()
-    
+
     assert gc_enabled_before == "false"
-    
+
     # Capture initial data for comparison
     data_before = spark.sql("SELECT * FROM test_gc.disabled_gc_table").collect()
-    
+
     # Run compaction job
     start_job(spark, config)
-    
+
     # Verify data is intact after compaction
     data_after = spark.sql("SELECT * FROM test_gc.disabled_gc_table").collect()
     assert len(data_before) == len(data_after)
-    
+
     # Verify G.C. was restored to disabled state
     gc_props_after = spark.sql("SHOW TBLPROPERTIES test_gc.disabled_gc_table").collect()
     gc_enabled_after = None
     for row in gc_props_after:
         if row.key.lower() == "gc.enabled":
             gc_enabled_after = row.value.lower()
-    
+
     assert gc_enabled_after == "false"
-    
+
     # Clean up test table
     spark.sql("DROP TABLE IF EXISTS test_gc.disabled_gc_table")
     spark.sql("DROP DATABASE IF EXISTS test_gc")
@@ -518,19 +519,27 @@ def test_operation_enabled_with_table_overrides(mock_catalogs):
         spark = get_spark_session()
 
         from data_compaction_job.sql_compaction import SqlCompaction
+        from data_compaction_job.constants import CompactionOperation
+
         compaction = SqlCompaction(spark, config)
 
         # Test that operations are enabled for normal tables
-        assert compaction._SqlCompaction__is_operation_enabled("test_override", "normal_table", "expire_snapshot") is True
-        assert compaction._SqlCompaction__is_operation_enabled("test_override", "normal_table", "rewrite_data_files") is True
+        assert compaction._SqlCompaction__is_operation_enabled("test_override", "normal_table",
+                                                               CompactionOperation.EXPIRE_SNAPSHOT) is True
+        assert compaction._SqlCompaction__is_operation_enabled("test_override", "normal_table",
+                                                               CompactionOperation.REWRITE_DATA_FILES) is True
 
         # Test that operations are disabled for the special table with overrides
-        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table", "expire_snapshot") is False
-        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table", "rewrite_data_files") is False
+        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table",
+                                                               CompactionOperation.EXPIRE_SNAPSHOT) is False
+        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table",
+                                                               CompactionOperation.REWRITE_DATA_FILES) is False
 
         # Operations not overridden should remain enabled
-        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table", "rewrite_manifests") is True
-        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table", "remove_orphan_files") is True
+        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table",
+                                                               CompactionOperation.REWRITE_MANIFESTS) is True
+        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table",
+                                                               CompactionOperation.REMOVE_ORPHAN_FILES) is True
 
     finally:
         os.unlink(config_file)

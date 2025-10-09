@@ -8,6 +8,7 @@ from functools import cache
 import requests
 
 from data_compaction_job.config import ApplicationConfig, RewriteManifestsConfig
+from data_compaction_job.constants import CompactionOperation
 from data_compaction_job.table_parser import parse_table_list, get_table_config_override
 from stats_emitter import emit_stats, init_emitter, close_emitter
 
@@ -94,16 +95,16 @@ class SqlCompaction:
     def __run_compaction_operations(self, catalog, database, table_name):
         """Run enabled compaction operations for a table"""
         # Check if operation is enabled at table level or global level
-        if self.__is_operation_enabled(database, table_name, "rewrite_manifests"):
+        if self.__is_operation_enabled(database, table_name, CompactionOperation.REWRITE_MANIFESTS):
             self.__rewrite_manifest(catalog, database, table_name)
 
-        if self.__is_operation_enabled(database, table_name, "rewrite_data_files"):
+        if self.__is_operation_enabled(database, table_name, CompactionOperation.REWRITE_DATA_FILES):
             self.__rewrite_data_files(catalog, database, table_name)
 
-        if self.__is_operation_enabled(database, table_name, "expire_snapshot"):
+        if self.__is_operation_enabled(database, table_name, CompactionOperation.EXPIRE_SNAPSHOT):
             self.__expire_snapshots(catalog, database, table_name)
 
-        if self.__is_operation_enabled(database, table_name, "remove_orphan_files"):
+        if self.__is_operation_enabled(database, table_name, CompactionOperation.REMOVE_ORPHAN_FILES):
             self.__remove_orphan_files(catalog, database, table_name)
 
     def __check_gc_enabled(self, catalog, database, table_name):
@@ -140,7 +141,7 @@ class SqlCompaction:
         retain_last = int(get_table_config_override(self.config.table_overrides,
                                                     database,
                                                     table_name,
-                                                    "expire_snapshot",
+                                                    CompactionOperation.EXPIRE_SNAPSHOT.value,
                                                     "retain_last")
                           or self.config.expire_snapshot.retain_last)
         options = (f"table => '`{catalog}`.`{database}`.`{table_name}`',"
@@ -155,7 +156,7 @@ class SqlCompaction:
         days = int(get_table_config_override(self.config.table_overrides,
                                              database,
                                              table_name,
-                                             "remove_orphan_files",
+                                             CompactionOperation.REMOVE_ORPHAN_FILES.value,
                                              "older_than_days")
                    or self.config.remove_orphan_files.older_than_days)
         timestamp = datetime.now(timezone.utc) - timedelta(days=days)
@@ -170,7 +171,7 @@ class SqlCompaction:
         use_caching = (get_table_config_override(self.config.table_overrides,
                                                  database,
                                                  table_name,
-                                                 "rewrite_manifest",
+                                                 CompactionOperation.REWRITE_MANIFESTS.value,
                                                  "use_caching")
                        or self.config.rewrite_manifests.use_caching)
         if use_caching:
@@ -185,25 +186,25 @@ class SqlCompaction:
         strategy = (get_table_config_override(self.config.table_overrides,
                                               database,
                                               table_name,
-                                              "rewrite_data_files",
+                                              CompactionOperation.REWRITE_DATA_FILES.value,
                                               "strategy")
                     or self.config.rewrite_data_files.strategy)
         sort_order = (get_table_config_override(self.config.table_overrides,
                                                 database,
                                                 table_name,
-                                                "rewrite_data_files",
+                                                CompactionOperation.REWRITE_DATA_FILES.value,
                                                 "sort_order")
                       or self.config.rewrite_data_files.sort_order)
         rewrite_options = (get_table_config_override(self.config.table_overrides,
                                                      database,
                                                      table_name,
-                                                     "rewrite_data_files",
+                                                     CompactionOperation.REWRITE_DATA_FILES.value,
                                                      "options")
                            or self.config.rewrite_data_files.options)
         where = (get_table_config_override(self.config.table_overrides,
                                            database,
                                            table_name,
-                                           "rewrite_data_files",
+                                           CompactionOperation.REWRITE_DATA_FILES.value,
                                            "where")
                  or self.config.rewrite_data_files.where)
 
@@ -261,20 +262,24 @@ class SqlCompaction:
     def __get_table_includes(self):
         return parse_table_list(self.config.include_exclude.table_include, self._databases)
 
-    def __is_operation_enabled(self, database, table_name, operation):
+    def __is_operation_enabled(self, database, table_name, operation: CompactionOperation):
         # Check for table-specific override
-        table_override = self.__get_final_config_for_table(database, table_name, operation, "enabled")
+        table_override = get_table_config_override(self.config.table_overrides,
+                                                   database,
+                                                   table_name,
+                                                   operation.value,
+                                                   "enabled")
         if table_override is not None:
             return table_override
 
         # Fall back to global config
-        if operation == "rewrite_manifests":
+        if operation == CompactionOperation.REWRITE_MANIFESTS:
             return self.config.rewrite_manifests.enabled
-        elif operation == "rewrite_data_files":
+        elif operation == CompactionOperation.REWRITE_DATA_FILES:
             return self.config.rewrite_data_files.enabled
-        elif operation == "expire_snapshot":
+        elif operation == CompactionOperation.EXPIRE_SNAPSHOT:
             return self.config.expire_snapshot.enabled
-        elif operation == "remove_orphan_files":
+        elif operation == CompactionOperation.REMOVE_ORPHAN_FILES:
             return self.config.remove_orphan_files.enabled
 
         return False
