@@ -92,11 +92,19 @@ class SqlCompaction:
             self.__run_compaction_operations(catalog, database, table_name)
 
     def __run_compaction_operations(self, catalog, database, table_name):
-        """Run all compaction operations for a table"""
-        self.__rewrite_manifest(catalog, database, table_name)
-        self.__rewrite_data_files(catalog, database, table_name)
-        self.__expire_snapshots(catalog, database, table_name)
-        self.__remove_orphan_files(catalog, database, table_name)
+        """Run enabled compaction operations for a table"""
+        # Check if operation is enabled at table level or global level
+        if self.__is_operation_enabled(database, table_name, "rewrite_manifests"):
+            self.__rewrite_manifest(catalog, database, table_name)
+
+        if self.__is_operation_enabled(database, table_name, "rewrite_data_files"):
+            self.__rewrite_data_files(catalog, database, table_name)
+
+        if self.__is_operation_enabled(database, table_name, "expire_snapshot"):
+            self.__expire_snapshots(catalog, database, table_name)
+
+        if self.__is_operation_enabled(database, table_name, "remove_orphan_files"):
+            self.__remove_orphan_files(catalog, database, table_name)
 
     def __check_gc_enabled(self, catalog, database, table_name):
         try:
@@ -252,6 +260,24 @@ class SqlCompaction:
     @cache
     def __get_table_includes(self):
         return parse_table_list(self.config.include_exclude.table_include, self._databases)
+
+    def __is_operation_enabled(self, database, table_name, operation):
+        # Check for table-specific override
+        table_override = self.__get_final_config_for_table(database, table_name, operation, "enabled")
+        if table_override is not None:
+            return table_override
+
+        # Fall back to global config
+        if operation == "rewrite_manifests":
+            return self.config.rewrite_manifests.enabled
+        elif operation == "rewrite_data_files":
+            return self.config.rewrite_data_files.enabled
+        elif operation == "expire_snapshot":
+            return self.config.expire_snapshot.enabled
+        elif operation == "remove_orphan_files":
+            return self.config.remove_orphan_files.enabled
+
+        return False
 
 
 def timer(message: str):

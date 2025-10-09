@@ -368,7 +368,177 @@ def test_orphan_files_metrics_tracking(mock_catalogs):
     spark.sql("DROP DATABASE IF EXISTS test_orphan")
 
 
+@patch('data_compaction_job.sql_compaction.SqlClient.catalogs', return_value={'spark_catalog'})
+def test_operation_enabled_flag_execution(mock_catalogs):
+    """Test that operations are executed only when enabled in config."""
+    import tempfile
+    import os
+
+    # Create config with some operations disabled
+    config_content = """
+    {
+        catalog: "spark_catalog"
+        expire_snapshot: {
+            enabled: false
+            retain_last: 1
+        }
+        rewrite_data_files: {
+            enabled: true
+            options: {
+                "min-input-files": 2
+            }
+        }
+        rewrite_manifests: {
+            enabled: false
+        }
+        remove_orphan_files: {
+            enabled: true
+            older_than_days: 1
+        }
+    }
+    """
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
+        f.write(config_content)
+        config_file = f.name
+
+    try:
+        config = get_config(config_file)
+        spark = get_spark_session()
+
+        # Create test table
+        spark.sql("CREATE DATABASE IF NOT EXISTS test_enabled")
+        spark.sql("""
+        CREATE TABLE IF NOT EXISTS test_enabled.test_table (
+            id BIGINT,
+            name STRING
+        )
+        USING iceberg
+        """)
+
+        spark.sql("""
+        INSERT INTO test_enabled.test_table VALUES
+            (1, 'test1'),
+            (2, 'test2')
+        """)
+
+        # Patch the operation methods to track if they were called
+        from unittest.mock import Mock
+        from data_compaction_job.sql_compaction import SqlCompaction
+
+        compaction = SqlCompaction(spark, config)
+
+        # Patch internal methods to track calls
+        original_expire = compaction._SqlCompaction__expire_snapshots
+        original_rewrite_data = compaction._SqlCompaction__rewrite_data_files
+        original_rewrite_manifest = compaction._SqlCompaction__rewrite_manifest
+        original_remove_orphan = compaction._SqlCompaction__remove_orphan_files
+
+        expire_called = []
+        rewrite_data_called = []
+        rewrite_manifest_called = []
+        remove_orphan_called = []
+
+        def track_expire(*args, **kwargs):
+            expire_called.append(True)
+            return original_expire(*args, **kwargs)
+
+        def track_rewrite_data(*args, **kwargs):
+            rewrite_data_called.append(True)
+            return original_rewrite_data(*args, **kwargs)
+
+        def track_rewrite_manifest(*args, **kwargs):
+            rewrite_manifest_called.append(True)
+            return original_rewrite_manifest(*args, **kwargs)
+
+        def track_remove_orphan(*args, **kwargs):
+            remove_orphan_called.append(True)
+            return original_remove_orphan(*args, **kwargs)
+
+        compaction._SqlCompaction__expire_snapshots = track_expire
+        compaction._SqlCompaction__rewrite_data_files = track_rewrite_data
+        compaction._SqlCompaction__rewrite_manifest = track_rewrite_manifest
+        compaction._SqlCompaction__remove_orphan_files = track_remove_orphan
+
+        # Run compaction operations
+        compaction._SqlCompaction__run_compaction_operations("spark_catalog", "test_enabled", "test_table")
+
+        # Verify only enabled operations were called
+        assert len(expire_called) == 0, "expire_snapshots should not be called (disabled in config)"
+        assert len(rewrite_data_called) == 1, "rewrite_data_files should be called (enabled in config)"
+        assert len(rewrite_manifest_called) == 0, "rewrite_manifest should not be called (disabled in config)"
+        assert len(remove_orphan_called) == 1, "remove_orphan_files should be called (enabled in config)"
+
+        # Clean up
+        spark.sql("DROP TABLE IF EXISTS test_enabled.test_table")
+        spark.sql("DROP DATABASE IF EXISTS test_enabled")
+    finally:
+        os.unlink(config_file)
+
+
+@patch('data_compaction_job.sql_compaction.SqlClient.catalogs', return_value={'spark_catalog'})
+def test_operation_enabled_with_table_overrides(mock_catalogs):
+    """Test that table-level enabled overrides work correctly."""
+    import tempfile
+    import os
+
+    # Create config with table-specific overrides
+    config_content = """
+    {
+        catalog: "spark_catalog"
+        expire_snapshot: {
+            enabled: true
+            retain_last: 1
+        }
+        rewrite_data_files: {
+            enabled: true
+            options: {
+                "min-input-files": 2
+            }
+        }
+        table_overrides: {
+            test_override.special_table: {
+                expire_snapshot: {
+                    enabled: false
+                }
+                rewrite_data_files: {
+                    enabled: false
+                }
+            }
+        }
+    }
+    """
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
+        f.write(config_content)
+        config_file = f.name
+
+    try:
+        config = get_config(config_file)
+        spark = get_spark_session()
+
+        from data_compaction_job.sql_compaction import SqlCompaction
+        compaction = SqlCompaction(spark, config)
+
+        # Test that operations are enabled for normal tables
+        assert compaction._SqlCompaction__is_operation_enabled("test_override", "normal_table", "expire_snapshot") is True
+        assert compaction._SqlCompaction__is_operation_enabled("test_override", "normal_table", "rewrite_data_files") is True
+
+        # Test that operations are disabled for the special table with overrides
+        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table", "expire_snapshot") is False
+        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table", "rewrite_data_files") is False
+
+        # Operations not overridden should remain enabled
+        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table", "rewrite_manifests") is True
+        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table", "remove_orphan_files") is True
+
+    finally:
+        os.unlink(config_file)
+
+
 if __name__ == '__main__':
     test_spark_session()
     test_gc_handling_feature()
     test_orphan_files_metrics_tracking()
+    test_operation_enabled_flag_execution()
+    test_operation_enabled_with_table_overrides()

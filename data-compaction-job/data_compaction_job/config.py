@@ -18,17 +18,20 @@ def clean_option_keys(options_dict: dict) -> dict:
 
 @dataclass
 class ExpireSnapshotConfig:
+    enabled: bool = True
     retain_last: int = 1
 
 
 @dataclass
 class RemoveOrphanFilesConfig:
+    enabled: bool = True
     older_than_days: int = 1
     max_files_per_record: int = 100
 
 
 @dataclass
 class RewriteDataFilesConfig:
+    enabled: bool = True
     strategy: str = None
     sort_order: str = None
     options: dict[str, Any] = None
@@ -37,6 +40,7 @@ class RewriteDataFilesConfig:
 
 @dataclass
 class RewriteManifestsConfig:
+    enabled: bool = True
     use_caching: bool = None
 
 
@@ -76,12 +80,14 @@ def get_config(application_config_path) -> ApplicationConfig:
 
     if "expire_snapshot" in config:
         app_config.expire_snapshot=ExpireSnapshotConfig(
+            enabled=config["expire_snapshot"].get("enabled", True),
             retain_last=config["expire_snapshot"].get("retain_last", 1)
         )
 
     if "rewrite_data_files" in config:
         raw_options = dict(config["rewrite_data_files"].get("options", {}))
         app_config.rewrite_data_files=RewriteDataFilesConfig(
+            enabled=config["rewrite_data_files"].get("enabled", True),
             options=clean_option_keys(raw_options),
             strategy=config["rewrite_data_files"].get("strategy", None),
             sort_order=config["rewrite_data_files"].get("sort_order", None),
@@ -90,11 +96,13 @@ def get_config(application_config_path) -> ApplicationConfig:
 
     if "rewrite_manifests" in config:
         app_config.rewrite_manifests=RewriteManifestsConfig(
+            enabled=config["rewrite_manifests"].get("enabled", True),
             use_caching=config["rewrite_manifests"].get("use_caching", None)
         )
 
     if "remove_orphan_files" in config:
         app_config.remove_orphan_files=RemoveOrphanFilesConfig(
+            enabled=config["remove_orphan_files"].get("enabled", True),
             older_than_days=config["remove_orphan_files"].get("older_than_days", 1),
             max_files_per_record=config["remove_orphan_files"].get("max_files_per_record", 100)
         )

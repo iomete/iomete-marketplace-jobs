@@ -90,14 +90,22 @@ You can specify additional configurations
     
     // Default fallback configs for expire_snapshot operation
     expire_snapshot: {
+        // Enable/disable this operation (DEFAULT: true)
+        // Set to false to skip this operation entirely
+        // enabled: true,
+
         // Number of ancestor snapshots to preserve regardless of `older_than` (DEFAULT: 1)
         // retain_last: 1
     },
     
     // Default fallback configs for rewrite_data_files operation
     rewrite_data_files: {
+        // Enable/disable this operation (DEFAULT: true)
+        // Set to false to skip this operation entirely
+        // enabled: true,
+
         options: {
-            // The minimum number of files that need to be in a file group for it to be considered for compaction. 
+            // The minimum number of files that need to be in a file group for it to be considered for compaction.
             // Defaults to 5
             "min-input-files": 2,
 
@@ -116,6 +124,10 @@ You can specify additional configurations
     
     // Default fallback configs for rewrite_manifests operation
     rewrite_manifests: {
+        // Enable/disable this operation (DEFAULT: true)
+        // Set to false to skip this operation entirely
+        // enabled: true,
+
         // Use Spark caching during operation (defaults to false). Enabling caching can increase memory footprint on executors.
         // Set to false to avoid memory issues on executors
         // use_caching: true
@@ -123,6 +135,10 @@ You can specify additional configurations
     
     // Default fallback configs for remove_orphan_files operation
     remove_orphan_files: {
+        // Enable/disable this operation (DEFAULT: true)
+        // Set to false to skip this operation entirely
+        // enabled: true,
+
         // Orphan files older than the provided number of days will be removed
         // Defaults to 1
         older_than_days: 1,
@@ -140,11 +156,87 @@ You can specify additional configurations
     //   - <table> - override for table in all databases (from 'databases' config or all available databases if config is empty)
     table_overrides: {
         // Table for which configs needs to be overridden
-        "<database>.<table>": {
+        <database>.<table>: {
             // Operation whose config you want to override
-            "<operations>": {
+            <operations>: {
                 // Operation level config which needs to be overriden
-                "<config_name>" : ""
+                <config_name> : ""
+            }
+        }
+    }
+}
+```
+
+## Selective Operation Execution
+
+By default, all four operations (Rewrite Data Files, Rewrite Manifest Files, Expire Snapshots, and Orphan File Removal) are **enabled** and will run during compaction. You can selectively disable specific operations using the `enabled` flag.
+
+### Example: Disable Specific Operations Globally
+
+```HOCON
+{
+    catalog: "spark_catalog",
+
+    // Run only expire snapshots and remove orphan files
+    // Skip rewrite operations
+    expire_snapshot: {
+        enabled: true,  // This operation will run
+        retain_last: 1
+    },
+    rewrite_data_files: {
+        enabled: false  // Skip this operation
+    },
+    rewrite_manifests: {
+        enabled: false  // Skip this operation
+    },
+    remove_orphan_files: {
+        enabled: true,  // This operation will run
+        older_than_days: 1
+    }
+}
+```
+
+### Example: Disable Operations for Specific Tables
+
+You can also disable operations for specific tables while keeping them enabled globally:
+
+```HOCON
+{
+    catalog: "spark_catalog",
+
+    // Global defaults - all operations enabled
+    expire_snapshot: {
+        enabled: true,
+        retain_last: 1
+    },
+    rewrite_data_files: {
+        enabled: true,
+        options: {
+            "min-input-files": 2
+        }
+    },
+
+    // Disable specific operations for specific tables
+    table_overrides: {
+        production.critical_table: {
+            // Disable rewrite operations for this critical table
+            rewrite_data_files: {
+                enabled: false
+            },
+            rewrite_manifests: {
+                enabled: false
+            }
+        },
+        analytics.archive_table: {
+            // Only run orphan file removal for archived tables
+            expire_snapshot: {
+                enabled: false
+            },
+            rewrite_data_files: {
+                enabled: false
+            },
+            rewrite_manifests: {
+                enabled: false
             }
         }
     }
