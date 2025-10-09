@@ -69,7 +69,7 @@ You can specify additional configurations
     // In case the input is an empty array then we consider all tables in the provided database for compaction
     // Supports two formats:
     //   - <database>.<table> - applies to specific table in specific database
-    //   - <table> - applies to table in all databases specified in the 'databases' config
+    //   - <table> - applies to table in all databases (from 'databases' config or all available databases if config is empty)
     table_include: [],
 
     // Tables to be excluded in the compaction run
@@ -77,7 +77,7 @@ You can specify additional configurations
     // Ignored if table_include is non empty
     // Supports two formats:
     //   - <database>.<table> - excludes specific table in specific database
-    //   - <table> - excludes table from all databases specified in the 'databases' config
+    //   - <table> - excludes table from all databases (from 'databases' config or all available databases if config is empty)
     table_exclude: [],
     
     // Configuration for handling tables with G.C. disabled
@@ -137,7 +137,7 @@ You can specify additional configurations
     // Used to override operation configs for specific tables
     // Supports two formats for table keys:
     //   - <database>.<table> - override for specific table in specific database (takes priority)
-    //   - <table> - override for table in all databases specified in the 'databases' config
+    //   - <table> - override for table in all databases (from 'databases' config or all available databases if config is empty)
     table_overrides: {
         // Table for which configs needs to be overridden
         "<database>.<table>": {

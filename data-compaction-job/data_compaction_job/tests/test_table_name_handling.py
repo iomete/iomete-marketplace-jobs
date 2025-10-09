@@ -42,6 +42,8 @@ class TestTableNameHandling:
         config.include_exclude.table_include = ["table1"]
 
         compaction = SqlCompaction(spark, config)
+        # Simulate setting _databases (as would happen in run_compaction)
+        compaction._databases = ["db1", "db2"]
         table_includes = compaction._SqlCompaction__get_table_includes()
 
         # Table should be applied to all databases in config
@@ -61,6 +63,8 @@ class TestTableNameHandling:
         config.include_exclude.table_include = ["db1.specific_table", "common_table"]
 
         compaction = SqlCompaction(spark, config)
+        # Simulate setting _databases (as would happen in run_compaction)
+        compaction._databases = ["db1", "db2"]
         table_includes = compaction._SqlCompaction__get_table_includes()
 
         # Specific table should only be in db1
@@ -104,6 +108,8 @@ class TestTableNameHandling:
         config.include_exclude.table_exclude = ["table1"]
 
         compaction = SqlCompaction(spark, config)
+        # Simulate setting _databases (as would happen in run_compaction)
+        compaction._databases = ["db1", "db2"]
         table_excludes = compaction._SqlCompaction__get_table_excludes()
 
         # Table should be excluded from all databases in config
@@ -196,7 +202,7 @@ class TestTableNameHandling:
 
     @patch('data_compaction_job.sql_compaction.SqlClient.catalogs', return_value={'spark_catalog'})
     def test_table_include_without_databases_config(self, mock_catalogs):
-        """Test table_include with no database prefix and no databases in config logs warning."""
+        """Test table_include with no database prefix and no databases in config uses _databases."""
         spark = get_spark_session()
         config = ApplicationConfig()
         config.catalog = "spark_catalog"
@@ -205,6 +211,31 @@ class TestTableNameHandling:
         config.include_exclude.table_include = ["table1"]
 
         compaction = SqlCompaction(spark, config)
+        # Simulate setting _databases (as would happen in run_compaction)
+        compaction._databases = ["db1", "db2", "db3"]
+
+        table_includes = compaction._SqlCompaction__get_table_includes()
+
+        # Table should be applied to all databases from _databases
+        assert "db1" in table_includes
+        assert "table1" in table_includes["db1"]
+        assert "db2" in table_includes
+        assert "table1" in table_includes["db2"]
+        assert "db3" in table_includes
+        assert "table1" in table_includes["db3"]
+
+    @patch('data_compaction_job.sql_compaction.SqlClient.catalogs', return_value={'spark_catalog'})
+    def test_table_include_without_databases_or_stored_databases(self, mock_catalogs):
+        """Test table_include with no database prefix, no databases in config, and no _databases logs warning."""
+        spark = get_spark_session()
+        config = ApplicationConfig()
+        config.catalog = "spark_catalog"
+        config.include_exclude = IncludeExcludeConfig()
+        config.include_exclude.databases = None  # No databases specified
+        config.include_exclude.table_include = ["table1"]
+
+        compaction = SqlCompaction(spark, config)
+        # _databases is None (not set yet)
 
         # Should log a warning and not add the table
         with patch('data_compaction_job.sql_compaction.logger') as mock_logger:

@@ -20,6 +20,7 @@ class SqlCompaction:
     def __init__(self, spark: SparkSession, config: ApplicationConfig):
         self.spark = spark
         self.config = config
+        self._databases = None  # Will be set during run_compaction
 
     def run_compaction(self):
         with ThreadPoolExecutor(max_workers=self.config.parallelism) as executor:
@@ -27,11 +28,11 @@ class SqlCompaction:
             catalog  = self.__get_catalog()
             logger.info(f"Starting table optimisation for catalog: {catalog}")
 
-            databases = self.__get_databases(catalog)
-            logger.info(f"Databases in catalog '{catalog}' considered for optimisation : {databases}")
+            self._databases = self.__get_databases(catalog)
+            logger.info(f"Databases in catalog '{catalog}' considered for optimisation : {self._databases}")
 
             db_table_mapping = defaultdict(list)
-            for database in databases:
+            for database in self._databases:
                 logger.info(f"Introspecting database: {database}")
                 tables = self.__get_tables(catalog, database)
                 logger.info(f"Tables in database '{database}' considered for optimisation : {tables}")
@@ -41,7 +42,7 @@ class SqlCompaction:
             init_emitter(self.spark,
                          batch_size=self.config.stats_batch_size,
                          max_files_per_record=self.config.remove_orphan_files.max_files_per_record)
-            for database in databases:
+            for database in self._databases:
                 for table in db_table_mapping[database]:
                     futures.append(executor.submit(self.__process_table_if_iceberg, catalog, database, table))
 
@@ -241,7 +242,7 @@ class SqlCompaction:
 
         Supports two formats:
         - <database>.<table> - applies to specific table in specific database
-        - <table> - applies to table in all databases specified in config
+        - <table> - applies to table in all databases (from config or all available databases)
         """
         mapping = defaultdict(list)
         for table in table_list:
@@ -251,12 +252,12 @@ class SqlCompaction:
                 mapping[table_split[0]].append(table_split[1])
             elif len(table_split) == 1:
                 # Table name provided without database prefix
-                # Apply to all databases in the config
-                if self.config.include_exclude.databases:
-                    for database in self.config.include_exclude.databases:
+                target_databases = self._databases
+                if target_databases:
+                    for database in target_databases:
                         mapping[database].append(table_split[0])
                 else:
-                    logger.warning(f"Table '{table}' provided without database prefix and no databases specified in config. "
+                    logger.warning(f"Table '{table}' provided without database prefix and no databases available. "
                                    f"Please provide table in format <database>.<table> or specify databases in config.")
             else:
                 logger.warning(f"Invalid table format: {table}. Please provide table in format <database>.<table> or <table>")
@@ -272,18 +273,12 @@ class SqlCompaction:
 
     def __get_final_config_for_table(self, database, table, operation, config_name):
         if self.config.table_overrides:
-            # Try with full database.table format first
-            full_table_name = f"{database}.{table}"
-            if (full_table_name in self.config.table_overrides
-                    and operation in self.config.table_overrides.get(full_table_name)
-                    and config_name in self.config.table_overrides[full_table_name][operation]):
-                return self.config.table_overrides[full_table_name][operation][config_name]
-
-            # Fallback to just table name (without database prefix)
-            if (table in self.config.table_overrides
-                    and operation in self.config.table_overrides.get(table)
-                    and config_name in self.config.table_overrides[table][operation]):
-                return self.config.table_overrides[table][operation][config_name]
+            # Try with full database.table format first, then fallback to just table name
+            for table_key in [f"{database}.{table}", table]:
+                if (table_key in self.config.table_overrides
+                        and operation in self.config.table_overrides.get(table_key)
+                        and config_name in self.config.table_overrides[table_key][operation]):
+                    return self.config.table_overrides[table_key][operation][config_name]
 
         return None
 
