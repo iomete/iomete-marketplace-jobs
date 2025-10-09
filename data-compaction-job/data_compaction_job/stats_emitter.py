@@ -7,15 +7,15 @@ from typing import List, Dict, Any
 
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, TimestampType, MapType
-from data_compaction_job.constants import DefaultConfigValues
+from data_compaction_job.constants import StatsDefaults
 
 logger = logging.getLogger(__name__)
 
 
 class StatsBatcher:
 
-    def __init__(self, batch_size: int = DefaultConfigValues.STATS_BATCH_SIZE,
-                 max_files_per_record: int = DefaultConfigValues.MAX_FILES_PER_RECORD):
+    def __init__(self, batch_size: int = StatsDefaults.BATCH_SIZE,
+                 max_files_per_record: int = StatsDefaults.MAX_FILES_PER_RECORD):
         self.batch_size = batch_size
         self.metrics_batch: List[Dict[str, Any]] = []
         self.errors_batch: List[Dict[str, Any]] = []
@@ -240,8 +240,8 @@ def emit_stats(operation: str):
     return decorator
 
 
-def init_emitter(spark: SparkSession, batch_size: int = DefaultConfigValues.STATS_BATCH_SIZE,
-                 max_files_per_record: int = DefaultConfigValues.MAX_FILES_PER_RECORD):
+def init_emitter(spark: SparkSession, batch_size: int = StatsDefaults.BATCH_SIZE,
+                 max_files_per_record: int = StatsDefaults.MAX_FILES_PER_RECORD):
     global _stats_batcher
     _stats_batcher = StatsBatcher(batch_size=batch_size, max_files_per_record=max_files_per_record)
     _stats_batcher.set_spark_session(spark)

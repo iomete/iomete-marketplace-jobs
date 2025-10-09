@@ -19,11 +19,28 @@ class ConfigProperty(str, Enum):
     USE_CACHING = "use_caching"
 
 
-class DefaultConfigValues:
-    OPERATION_ENABLED = True
-    GC_ENABLED = False
+class OperationDefaults:
+    """Default values for compaction operations"""
+    ENABLED = True
+
+
+class ExpireSnapshotDefaults:
+    """Default values for expire snapshot operation"""
     RETAIN_LAST = 1
+
+
+class RemoveOrphanFilesDefaults:
+    """Default values for remove orphan files operation"""
     OLDER_THAN_DAYS = 1
+
+
+class StatsDefaults:
+    """Default values for stats/metrics collection"""
+    BATCH_SIZE = 100
     MAX_FILES_PER_RECORD = 100
-    STATS_BATCH_SIZE = 100
+
+
+class JobDefaults:
+    """Default values for job execution"""
     PARALLELISM = 4
+    GC_ENABLED = False
