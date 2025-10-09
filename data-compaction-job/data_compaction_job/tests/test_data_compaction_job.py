@@ -423,52 +423,39 @@ def test_operation_enabled_flag_execution(mock_catalogs):
             (2, 'test2')
         """)
 
-        # Patch the operation methods to track if they were called
-        from unittest.mock import Mock
+        # Use mock.patch to track SQL calls - operations will run SQL queries
+        from unittest.mock import Mock, patch as mock_patch
         from data_compaction_job.sql_compaction import SqlCompaction
 
         compaction = SqlCompaction(spark, config)
 
-        # Patch internal methods to track calls
-        original_expire = compaction._SqlCompaction__expire_snapshots
-        original_rewrite_data = compaction._SqlCompaction__rewrite_data_files
-        original_rewrite_manifest = compaction._SqlCompaction__rewrite_manifest
-        original_remove_orphan = compaction._SqlCompaction__remove_orphan_files
+        # Track which SQL queries are executed
+        sql_calls = []
+        original_sql = spark.sql
 
-        expire_called = []
-        rewrite_data_called = []
-        rewrite_manifest_called = []
-        remove_orphan_called = []
+        def track_sql(query):
+            sql_calls.append(query)
+            return original_sql(query)
 
-        def track_expire(*args, **kwargs):
-            expire_called.append(True)
-            return original_expire(*args, **kwargs)
+        spark.sql = track_sql
 
-        def track_rewrite_data(*args, **kwargs):
-            rewrite_data_called.append(True)
-            return original_rewrite_data(*args, **kwargs)
+        try:
+            # Run compaction operations
+            compaction._SqlCompaction__run_compaction_operations("spark_catalog", "test_enabled", "test_table")
 
-        def track_rewrite_manifest(*args, **kwargs):
-            rewrite_manifest_called.append(True)
-            return original_rewrite_manifest(*args, **kwargs)
+            # Check which operations were called by looking at SQL queries
+            expire_called = any("expire_snapshots" in call for call in sql_calls)
+            rewrite_data_called = any("rewrite_data_files" in call for call in sql_calls)
+            rewrite_manifest_called = any("rewrite_manifests" in call for call in sql_calls)
+            remove_orphan_called = any("remove_orphan_files" in call for call in sql_calls)
 
-        def track_remove_orphan(*args, **kwargs):
-            remove_orphan_called.append(True)
-            return original_remove_orphan(*args, **kwargs)
-
-        compaction._SqlCompaction__expire_snapshots = track_expire
-        compaction._SqlCompaction__rewrite_data_files = track_rewrite_data
-        compaction._SqlCompaction__rewrite_manifest = track_rewrite_manifest
-        compaction._SqlCompaction__remove_orphan_files = track_remove_orphan
-
-        # Run compaction operations
-        compaction._SqlCompaction__run_compaction_operations("spark_catalog", "test_enabled", "test_table")
-
-        # Verify only enabled operations were called
-        assert len(expire_called) == 0, "expire_snapshots should not be called (disabled in config)"
-        assert len(rewrite_data_called) == 1, "rewrite_data_files should be called (enabled in config)"
-        assert len(rewrite_manifest_called) == 0, "rewrite_manifest should not be called (disabled in config)"
-        assert len(remove_orphan_called) == 1, "remove_orphan_files should be called (enabled in config)"
+            # Verify only enabled operations were called
+            assert not expire_called, "expire_snapshots should not be called (disabled in config)"
+            assert rewrite_data_called, "rewrite_data_files should be called (enabled in config)"
+            assert not rewrite_manifest_called, "rewrite_manifest should not be called (disabled in config)"
+            assert remove_orphan_called, "remove_orphan_files should be called (enabled in config)"
+        finally:
+            spark.sql = original_sql
 
         # Clean up
         spark.sql("DROP TABLE IF EXISTS test_enabled.test_table")
@@ -520,29 +507,83 @@ def test_operation_enabled_with_table_overrides(mock_catalogs):
 
         from data_compaction_job.sql_compaction import SqlCompaction
         from data_compaction_job.constants import CompactionOperation
+        from data_compaction_job.decorators import is_operation_enabled
 
         compaction = SqlCompaction(spark, config)
 
         # Test that operations are enabled for normal tables
-        assert compaction._SqlCompaction__is_operation_enabled("test_override", "normal_table",
-                                                               CompactionOperation.EXPIRE_SNAPSHOT) is True
-        assert compaction._SqlCompaction__is_operation_enabled("test_override", "normal_table",
-                                                               CompactionOperation.REWRITE_DATA_FILES) is True
+        assert is_operation_enabled(config, "test_override", "normal_table",
+                                   CompactionOperation.EXPIRE_SNAPSHOT) is True
+        assert is_operation_enabled(config, "test_override", "normal_table",
+                                   CompactionOperation.REWRITE_DATA_FILES) is True
 
         # Test that operations are disabled for the special table with overrides
-        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table",
-                                                               CompactionOperation.EXPIRE_SNAPSHOT) is False
-        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table",
-                                                               CompactionOperation.REWRITE_DATA_FILES) is False
+        assert is_operation_enabled(config, "test_override", "special_table",
+                                   CompactionOperation.EXPIRE_SNAPSHOT) is False
+        assert is_operation_enabled(config, "test_override", "special_table",
+                                   CompactionOperation.REWRITE_DATA_FILES) is False
 
         # Operations not overridden should remain enabled
-        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table",
-                                                               CompactionOperation.REWRITE_MANIFESTS) is True
-        assert compaction._SqlCompaction__is_operation_enabled("test_override", "special_table",
-                                                               CompactionOperation.REMOVE_ORPHAN_FILES) is True
+        assert is_operation_enabled(config, "test_override", "special_table",
+                                   CompactionOperation.REWRITE_MANIFESTS) is True
+        assert is_operation_enabled(config, "test_override", "special_table",
+                                   CompactionOperation.REMOVE_ORPHAN_FILES) is True
 
     finally:
         os.unlink(config_file)
+
+
+def test_timer_decorator():
+    """Test that the timer decorator correctly times execution and logs messages."""
+    import time
+    from unittest.mock import MagicMock
+    from data_compaction_job.decorators import timer
+
+    # Create a mock logger to capture log messages
+    mock_logger = MagicMock()
+
+    # Patch the logger in the decorators module
+    import data_compaction_job.decorators as decorators_module
+    original_logger = decorators_module.logger
+    decorators_module.logger = mock_logger
+
+    try:
+        # Create a test function that takes some time
+        @timer("test operation")
+        def test_function(x, y):
+            time.sleep(0.1)  # Sleep for 100ms
+            return x + y
+
+        # Call the function
+        start = time.time()
+        result = test_function(3, 5)
+        elapsed = time.time() - start
+
+        # Verify the function returned the correct result
+        assert result == 8, "Timer decorator should preserve function return value"
+
+        # Verify the function took at least 100ms
+        assert elapsed >= 0.1, "Function should have taken at least 100ms"
+
+        # Verify debug log was called with start message
+        mock_logger.debug.assert_called_once_with("test operation started")
+
+        # Verify info log was called with completion message
+        assert mock_logger.info.call_count == 1
+        info_call_args = mock_logger.info.call_args[0][0]
+        assert "test operation completed in" in info_call_args
+        assert "seconds" in info_call_args
+
+        # Extract the duration from the log message
+        import re
+        match = re.search(r'completed in ([\d.]+) seconds', info_call_args)
+        assert match is not None, "Completion message should contain duration"
+        logged_duration = float(match.group(1))
+        assert logged_duration >= 0.1, "Logged duration should be at least 0.1 seconds"
+
+    finally:
+        # Restore original logger
+        decorators_module.logger = original_logger
 
 
 if __name__ == '__main__':
@@ -551,3 +592,4 @@ if __name__ == '__main__':
     test_orphan_files_metrics_tracking()
     test_operation_enabled_flag_execution()
     test_operation_enabled_with_table_overrides()
+    test_timer_decorator()

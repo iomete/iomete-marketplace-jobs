@@ -9,6 +9,7 @@ import requests
 
 from data_compaction_job.config import ApplicationConfig, RewriteManifestsConfig
 from data_compaction_job.constants import CompactionOperation, ConfigProperty
+from data_compaction_job.decorators import operation_enabled, timer
 from data_compaction_job.table_parser import parse_table_list, get_table_config_override
 from stats_emitter import emit_stats, init_emitter, close_emitter
 
@@ -94,18 +95,10 @@ class SqlCompaction:
 
     def __run_compaction_operations(self, catalog, database, table_name):
         """Run enabled compaction operations for a table"""
-        # Check if operation is enabled at table level or global level
-        if self.__is_operation_enabled(database, table_name, CompactionOperation.REWRITE_MANIFESTS):
-            self.__rewrite_manifest(catalog, database, table_name)
-
-        if self.__is_operation_enabled(database, table_name, CompactionOperation.REWRITE_DATA_FILES):
-            self.__rewrite_data_files(catalog, database, table_name)
-
-        if self.__is_operation_enabled(database, table_name, CompactionOperation.EXPIRE_SNAPSHOT):
-            self.__expire_snapshots(catalog, database, table_name)
-
-        if self.__is_operation_enabled(database, table_name, CompactionOperation.REMOVE_ORPHAN_FILES):
-            self.__remove_orphan_files(catalog, database, table_name)
+        self.__rewrite_manifest(catalog, database, table_name)
+        self.__rewrite_data_files(catalog, database, table_name)
+        self.__expire_snapshots(catalog, database, table_name)
+        self.__remove_orphan_files(catalog, database, table_name)
 
     def __check_gc_enabled(self, catalog, database, table_name):
         try:
@@ -135,6 +128,7 @@ class SqlCompaction:
             logger.error(f"[{database}.{table_name}] Failed to set G.C. enabled to {enabled}: {e}")
             raise e
 
+    @operation_enabled(CompactionOperation.EXPIRE_SNAPSHOT)
     @emit_stats("EXPIRE_SNAPSHOTS")
     def __expire_snapshots(self, catalog, database, table_name):
         timestamp = datetime.now() - timedelta(minutes=5)
@@ -151,6 +145,7 @@ class SqlCompaction:
         result = self.spark.sql(query).collect()
         return result, query
 
+    @operation_enabled(CompactionOperation.REMOVE_ORPHAN_FILES)
     @emit_stats("REMOVE_ORPHAN_FILES")
     def __remove_orphan_files(self, catalog, database, table_name):
         days = int(get_table_config_override(self.config.table_overrides,
@@ -165,6 +160,7 @@ class SqlCompaction:
         result = self.spark.sql(query).collect()
         return result, query
 
+    @operation_enabled(CompactionOperation.REWRITE_MANIFESTS)
     @emit_stats("REWRITE_MANIFESTS")
     def __rewrite_manifest(self, catalog, database, table_name):
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`'"
@@ -181,6 +177,7 @@ class SqlCompaction:
         result = self.spark.sql(query).collect()
         return result, query
 
+    @operation_enabled(CompactionOperation.REWRITE_DATA_FILES)
     @emit_stats("REWRITE_DATA_FILES")
     def __rewrite_data_files(self, catalog, database, table_name):
         strategy = (get_table_config_override(self.config.table_overrides,
@@ -261,43 +258,6 @@ class SqlCompaction:
     @cache
     def __get_table_includes(self):
         return parse_table_list(self.config.include_exclude.table_include, self._databases)
-
-    def __is_operation_enabled(self, database, table_name, operation: CompactionOperation):
-        # Check for table-specific override
-        table_override = get_table_config_override(self.config.table_overrides,
-                                                   database,
-                                                   table_name,
-                                                   operation.value,
-                                                   ConfigProperty.ENABLED.value)
-        if table_override is not None:
-            return table_override
-
-        # Fall back to global config
-        if operation == CompactionOperation.REWRITE_MANIFESTS:
-            return self.config.rewrite_manifests.enabled
-        elif operation == CompactionOperation.REWRITE_DATA_FILES:
-            return self.config.rewrite_data_files.enabled
-        elif operation == CompactionOperation.EXPIRE_SNAPSHOT:
-            return self.config.expire_snapshot.enabled
-        elif operation == CompactionOperation.REMOVE_ORPHAN_FILES:
-            return self.config.remove_orphan_files.enabled
-
-        return False
-
-
-def timer(message: str):
-    def timer_decorator(method):
-        def timer_func(*args, **kw):
-            logger.debug(f"{message} started")
-            start_time = time.time()
-            result = method(*args, **kw)
-            duration = (time.time() - start_time)
-            logger.info(f"{message} completed in {duration:0.2f} seconds")
-            return result
-
-        return timer_func
-
-    return timer_decorator
 
 
 class SqlClient:
