@@ -17,3 +17,13 @@ class ConfigProperty(str, Enum):
     OPTIONS = "options"
     WHERE = "where"
     USE_CACHING = "use_caching"
+
+
+class DefaultConfigValues:
+    OPERATION_ENABLED = True
+    GC_ENABLED = False
+    RETAIN_LAST = 1
+    OLDER_THAN_DAYS = 1
+    MAX_FILES_PER_RECORD = 100
+    STATS_BATCH_SIZE = 100
+    PARALLELISM = 4

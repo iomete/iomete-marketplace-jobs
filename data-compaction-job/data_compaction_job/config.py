@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any
 from pyhocon import ConfigFactory
-from data_compaction_job.constants import CompactionOperation, ConfigProperty
+from data_compaction_job.constants import CompactionOperation, ConfigProperty, DefaultConfigValues
 
 
 def clean_option_keys(options_dict: dict) -> dict:
@@ -19,20 +19,20 @@ def clean_option_keys(options_dict: dict) -> dict:
 
 @dataclass
 class ExpireSnapshotConfig:
-    enabled: bool = True
-    retain_last: int = 1
+    enabled: bool = DefaultConfigValues.OPERATION_ENABLED
+    retain_last: int = DefaultConfigValues.RETAIN_LAST
 
 
 @dataclass
 class RemoveOrphanFilesConfig:
-    enabled: bool = True
-    older_than_days: int = 1
-    max_files_per_record: int = 100
+    enabled: bool = DefaultConfigValues.OPERATION_ENABLED
+    older_than_days: int = DefaultConfigValues.OLDER_THAN_DAYS
+    max_files_per_record: int = DefaultConfigValues.MAX_FILES_PER_RECORD
 
 
 @dataclass
 class RewriteDataFilesConfig:
-    enabled: bool = True
+    enabled: bool = DefaultConfigValues.OPERATION_ENABLED
     strategy: str = None
     sort_order: str = None
     options: dict[str, Any] = None
@@ -41,13 +41,13 @@ class RewriteDataFilesConfig:
 
 @dataclass
 class RewriteManifestsConfig:
-    enabled: bool = True
+    enabled: bool = DefaultConfigValues.OPERATION_ENABLED
     use_caching: bool = None
 
 
 @dataclass
 class GCHandlingConfig:
-    enabled: bool = False
+    enabled: bool = DefaultConfigValues.GC_ENABLED
 
 
 @dataclass
@@ -66,8 +66,8 @@ class ApplicationConfig:
     rewrite_manifests: RewriteManifestsConfig = field(default_factory=RewriteManifestsConfig)
     gc_handling: GCHandlingConfig = field(default_factory=GCHandlingConfig)
     include_exclude: IncludeExcludeConfig = field(default_factory=IncludeExcludeConfig)
-    parallelism: int = 4
-    stats_batch_size: int = 100
+    parallelism: int = DefaultConfigValues.PARALLELISM
+    stats_batch_size: int = DefaultConfigValues.STATS_BATCH_SIZE
     table_overrides: dict[str, dict] = None
 
 
@@ -82,14 +82,17 @@ def get_config(application_config_path) -> ApplicationConfig:
 
     if CompactionOperation.EXPIRE_SNAPSHOT.value in config:
         app_config.expire_snapshot = ExpireSnapshotConfig(
-            enabled=config[CompactionOperation.EXPIRE_SNAPSHOT.value].get(ConfigProperty.ENABLED.value, True),
-            retain_last=config[CompactionOperation.EXPIRE_SNAPSHOT.value].get(ConfigProperty.RETAIN_LAST.value, 1)
+            enabled=config[CompactionOperation.EXPIRE_SNAPSHOT.value].get(ConfigProperty.ENABLED.value,
+                                                                          DefaultConfigValues.OPERATION_ENABLED),
+            retain_last=config[CompactionOperation.EXPIRE_SNAPSHOT.value].get(ConfigProperty.RETAIN_LAST.value,
+                                                                              DefaultConfigValues.RETAIN_LAST)
         )
 
     if CompactionOperation.REWRITE_DATA_FILES.value in config:
         raw_options = dict(config[CompactionOperation.REWRITE_DATA_FILES.value].get(ConfigProperty.OPTIONS.value, {}))
         app_config.rewrite_data_files = RewriteDataFilesConfig(
-            enabled=config[CompactionOperation.REWRITE_DATA_FILES.value].get(ConfigProperty.ENABLED.value, True),
+            enabled=config[CompactionOperation.REWRITE_DATA_FILES.value].get(ConfigProperty.ENABLED.value,
+                                                                             DefaultConfigValues.OPERATION_ENABLED),
             options=clean_option_keys(raw_options),
             strategy=config[CompactionOperation.REWRITE_DATA_FILES.value].get(ConfigProperty.STRATEGY.value, None),
             sort_order=config[CompactionOperation.REWRITE_DATA_FILES.value].get(ConfigProperty.SORT_ORDER.value, None),
@@ -98,27 +101,31 @@ def get_config(application_config_path) -> ApplicationConfig:
 
     if CompactionOperation.REWRITE_MANIFESTS.value in config:
         app_config.rewrite_manifests = RewriteManifestsConfig(
-            enabled=config[CompactionOperation.REWRITE_MANIFESTS.value].get(ConfigProperty.ENABLED.value, True),
+            enabled=config[CompactionOperation.REWRITE_MANIFESTS.value].get(ConfigProperty.ENABLED.value,
+                                                                            DefaultConfigValues.OPERATION_ENABLED),
             use_caching=config[CompactionOperation.REWRITE_MANIFESTS.value].get(ConfigProperty.USE_CACHING.value, None)
         )
 
     if CompactionOperation.REMOVE_ORPHAN_FILES.value in config:
         app_config.remove_orphan_files = RemoveOrphanFilesConfig(
-            enabled=config[CompactionOperation.REMOVE_ORPHAN_FILES.value].get(ConfigProperty.ENABLED.value, True),
-            older_than_days=config[CompactionOperation.REMOVE_ORPHAN_FILES.value].get(ConfigProperty.OLDER_THAN_DAYS.value, 1),
-            max_files_per_record=config[CompactionOperation.REMOVE_ORPHAN_FILES.value].get("max_files_per_record", 100)
+            enabled=config[CompactionOperation.REMOVE_ORPHAN_FILES.value].get(ConfigProperty.ENABLED.value,
+                                                                              DefaultConfigValues.OPERATION_ENABLED),
+            older_than_days=config[CompactionOperation.REMOVE_ORPHAN_FILES.value].get(
+                ConfigProperty.OLDER_THAN_DAYS.value, DefaultConfigValues.OLDER_THAN_DAYS),
+            max_files_per_record=config[CompactionOperation.REMOVE_ORPHAN_FILES.value].get("max_files_per_record",
+                                                                                           DefaultConfigValues.MAX_FILES_PER_RECORD)
         )
 
     if "gc_handling" in config:
         app_config.gc_handling = GCHandlingConfig(
-            enabled=config["gc_handling"].get("enabled", False)
+            enabled=config["gc_handling"].get("enabled", DefaultConfigValues.GC_ENABLED)
         )
 
     if "parallelism" in config:
-        app_config.parallelism = config.get("parallelism", 4)
+        app_config.parallelism = config.get("parallelism", DefaultConfigValues.PARALLELISM)
 
     if "stats_batch_size" in config:
-        app_config.stats_batch_size = config.get("stats_batch_size", 100)
+        app_config.stats_batch_size = config.get("stats_batch_size", DefaultConfigValues.STATS_BATCH_SIZE)
 
     if "databases" in config:
         app_config.include_exclude.databases = config.get("databases", [])

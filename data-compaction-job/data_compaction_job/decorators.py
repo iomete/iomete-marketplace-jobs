@@ -33,17 +33,21 @@ def is_operation_enabled(config, database, table_name, operation: CompactionOper
 
 def operation_enabled(operation: CompactionOperation):
     """Decorator to check if an operation is enabled before executing the method"""
+
     def decorator(method):
         def wrapper(self, catalog, database, table_name, *args, **kwargs):
             if is_operation_enabled(self.config, database, table_name, operation):
                 return method(self, catalog, database, table_name, *args, **kwargs)
             return None
+
         return wrapper
+
     return decorator
 
 
 def timer(message: str):
     """Decorator to time method execution"""
+
     def timer_decorator(method):
         def timer_func(*args, **kw):
             logger.debug(f"{message} started")

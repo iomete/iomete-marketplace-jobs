@@ -21,16 +21,17 @@ def parse_table_list(table_list: List[str], databases: Optional[List[str]] = Non
                 logger.warning(f"Table '{table}' provided without database prefix and no databases available. "
                                f"Please provide table in format <database>.<table> or specify databases in config.")
         else:
-            logger.warning(f"Invalid table format: {table}. Please provide table in format <database>.<table> or <table>")
+            logger.warning(
+                f"Invalid table format: {table}. Please provide table in format <database>.<table> or <table>")
     return mapping
 
 
 def get_table_config_override(
-    table_overrides: Optional[Dict],
-    database: str,
-    table: str,
-    operation: str,
-    config_name: str
+        table_overrides: Optional[Dict],
+        database: str,
+        table: str,
+        operation: str,
+        config_name: str
 ) -> Optional[Any]:
     if not table_overrides:
         return None
