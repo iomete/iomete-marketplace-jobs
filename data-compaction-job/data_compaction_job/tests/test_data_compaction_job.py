@@ -173,7 +173,7 @@ VALUES
     insert_cow_df = spark.sql("SELECT * FROM default.copy_on_write_table")
     insert_mor_df = spark.sql("SELECT * FROM default.merge_on_read_table")
 
-    assert insert_cow_df.count() == insert_cow_df.count()
+    assert insert_cow_df.count() == insert_mor_df.count()
     assert insert_cow_df.subtract(insert_mor_df).count() == 0
     assert insert_mor_df.subtract(insert_cow_df).count() == 0
 

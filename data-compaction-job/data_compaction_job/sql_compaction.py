@@ -240,10 +240,20 @@ class SqlCompaction:
         mapping = defaultdict(list)
         for table in self.config.include_exclude.table_exclude:
             table_split = table.split('.')
-            if len(table_split) != 2:
-                logger.warning(f"Please provide table in format <database>.<table> instead of {table}")
-            else:
+            if len(table_split) == 2:
+                # Table name provided with database prefix (database.table)
                 mapping[table_split[0]].append(table_split[1])
+            elif len(table_split) == 1:
+                # Table name provided without database prefix
+                # Apply to all databases in the config
+                if self.config.include_exclude.databases:
+                    for database in self.config.include_exclude.databases:
+                        mapping[database].append(table_split[0])
+                else:
+                    logger.warning(f"Table '{table}' provided without database prefix and no databases specified in config. "
+                                   f"Please provide table in format <database>.<table> or specify databases in config.")
+            else:
+                logger.warning(f"Invalid table format: {table}. Please provide table in format <database>.<table> or <table>")
         return mapping
 
     @cache
@@ -251,20 +261,38 @@ class SqlCompaction:
         mapping = defaultdict(list)
         for table in self.config.include_exclude.table_include:
             table_split = table.split('.')
-            if len(table_split) != 2:
-                logger.warning(f"Please provide table in format <database>.<table> instead of {table}")
-            else:
+            if len(table_split) == 2:
+                # Table name provided with database prefix (database.table)
                 mapping[table_split[0]].append(table_split[1])
+            elif len(table_split) == 1:
+                # Table name provided without database prefix
+                # Apply to all databases in the config
+                if self.config.include_exclude.databases:
+                    for database in self.config.include_exclude.databases:
+                        mapping[database].append(table_split[0])
+                else:
+                    logger.warning(f"Table '{table}' provided without database prefix and no databases specified in config. "
+                                   f"Please provide table in format <database>.<table> or specify databases in config.")
+            else:
+                logger.warning(f"Invalid table format: {table}. Please provide table in format <database>.<table> or <table>")
         return mapping
 
     def __get_final_config_for_table(self, database, table, operation, config_name):
-        if (self.config.table_overrides
-                and f"{database}.{table}" in self.config.table_overrides
-                and operation in self.config.table_overrides.get(f"{database}.{table}")
-                and config_name in self.config.table_overrides[f"{database}.{table}"][operation]):
-            return self.config.table_overrides[f"{database}.{table}"][operation][config_name]
-        else:
-            return None
+        if self.config.table_overrides:
+            # Try with full database.table format first
+            full_table_name = f"{database}.{table}"
+            if (full_table_name in self.config.table_overrides
+                    and operation in self.config.table_overrides.get(full_table_name)
+                    and config_name in self.config.table_overrides[full_table_name][operation]):
+                return self.config.table_overrides[full_table_name][operation][config_name]
+
+            # Fallback to just table name (without database prefix)
+            if (table in self.config.table_overrides
+                    and operation in self.config.table_overrides.get(table)
+                    and config_name in self.config.table_overrides[table][operation]):
+                return self.config.table_overrides[table][operation][config_name]
+
+        return None
 
 
 def timer(message: str):
