@@ -49,12 +49,12 @@ You will see the job creation page with all inputs filled.
 
 You can specify additional configurations
 
-```
+```HOCON
 {
     // The catalog for which to run compaction
     catalog: "spark_catalog",
     
-    // Batch size for stats collection (default: 100)
+    // Batch size for stats collection (DEFAULT: 100)
     // Higher values reduce database writes but use more memory
     // Set to 1 to disable batching (immediate writes)
     stats_batch_size: 100,
@@ -67,13 +67,17 @@ You can specify additional configurations
     // Tables to be included in the compaction run
     // Used as a whitelist. Default to empty array
     // In case the input is an empty array then we consider all tables in the provided database for compaction
-    // Expects table in the format <database>.<table>
+    // Supports two formats:
+    //   - <database>.<table> - applies to specific table in specific database
+    //   - <table> - applies to table in all databases (from 'databases' config or all available databases if config is empty)
     table_include: [],
-    
+
     // Tables to be excluded in the compaction run
     // Used as a blacklist. Defaults to empty array
     // Ignored if table_include is non empty
-    // Expects table in the format <database>.<table>
+    // Supports two formats:
+    //   - <database>.<table> - excludes specific table in specific database
+    //   - <table> - excludes table from all databases (from 'databases' config or all available databases if config is empty)
     table_exclude: [],
     
     // Configuration for handling tables with G.C. disabled
@@ -86,15 +90,15 @@ You can specify additional configurations
     
     // Default fallback configs for expire_snapshot operation
     expire_snapshot: {
-        // Number of ancestor snapshots to preserve regardless of `older_than`
-        // DEFAULT: 1
+        // Number of ancestor snapshots to preserve regardless of `older_than` (DEFAULT: 1)
         // retain_last: 1
     },
     
     // Default fallback configs for rewrite_data_files operation
     rewrite_data_files: {
         options: {
-            // The minimum number of files that need to be in a file group for it to be considered for compaction. Defaults to 5
+            // The minimum number of files that need to be in a file group for it to be considered for compaction. 
+            // Defaults to 5
             "min-input-files": 2,
 
             // The output file size that this rewrite strategy will attempt to generate when rewriting files.
@@ -105,12 +109,14 @@ You can specify additional configurations
             // These sub-units of the rewrite are referred to as file groups.
             // The largest amount of data that should be compacted in a single group is controlled by MAX_FILE_GROUP_SIZE_BYTES.
             // This helps with breaking down the rewriting of very large partitions which may not be rewritable otherwise due to the resource constraints of the cluster.
-            // "max-file-group-size-bytes" // default is 1024L * 1024L * 1024L * 100L = 100 GB
+            // Defaults to 100GB (1024L * 1024L * 1024L * 100L)
+            // "max-file-group-size-bytes": 107374182400
         }
     },
     
     // Default fallback configs for rewrite_manifests operation
     rewrite_manifests: {
+        // Use Spark caching during operation (defaults to false). Enabling caching can increase memory footprint on executors.
         // Set to false to avoid memory issues on executors
         // use_caching: true
     },
@@ -129,6 +135,9 @@ You can specify additional configurations
     },
     
     // Used to override operation configs for specific tables
+    // Supports two formats for table keys:
+    //   - <database>.<table> - override for specific table in specific database (takes priority)
+    //   - <table> - override for table in all databases (from 'databases' config or all available databases if config is empty)
     table_overrides: {
         // Table for which configs needs to be overridden
         "<database>.<table>": {
