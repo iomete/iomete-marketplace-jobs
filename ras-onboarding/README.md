@@ -25,9 +25,10 @@ This README will guide you through creating and running the job template in the 
 9. [Migration Logic Explained](#migration-logic-explained)
 10. [Duplicate Bundle Handling](#duplicate-bundle-handling)
 11. [Per-Asset-Type Duplicate Handling](#per-asset-type-duplicate-handling)
-12. [Troubleshooting](#troubleshooting)
-13. [Security Notes](#security-notes)
-14. [Monitoring and Logging](#monitoring-and-logging)
+12. [Universal Permission Grant with 'all' Key](#universal-permission-grant-with-all-key)
+13. [Troubleshooting](#troubleshooting)
+14. [Security Notes](#security-notes)
+15. [Monitoring and Logging](#monitoring-and-logging)
 
 ---
 
@@ -250,11 +251,121 @@ asset_mappings: {
       view: ["VIEW"]
       manage: ["UPDATE", "DELETE", "EXECUTE"]
     }
+    asset_action_on_duplicate: "UPDATE"
   }
 }
 ```
 
 **No code changes required** - the job will automatically handle the new asset type.
+
+---
+
+## Universal Permission Grant with 'all' Key
+
+For asset types where **all users and groups** in a domain should receive the **same permissions** regardless of their roles, you can use the special `"all"` key in `permission_mappings`. This bypasses role checking and grants permissions directly to all domain members.
+
+### When to Use 'all' Key
+
+Use the `"all"` key when:
+- **Uniform access is required** for all domain members
+- **Role-based permissions don't apply** to the asset type
+- **Simplified permission model** is preferred over complex role mappings
+- **Quick onboarding** of all users to new asset types
+
+### Configuration
+
+⚠️ **INTERNAL USE ONLY**: The `permission_mappings` section should only be modified in consultation with IOMETE support.
+
+**Example: Jupyter Container assets with universal access**
+```hocon
+asset_mappings: {
+  JUPYTER_CONTAINER: {
+    table: "jupyter_container"
+    id_column: "id"
+    domain_column: "domain"
+    filter_condition: "is_deleted = false"
+    service: "jupyter_container"
+    permission_mappings: {
+      all: ["VIEW", "UPDATE", "DELETE", "RUN"]
+    }
+    asset_action_on_duplicate: "UPDATE"
+  }
+}
+```
+
+### 'all' Key Behavior
+
+When the `"all"` key is present:
+
+1. **Direct Permission Grant**: All users and groups in the domain receive the specified permissions
+2. **No Role Checking**: User/group role mappings and IAM role tables are **not queried**
+3. **Simplified SQL**: Uses optimized queries without role joins for better performance
+4. **Exclusive Usage**: The `"all"` key must be the **only key** in `permission_mappings` (cannot mix with `list`, `view`, `manage`, etc.)
+
+### Comparison: Role-Based vs 'all' Key
+
+**Role-Based Permission Mapping (Traditional):**
+```hocon
+permission_mappings: {
+  list: ["VIEW"]
+  view: ["VIEW"]
+  manage: ["UPDATE", "DELETE", "EXECUTE", "CONSUME"]
+}
+```
+- ✓ Permissions vary by user roles
+- ✓ Fine-grained access control
+- ✗ Requires role mappings in database
+
+**Universal Permission with 'all' Key:**
+```hocon
+permission_mappings: {
+  all: ["VIEW", "UPDATE", "DELETE", "RUN"]
+}
+```
+- ✓ All users get same permissions
+- ✓ Simpler configuration
+
+### Migration Behavior with 'all' Key
+
+**Log Output Example:**
+```
+INFO: Processing JUPYTER_CONTAINER assets for domain production
+INFO: Moved 10 JUPYTER_CONTAINER assets to bundle abc-123-def (action: UPDATE)
+INFO: Set permissions for 25 users in domain production (action: UPDATE, all: ['VIEW', 'UPDATE', 'DELETE', 'RUN'])
+INFO: Set permissions for 5 groups in domain production (action: UPDATE, all: ['VIEW', 'UPDATE', 'DELETE', 'RUN'])
+```
+
+Notice the log includes `all: [permissions]` indicating universal permission grant.
+
+
+### Validation Rules
+
+The job enforces strict validation for the `"all"` key:
+
+1. **Exclusive Key**: If `"all"` is present, it must be the **only key** in `permission_mappings`
+   ```
+   ✓ VALID:   permission_mappings: { all: ["VIEW", "RUN"] }
+   ✗ INVALID: permission_mappings: { all: ["VIEW"], list: ["VIEW"] }
+   ```
+
+2. **Non-Empty Array**: The `"all"` key must have a **non-empty array** of permissions
+   ```
+   ✓ VALID:   all: ["VIEW", "UPDATE"]
+   ✗ INVALID: all: []
+   ✗ INVALID: all: "VIEW"  # Must be array, not string
+   ```
+
+### Error Examples
+
+**Mixed Keys Error:**
+```
+ERROR: Asset configuration validation failed: When 'all' key is used in permission_mappings for asset type 'JUPYTER_CONTAINER', it must be the only key. Found other keys: list, view, manage
+```
+
+**Empty Array Error:**
+```
+ERROR: Asset configuration validation failed: The 'all' key in permission_mappings for asset type 'JUPYTER_CONTAINER' must have a non-empty array of permissions
+```
 
 ---
 
@@ -369,7 +480,7 @@ The `asset_action_on_duplicate` parameter enables granular control per asset typ
 
 ### Configuration
 
-⚠️ **INTERNAL USE ONLY**: The `asset_action_on_duplicate` parameter is configured in the `asset_mappings` section and should only be modified in consultation with IOMETE support.
+⚠️ The `asset_action_on_duplicate` parameter is configured in the `asset_mappings` section and should only be modified in consultation with IOMETE support.
 
 Each asset type in `asset_mappings` must specify an `asset_action_on_duplicate` value:
 

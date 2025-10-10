@@ -1262,3 +1262,309 @@ def test_clear_bundle_operations_called_for_reset(migration, db_manager):
     # Already covered in test_migrate_single_asset_type_with_reset_action
     # but documenting the behavior here
     pass
+
+
+# Tests for 'all' key functionality in permission_mappings
+
+def test_validate_asset_configuration_with_all_key_only(migration):
+    """Test validation passes when 'all' key is the only key in permission_mappings."""
+    # Add asset type with 'all' key only
+    migration.asset_mappings['TEST_ALL'] = {
+        'table': 'test_table',
+        'id_column': 'id',
+        'domain_column': 'domain',
+        'service': 'test_service',
+        'permission_mappings': {
+            'all': ['VIEW', 'UPDATE', 'DELETE', 'RUN']
+        },
+        'asset_action_on_duplicate': 'UPDATE'
+    }
+
+    result = migration.validate_asset_configuration('TEST_ALL')
+    assert result['is_valid'] is True
+
+
+def test_validate_asset_configuration_with_all_key_mixed_fails(migration):
+    """Test validation fails when 'all' key is mixed with other action keys."""
+    # Add asset type with 'all' key mixed with other keys
+    migration.asset_mappings['TEST_MIXED'] = {
+        'table': 'test_table',
+        'id_column': 'id',
+        'domain_column': 'domain',
+        'service': 'test_service',
+        'permission_mappings': {
+            'all': ['VIEW', 'UPDATE'],
+            'list': ['VIEW'],
+            'manage': ['UPDATE', 'DELETE']
+        },
+        'asset_action_on_duplicate': 'UPDATE'
+    }
+
+    result = migration.validate_asset_configuration('TEST_MIXED')
+    assert result['is_valid'] is False
+    assert 'must be the only key' in result['error']
+
+
+def test_validate_asset_configuration_with_all_key_empty_array_fails(migration):
+    """Test validation fails when 'all' key has empty permissions array."""
+    # Add asset type with 'all' key but empty array
+    migration.asset_mappings['TEST_EMPTY'] = {
+        'table': 'test_table',
+        'id_column': 'id',
+        'domain_column': 'domain',
+        'service': 'test_service',
+        'permission_mappings': {
+            'all': []
+        },
+        'asset_action_on_duplicate': 'UPDATE'
+    }
+
+    result = migration.validate_asset_configuration('TEST_EMPTY')
+    assert result['is_valid'] is False
+    assert 'non-empty array' in result['error']
+
+
+def test_validate_asset_configuration_with_all_key_not_list_fails(migration):
+    """Test validation fails when 'all' key value is not a list."""
+    # Add asset type with 'all' key but not a list
+    migration.asset_mappings['TEST_NOT_LIST'] = {
+        'table': 'test_table',
+        'id_column': 'id',
+        'domain_column': 'domain',
+        'service': 'test_service',
+        'permission_mappings': {
+            'all': 'VIEW'
+        },
+        'asset_action_on_duplicate': 'UPDATE'
+    }
+
+    result = migration.validate_asset_configuration('TEST_NOT_LIST')
+    assert result['is_valid'] is False
+    assert 'non-empty array' in result['error']
+
+
+def test_build_permission_subquery_with_all_key(migration):
+    """Test that build_permission_subquery returns simplified query for 'all' key."""
+    # Add asset type with 'all' key
+    migration.asset_mappings['TEST_ALL'] = {
+        'table': 'test_table',
+        'id_column': 'id',
+        'domain_column': 'domain',
+        'service': 'test_service',
+        'permission_mappings': {
+            'all': ['VIEW', 'UPDATE', 'DELETE', 'RUN']
+        },
+        'asset_action_on_duplicate': 'UPDATE'
+    }
+
+    subquery = migration.build_permission_subquery('TEST_ALL')
+
+    # Should be simplified query without role checks
+    assert 'SELECT unnest(ARRAY[' in subquery
+    assert "'VIEW'" in subquery
+    assert "'UPDATE'" in subquery
+    assert "'DELETE'" in subquery
+    assert "'RUN'" in subquery
+    # Should NOT have role-related CTEs
+    assert 'test_service_service' not in subquery
+    assert 'jsonb_path_query' not in subquery
+    assert 'CASE WHEN' not in subquery
+
+
+def test_build_permission_subquery_without_all_key(migration):
+    """Test that build_permission_subquery returns role-based query without 'all' key."""
+    # Use existing COMPUTE asset type (doesn't have 'all' key)
+    subquery = migration.build_permission_subquery('COMPUTE')
+
+    # Should have role-based query structure
+    assert 'lakehouse_service' in subquery
+    assert 'jsonb_path_query' in subquery
+    assert 'CASE WHEN' in subquery
+    assert '@.action' in subquery
+
+
+def test_set_user_permissions_with_all_key(migration, db_manager):
+    """Test that set_user_permissions uses simplified query with 'all' key."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    mock_cursor.rowcount = 3
+    connection.cursor.return_value = mock_cursor
+
+    # Add asset type with 'all' key
+    migration.asset_mappings['TEST_ALL'] = {
+        'table': 'test_table',
+        'id_column': 'id',
+        'domain_column': 'domain',
+        'service': 'test_service',
+        'permission_mappings': {
+            'all': ['VIEW', 'UPDATE', 'DELETE']
+        },
+        'asset_action_on_duplicate': 'UPDATE'
+    }
+
+    # Mock no existing permissions
+    db_manager.execute_query.return_value = []
+
+    migration.set_user_permissions(connection, 'bundle-123', 'domain-1', 'TEST_ALL', 'UPDATE')
+
+    # Verify cursor was called
+    mock_cursor.execute.assert_called_once()
+    sql = mock_cursor.execute.call_args[0][0]
+    params = mock_cursor.execute.call_args[0][1]
+
+    # Should have simplified query without role joins
+    assert 'all_domain_users' in sql
+    assert 'ARRAY[' in sql
+    assert "'VIEW'" in sql
+    assert "'UPDATE'" in sql
+    assert "'DELETE'" in sql
+    # Should NOT have role mapping joins
+    assert 'user_role_mapping_v2' not in sql
+    assert 'iam_role' not in sql
+    assert 'user_all_permissions' not in sql  # No subquery for aggregating permissions
+
+    # Should have only 3 parameters (domain_id, bundle_id, asset_type)
+    assert len(params) == 3
+    assert params == ('domain-1', 'bundle-123', 'TEST_ALL')
+
+
+def test_set_group_permissions_with_all_key(migration, db_manager):
+    """Test that set_group_permissions uses simplified query with 'all' key."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    mock_cursor.rowcount = 2
+    connection.cursor.return_value = mock_cursor
+
+    # Add asset type with 'all' key
+    migration.asset_mappings['TEST_ALL'] = {
+        'table': 'test_table',
+        'id_column': 'id',
+        'domain_column': 'domain',
+        'service': 'test_service',
+        'permission_mappings': {
+            'all': ['VIEW', 'RUN']
+        },
+        'asset_action_on_duplicate': 'UPDATE'
+    }
+
+    # Mock no existing permissions
+    db_manager.execute_query.return_value = []
+
+    migration.set_group_permissions(connection, 'bundle-456', 'domain-2', 'TEST_ALL', 'UPDATE')
+
+    # Verify cursor was called
+    mock_cursor.execute.assert_called_once()
+    sql = mock_cursor.execute.call_args[0][0]
+    params = mock_cursor.execute.call_args[0][1]
+
+    # Should have simplified query without role joins
+    assert 'all_domain_groups' in sql
+    assert 'ARRAY[' in sql
+    assert "'VIEW'" in sql
+    assert "'RUN'" in sql
+    # Should NOT have role mapping joins
+    assert 'group_role_mapping_v2' not in sql
+    assert 'iam_role' not in sql
+    assert 'group_all_permissions' not in sql  # No subquery for aggregating permissions
+
+    # Should have only 3 parameters (domain_id, bundle_id, asset_type)
+    assert len(params) == 3
+    assert params == ('domain-2', 'bundle-456', 'TEST_ALL')
+
+
+def test_set_user_permissions_without_all_key_uses_role_based_query(migration, db_manager):
+    """Test that set_user_permissions uses role-based query without 'all' key."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    mock_cursor.rowcount = 5
+    connection.cursor.return_value = mock_cursor
+
+    # Mock no existing permissions
+    db_manager.execute_query.return_value = []
+
+    # Use COMPUTE asset type which doesn't have 'all' key
+    migration.set_user_permissions(connection, 'bundle-789', 'domain-3', 'COMPUTE', 'UPDATE')
+
+    # Verify cursor was called
+    mock_cursor.execute.assert_called_once()
+    sql = mock_cursor.execute.call_args[0][0]
+    params = mock_cursor.execute.call_args[0][1]
+
+    # Should have role-based query with joins
+    assert 'user_role_mapping_v2' in sql
+    assert 'iam_role' in sql
+    assert 'user_all_permissions' in sql
+    assert 'ARRAY_AGG(DISTINCT perm)' in sql
+
+    # Should have 5 parameters (domain_id appears 3 times, then bundle_id, asset_type)
+    assert len(params) == 5
+    assert params == ('domain-3', 'domain-3', 'domain-3', 'bundle-789', 'COMPUTE')
+
+
+def test_set_group_permissions_without_all_key_uses_role_based_query(migration, db_manager):
+    """Test that set_group_permissions uses role-based query without 'all' key."""
+    connection = Mock()
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    mock_cursor.rowcount = 4
+    connection.cursor.return_value = mock_cursor
+
+    # Mock no existing permissions
+    db_manager.execute_query.return_value = []
+
+    # Use COMPUTE asset type which doesn't have 'all' key
+    migration.set_group_permissions(connection, 'bundle-999', 'domain-4', 'COMPUTE', 'UPDATE')
+
+    # Verify cursor was called
+    mock_cursor.execute.assert_called_once()
+    sql = mock_cursor.execute.call_args[0][0]
+    params = mock_cursor.execute.call_args[0][1]
+
+    # Should have role-based query with joins
+    assert 'group_role_mapping_v2' in sql
+    assert 'iam_role' in sql
+    assert 'group_all_permissions' in sql
+    assert 'ARRAY_AGG(DISTINCT perm)' in sql
+
+    # Should have 5 parameters (domain_id appears 3 times, then bundle_id, asset_type)
+    assert len(params) == 5
+    assert params == ('domain-4', 'domain-4', 'domain-4', 'bundle-999', 'COMPUTE')
+
+
+def test_all_key_functionality_end_to_end(migration, db_manager):
+    """Test end-to-end migration with 'all' key asset type."""
+    # Add asset type with 'all' key
+    migration.asset_mappings['JUPYTER_CONTAINER'] = {
+        'table': 'jupyter_container',
+        'id_column': 'id',
+        'domain_column': 'domain',
+        'filter_condition': 'is_deleted = false',
+        'service': 'jupyter_container',
+        'permission_mappings': {
+            'all': ['VIEW', 'UPDATE', 'DELETE', 'RUN']
+        },
+        'asset_action_on_duplicate': 'UPDATE'
+    }
+
+    # Test validation
+    validation = migration.validate_asset_configuration('JUPYTER_CONTAINER')
+    assert validation['is_valid'] is True
+
+    # Test permission subquery building
+    subquery = migration.build_permission_subquery('JUPYTER_CONTAINER')
+    assert 'SELECT unnest(ARRAY[' in subquery
+    assert "'VIEW'" in subquery
+    assert "'UPDATE'" in subquery
+    assert "'DELETE'" in subquery
+    assert "'RUN'" in subquery
+    assert 'jsonb_path_query' not in subquery  # No role checking
+
+    # Verify asset type can be used in migration
+    assert 'JUPYTER_CONTAINER' in migration.asset_mappings

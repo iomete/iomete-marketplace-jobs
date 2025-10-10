@@ -211,7 +211,16 @@ class AssetOnboardingMigration:
         service = mapping['service']
         permission_mappings = mapping.get('permission_mappings', {})
 
-        # Build CASE statements dynamically
+        # Check if 'all' key is present - special handling
+        if 'all' in permission_mappings:
+            # When 'all' key is present, return permissions directly without role checking
+            all_permissions = permission_mappings['all']
+            permissions_array = ', '.join(f"'{perm}'" for perm in all_permissions)
+            return f"""
+                     SELECT unnest(ARRAY[{permissions_array}]) as perm
+            """
+
+        # Build CASE statements dynamically for role-based permissions
         case_statements = []
         for action, permissions in permission_mappings.items():
             for perm in permissions:
@@ -257,11 +266,29 @@ class AssetOnboardingMigration:
                 }
 
         # Validate permission mappings exist
-        if not mapping.get('permission_mappings'):
+        permission_mappings = mapping.get('permission_mappings')
+        if not permission_mappings:
             return {
                 "is_valid": False,
                 "error": f"Missing permission_mappings for asset type '{asset_type}'"
             }
+
+        # Validate 'all' key usage in permission_mappings
+        if 'all' in permission_mappings:
+            # If 'all' key is present, it must be the only key
+            if len(permission_mappings) > 1:
+                return {
+                    "is_valid": False,
+                    "error": f"When 'all' key is used in permission_mappings for asset type '{asset_type}', it must be the only key. Found other keys: {', '.join([k for k in permission_mappings.keys() if k != 'all'])}"
+                }
+
+            # Validate that 'all' has a non-empty array of permissions
+            all_permissions = permission_mappings.get('all')
+            if not all_permissions or not isinstance(all_permissions, list) or len(all_permissions) == 0:
+                return {
+                    "is_valid": False,
+                    "error": f"The 'all' key in permission_mappings for asset type '{asset_type}' must have a non-empty array of permissions"
+                }
 
         # Validate asset_action_on_duplicate has valid value
         valid_actions = ['SKIP', 'UPDATE', 'ERROR', 'RESET']
@@ -329,8 +356,10 @@ class AssetOnboardingMigration:
             logger.info(f"Skipping permission setting for {asset_type.lower()} as {len(existing_permissions)} records already exist (action: SKIP)")
             return
 
-        # Build dynamic permission subquery
-        permission_subquery = self.build_permission_subquery(asset_type)
+        # Check if 'all' key is present in permission_mappings
+        mapping = self.asset_mappings.get(asset_type)
+        permission_mappings = mapping.get('permission_mappings', {})
+        has_all_key = 'all' in permission_mappings
 
         # For UPDATE: merge permissions using array concatenation and deduplication
         # For RESET: RESET already cleared permissions, so just insert
@@ -346,53 +375,96 @@ class AssetOnboardingMigration:
         elif asset_action == 'RESET':
             on_conflict_clause = "ON CONFLICT (bundle_id, asset_type, actor_type, actor_id) DO NOTHING"
 
-        user_permissions_query = f"""
-            WITH all_domain_users AS (
-                SELECT dm.identity_id as username
-                FROM domain_member dm
-                         JOIN iam_user u ON u.username = dm.identity_id
-                WHERE dm.domain_id = %s
-                  AND dm.identity_type = 'USER'
-                  AND u.is_deleted = false
-            ),
-             user_all_permissions AS (
-                 SELECT
-                     adu.username,
-                     ARRAY_AGG(DISTINCT perm) FILTER (WHERE perm IS NOT NULL) as all_permissions
-                 FROM all_domain_users adu
-                          LEFT JOIN user_role_mapping_v2 urm ON urm.username = adu.username AND urm.domain = %s
-                          LEFT JOIN iam_role r ON (r.name = urm.role_name AND r.domain = urm.domain AND r.is_deleted = false)
-                     OR (r.name = 'default' AND r.domain = %s AND r.is_deleted = false)
-                          CROSS JOIN LATERAL ({permission_subquery.strip()}
-                     ) perms
-                 GROUP BY adu.username
-             )
-            INSERT INTO bundle_permission (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
-            SELECT
-                %s,
-                %s,
-                'USER',
-                username,
-                all_permissions,
-                current_timestamp,
-                'system',
-                current_timestamp,
-                'system'
-            FROM user_all_permissions
-            WHERE all_permissions IS NOT NULL
-            ORDER BY username
-            {on_conflict_clause}
-        """
+        if has_all_key:
+            # Simplified query for 'all' key - grant permissions to all domain users without role checking
+            all_permissions = permission_mappings['all']
+            permissions_array = ', '.join(f"'{perm}'" for perm in all_permissions)
 
-        affected_rows = 0
-        logger.debug(f"update: {user_permissions_query}")
-        logger.debug(f"Parameters: ({domain_id}, {domain_id}, {domain_id}, {bundle_id}, {asset_type})")
+            user_permissions_query = f"""
+                WITH all_domain_users AS (
+                    SELECT DISTINCT dm.identity_id as username
+                    FROM domain_member dm
+                             JOIN iam_user u ON u.username = dm.identity_id
+                    WHERE dm.domain_id = %s
+                      AND dm.identity_type = 'USER'
+                      AND u.is_deleted = false
+                )
+                INSERT INTO bundle_permission (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
+                SELECT
+                    %s,
+                    %s,
+                    'USER',
+                    username,
+                    ARRAY[{permissions_array}],
+                    current_timestamp,
+                    'system',
+                    current_timestamp,
+                    'system'
+                FROM all_domain_users
+                ORDER BY username
+                {on_conflict_clause}
+            """
 
-        with connection.cursor() as cursor:
-                cursor.execute(user_permissions_query, (domain_id, domain_id, domain_id, bundle_id, asset_type))
-                affected_rows = cursor.rowcount
+            affected_rows = 0
+            logger.debug(f"update: {user_permissions_query}")
+            logger.debug(f"Parameters: ({domain_id}, {bundle_id}, {asset_type})")
 
-        logger.info(f"Set permissions for {affected_rows} users in domain {domain_id} (action: {asset_action})")
+            with connection.cursor() as cursor:
+                    cursor.execute(user_permissions_query, (domain_id, bundle_id, asset_type))
+                    affected_rows = cursor.rowcount
+
+            logger.info(f"Set permissions for {affected_rows} users in domain {domain_id} (action: {asset_action}, all: {all_permissions})")
+        else:
+            # Build dynamic permission subquery for role-based permissions
+            permission_subquery = self.build_permission_subquery(asset_type)
+
+            user_permissions_query = f"""
+                WITH all_domain_users AS (
+                    SELECT dm.identity_id as username
+                    FROM domain_member dm
+                             JOIN iam_user u ON u.username = dm.identity_id
+                    WHERE dm.domain_id = %s
+                      AND dm.identity_type = 'USER'
+                      AND u.is_deleted = false
+                ),
+                 user_all_permissions AS (
+                     SELECT
+                         adu.username,
+                         ARRAY_AGG(DISTINCT perm) FILTER (WHERE perm IS NOT NULL) as all_permissions
+                     FROM all_domain_users adu
+                              LEFT JOIN user_role_mapping_v2 urm ON urm.username = adu.username AND urm.domain = %s
+                              LEFT JOIN iam_role r ON (r.name = urm.role_name AND r.domain = urm.domain AND r.is_deleted = false)
+                         OR (r.name = 'default' AND r.domain = %s AND r.is_deleted = false)
+                              CROSS JOIN LATERAL ({permission_subquery.strip()}
+                         ) perms
+                     GROUP BY adu.username
+                 )
+                INSERT INTO bundle_permission (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
+                SELECT
+                    %s,
+                    %s,
+                    'USER',
+                    username,
+                    all_permissions,
+                    current_timestamp,
+                    'system',
+                    current_timestamp,
+                    'system'
+                FROM user_all_permissions
+                WHERE all_permissions IS NOT NULL
+                ORDER BY username
+                {on_conflict_clause}
+            """
+
+            affected_rows = 0
+            logger.debug(f"update: {user_permissions_query}")
+            logger.debug(f"Parameters: ({domain_id}, {domain_id}, {domain_id}, {bundle_id}, {asset_type})")
+
+            with connection.cursor() as cursor:
+                    cursor.execute(user_permissions_query, (domain_id, domain_id, domain_id, bundle_id, asset_type))
+                    affected_rows = cursor.rowcount
+
+            logger.info(f"Set permissions for {affected_rows} users in domain {domain_id} (action: {asset_action})")
 
     def set_group_permissions(self, connection, bundle_id: str, domain_id: str, asset_type: str, asset_action_on_duplicate: str = 'UPDATE'):
         """
@@ -426,8 +498,10 @@ class AssetOnboardingMigration:
             logger.info(f"Skipping permission setting for {asset_type.lower()} groups as {len(existing_permissions)} records already exist (action: SKIP)")
             return
 
-        # Build dynamic permission subquery
-        permission_subquery = self.build_permission_subquery(asset_type)
+        # Check if 'all' key is present in permission_mappings
+        mapping = self.asset_mappings.get(asset_type)
+        permission_mappings = mapping.get('permission_mappings', {})
+        has_all_key = 'all' in permission_mappings
 
         # For UPDATE: merge permissions using array concatenation and deduplication
         # For RESET: RESET already cleared permissions, so just insert
@@ -443,50 +517,93 @@ class AssetOnboardingMigration:
         elif asset_action == 'RESET':
             on_conflict_clause = "ON CONFLICT (bundle_id, asset_type, actor_type, actor_id) DO NOTHING"
 
-        group_permissions_query = f"""
-            WITH all_domain_groups AS (
-                SELECT dm.identity_id as group_name
-                FROM domain_member dm
-                         JOIN iam_group g ON g.name = dm.identity_id
-                WHERE dm.domain_id = %s
-                  AND dm.identity_type = 'GROUP'
-                  AND g.is_deleted = false
-            ),
-             group_all_permissions AS (
-                 SELECT
-                     adg.group_name,
-                     ARRAY_AGG(DISTINCT perm) FILTER (WHERE perm IS NOT NULL) as all_permissions
-                 FROM all_domain_groups adg
-                          LEFT JOIN group_role_mapping_v2 grm ON grm.group_name = adg.group_name AND grm.domain = %s
-                          LEFT JOIN iam_role r ON (r.name = grm.role_name AND r.domain = grm.domain AND r.is_deleted = false)
-                     OR (r.name = 'default' AND r.domain = %s AND r.is_deleted = false)
-                          CROSS JOIN LATERAL ({permission_subquery.strip()}
-                     ) perms
-                 GROUP BY adg.group_name
-             )
-            INSERT INTO bundle_permission (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
-            SELECT
-                %s,
-                %s,
-                'GROUP',
-                group_name,
-                all_permissions,
-                current_timestamp,
-                'system',
-                current_timestamp,
-                'system'
-            FROM group_all_permissions
-            WHERE all_permissions IS NOT NULL
-            ORDER BY group_name
-            {on_conflict_clause}
-        """
+        if has_all_key:
+            # Simplified query for 'all' key - grant permissions to all domain groups without role checking
+            all_permissions = permission_mappings['all']
+            permissions_array = ', '.join(f"'{perm}'" for perm in all_permissions)
 
-        affected_rows = 0
-        with connection.cursor() as cursor:
-            cursor.execute(group_permissions_query, (domain_id, domain_id, domain_id, bundle_id, asset_type))
-            affected_rows = cursor.rowcount
+            group_permissions_query = f"""
+                WITH all_domain_groups AS (
+                    SELECT DISTINCT dm.identity_id as group_name
+                    FROM domain_member dm
+                             JOIN iam_group g ON g.name = dm.identity_id
+                    WHERE dm.domain_id = %s
+                      AND dm.identity_type = 'GROUP'
+                      AND g.is_deleted = false
+                )
+                INSERT INTO bundle_permission (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
+                SELECT
+                    %s,
+                    %s,
+                    'GROUP',
+                    group_name,
+                    ARRAY[{permissions_array}],
+                    current_timestamp,
+                    'system',
+                    current_timestamp,
+                    'system'
+                FROM all_domain_groups
+                ORDER BY group_name
+                {on_conflict_clause}
+            """
 
-        logger.info(f"Set permissions for {affected_rows} groups in domain {domain_id} (action: {asset_action})")
+            affected_rows = 0
+            logger.debug(f"update: {group_permissions_query}")
+            logger.debug(f"Parameters: ({domain_id}, {bundle_id}, {asset_type})")
+
+            with connection.cursor() as cursor:
+                cursor.execute(group_permissions_query, (domain_id, bundle_id, asset_type))
+                affected_rows = cursor.rowcount
+
+            logger.info(f"Set permissions for {affected_rows} groups in domain {domain_id} (action: {asset_action}, all: {all_permissions})")
+        else:
+            # Build dynamic permission subquery for role-based permissions
+            permission_subquery = self.build_permission_subquery(asset_type)
+
+            group_permissions_query = f"""
+                WITH all_domain_groups AS (
+                    SELECT dm.identity_id as group_name
+                    FROM domain_member dm
+                             JOIN iam_group g ON g.name = dm.identity_id
+                    WHERE dm.domain_id = %s
+                      AND dm.identity_type = 'GROUP'
+                      AND g.is_deleted = false
+                ),
+                 group_all_permissions AS (
+                     SELECT
+                         adg.group_name,
+                         ARRAY_AGG(DISTINCT perm) FILTER (WHERE perm IS NOT NULL) as all_permissions
+                     FROM all_domain_groups adg
+                              LEFT JOIN group_role_mapping_v2 grm ON grm.group_name = adg.group_name AND grm.domain = %s
+                              LEFT JOIN iam_role r ON (r.name = grm.role_name AND r.domain = grm.domain AND r.is_deleted = false)
+                         OR (r.name = 'default' AND r.domain = %s AND r.is_deleted = false)
+                              CROSS JOIN LATERAL ({permission_subquery.strip()}
+                         ) perms
+                     GROUP BY adg.group_name
+                 )
+                INSERT INTO bundle_permission (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
+                SELECT
+                    %s,
+                    %s,
+                    'GROUP',
+                    group_name,
+                    all_permissions,
+                    current_timestamp,
+                    'system',
+                    current_timestamp,
+                    'system'
+                FROM group_all_permissions
+                WHERE all_permissions IS NOT NULL
+                ORDER BY group_name
+                {on_conflict_clause}
+            """
+
+            affected_rows = 0
+            with connection.cursor() as cursor:
+                cursor.execute(group_permissions_query, (domain_id, domain_id, domain_id, bundle_id, asset_type))
+                affected_rows = cursor.rowcount
+
+            logger.info(f"Set permissions for {affected_rows} groups in domain {domain_id} (action: {asset_action})")
 
     def check_existing_bundle(self, connection, domain_id: str) -> Dict[str, Any]:
         """
