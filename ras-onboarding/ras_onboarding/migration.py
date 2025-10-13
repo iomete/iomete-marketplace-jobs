@@ -10,9 +10,9 @@ logger = get_logger(__name__)
 class AssetOnboardingMigration:
     """Handles the asset onboarding migration process for any asset type."""
 
-    def __init__(self, bundle_migration_db: DatabaseManager, asset_dbs: Dict[str, DatabaseManager], config: Dict[str, Any]):
+    def __init__(self, bundle_migration_db: DatabaseManager, asset_db: DatabaseManager, config: Dict[str, Any]):
         self.bundle_migration_db = bundle_migration_db
-        self.asset_dbs = asset_dbs
+        self.asset_db = asset_db
         self.migration_config = config.get("migration", {})
         self.asset_mappings = config.get("asset_mappings", {})
         self.debug_mode = self.migration_config.get("debug_mode", False)
@@ -44,9 +44,15 @@ class AssetOnboardingMigration:
         logger.info(f"Created default bundle {bundle_id} for domain {domain_id}")
         return bundle_id
 
-    def get_domain_assets(self, asset_db: DatabaseManager, domain_id: str, asset_type: str) -> List[str]:
+    def build_asset_query(self, asset_type: str) -> str:
         """
-        Fetch assets for a given domain from the correct asset DB.
+        Build dynamic asset query from configuration.
+
+        Args:
+            asset_type: Asset type to build query for
+
+        Returns:
+            SQL query string for fetching assets
         """
         mapping = self.asset_mappings.get(asset_type)
         if not mapping:
@@ -56,11 +62,28 @@ class AssetOnboardingMigration:
         id_column = mapping["id_column"]
         domain_column = mapping["domain_column"]
 
-        query = f"""
+        base_query = f"""
             SELECT {id_column}
             FROM {table}
-            WHERE is_deleted = false AND {domain_column} = %s
+            WHERE {domain_column} = %s
         """
+
+        # Add optional filter condition
+        if filter_condition := mapping.get('filter_condition'):
+            base_query += f" AND {filter_condition}"
+
+        return base_query
+
+    def get_domain_assets(self, asset_db: DatabaseManager, domain_id: str, asset_type: str) -> List[str]:
+        """
+        Fetch assets for a given domain from the correct asset DB.
+        """
+        mapping = self.asset_mappings.get(asset_type)
+        if not mapping:
+            raise ValueError(f"Unknown asset type: {asset_type}")
+
+        id_column = mapping["id_column"]
+        query = self.build_asset_query(asset_type)
 
         with asset_db.get_connection() as conn:
             results = asset_db.execute_query(conn, query, (domain_id,))
@@ -69,7 +92,57 @@ class AssetOnboardingMigration:
         logger.info(f"Found {len(asset_ids)} {asset_type.lower()} assets in domain {domain_id}")
         return asset_ids
 
-    def move_assets_to_bundle(self, connection, bundle_id: str, asset_ids: List[str], asset_type: str):
+    def get_existing_bundle_assets(self, connection, bundle_id: str, asset_type: str, asset_ids: List[str]) -> List[str]:
+        """
+        Get assets that already exist in the bundle.
+
+        Args:
+            connection: Database connection
+            bundle_id: Bundle identifier
+            asset_type: Asset type
+            asset_ids: List of asset IDs to check
+
+        Returns:
+            List of asset IDs that already exist in the bundle
+        """
+        if not asset_ids:
+            return []
+
+        # Build query to check which assets already exist
+        asset_ids_str = ', '.join(f"'{asset_id}'" for asset_id in asset_ids)
+        check_existing_query = f"""
+            SELECT asset_id FROM bundle_asset
+            WHERE bundle_id = %s AND asset_type = %s AND asset_id IN ({asset_ids_str})
+        """
+
+        results = self.bundle_migration_db.execute_query(connection, check_existing_query, (bundle_id, asset_type))
+        existing_asset_ids = [row['asset_id'] for row in results] if results else []
+
+        logger.info(f"Found {len(existing_asset_ids)} existing {asset_type.lower()} assets in bundle {bundle_id}")
+        return existing_asset_ids
+
+    def get_existing_bundle_permissions(self, connection, bundle_id: str, asset_type: str) -> List[Dict[str, Any]]:
+        """
+        Get existing permissions for an asset type in the bundle.
+
+        Args:
+            connection: Database connection
+            bundle_id: Bundle identifier
+            asset_type: Asset type
+
+        Returns:
+            List of existing permission records
+        """
+        check_permissions_query = """
+            SELECT actor_type, actor_id, permissions FROM bundle_permission
+            WHERE bundle_id = %s AND asset_type = %s
+        """
+
+        results = self.bundle_migration_db.execute_query(connection, check_permissions_query, (bundle_id, asset_type))
+        logger.info(f"Found {len(results)} existing permission records for {asset_type.lower()} in bundle {bundle_id}")
+        return results if results else []
+
+    def move_assets_to_bundle(self, connection, bundle_id: str, asset_ids: List[str], asset_type: str, asset_action_on_duplicate: str = 'UPDATE'):
         """
         Move assets to the default bundle.
 
@@ -78,11 +151,33 @@ class AssetOnboardingMigration:
             bundle_id: Bundle identifier
             asset_ids: List of asset IDs to move
             asset_type: Asset type (COMPUTE, PIPELINE, DATASET, etc.)
+            asset_action_on_duplicate: Action for duplicate assets (SKIP, UPDATE, ERROR, RESET)
         """
         if not asset_ids:
             logger.info(f"No {asset_type.lower()} assets to move")
             return
 
+        asset_action = asset_action_on_duplicate.upper()
+
+        # Check for existing assets
+        existing_asset_ids = self.get_existing_bundle_assets(connection, bundle_id, asset_type, asset_ids)
+
+        # Handle ERROR action
+        if asset_action == 'ERROR' and existing_asset_ids:
+            raise ValueError(
+                f"Asset action is ERROR and {len(existing_asset_ids)} {asset_type.lower()} assets already exist in bundle {bundle_id}: {existing_asset_ids[:5]}"
+            )
+
+        # Handle SKIP action - only insert new assets
+        if asset_action == 'SKIP':
+            asset_ids_to_insert = [aid for aid in asset_ids if aid not in existing_asset_ids]
+            if not asset_ids_to_insert:
+                logger.info(f"All {len(asset_ids)} {asset_type.lower()} assets already exist in bundle (action: SKIP)")
+                return
+            logger.info(f"Skipping {len(existing_asset_ids)} existing assets, inserting {len(asset_ids_to_insert)} new {asset_type.lower()} assets")
+            asset_ids = asset_ids_to_insert
+
+        # For UPDATE and RESET: insert with ON CONFLICT DO NOTHING (RESET already cleared assets)
         # Build the values clause for the insert
         values_clause = ', '.join(
             f"('{bundle_id}', '{asset_type}', '{asset_id}', current_timestamp, 'system', current_timestamp, 'system')"
@@ -92,14 +187,144 @@ class AssetOnboardingMigration:
         insert_bundle_assets_query = f"""
             INSERT INTO bundle_asset (bundle_id, asset_type, asset_id, created_at, created_by, updated_at, updated_by)
             VALUES {values_clause}
+            ON CONFLICT (bundle_id, asset_type, asset_id) DO NOTHING
         """
 
         with connection.cursor() as cursor:
             cursor.execute(insert_bundle_assets_query)
-        logger.info(f"Moved {len(asset_ids)} {asset_type.lower()} assets to bundle {bundle_id}")
+        logger.info(f"Moved {len(asset_ids)} {asset_type.lower()} assets to bundle {bundle_id} (action: {asset_action})")
 
+    def build_permission_subquery(self, asset_type: str) -> str:
+        """
+        Build dynamic permission extraction subquery based on asset type configuration.
 
-    def set_user_permissions(self, connection, bundle_id: str, domain_id: str, asset_type: str):
+        Args:
+            asset_type: Asset type to build permissions for
+
+        Returns:
+            SQL subquery for extracting permissions
+        """
+        mapping = self.asset_mappings.get(asset_type)
+        if not mapping:
+            raise ValueError(f"Unknown asset type: {asset_type}")
+
+        service = mapping['service']
+        permission_mappings = mapping.get('permission_mappings', {})
+
+        # Check if 'all' key is present - special handling
+        if 'all' in permission_mappings:
+            # When 'all' key is present, return permissions directly without role checking
+            all_permissions = permission_mappings['all']
+            permissions_array = ', '.join(f"'{perm}'" for perm in all_permissions)
+            return f"""
+                     SELECT unnest(ARRAY[{permissions_array}]) as perm
+            """
+
+        # Build CASE statements dynamically for role-based permissions
+        case_statements = []
+        for action, permissions in permission_mappings.items():
+            for perm in permissions:
+                case_statements.append(
+                    f"CASE WHEN jsonb_path_exists({service}_perms, '$.actions[*] ? (@.action == \"{action}\")') THEN '{perm}' END"
+                )
+
+        case_statements_joined = ',\n                         '.join(case_statements)
+        return f"""
+                     WITH {service}_service AS (
+                         SELECT jsonb_path_query(r.permissions::jsonb, '$[*] ? (@.service == "{service}")') as {service}_perms
+                     )
+                     SELECT unnest(ARRAY[
+                         {case_statements_joined}
+                         ]) as perm
+                     FROM {service}_service
+                     WHERE {service}_perms IS NOT NULL
+        """
+
+    def validate_asset_configuration(self, asset_type: str) -> Dict[str, Any]:
+        """
+        Validate asset type configuration.
+
+        Args:
+            asset_type: Asset type to validate
+
+        Returns:
+            Validation result dictionary
+        """
+        mapping = self.asset_mappings.get(asset_type)
+        if not mapping:
+            return {
+                "is_valid": False,
+                "error": f"Asset type '{asset_type}' not found in configuration"
+            }
+
+        required_fields = ['table', 'id_column', 'domain_column', 'service', 'asset_action_on_duplicate']
+        for field in required_fields:
+            if not mapping.get(field):
+                return {
+                    "is_valid": False,
+                    "error": f"Missing required field '{field}' for asset type '{asset_type}'"
+                }
+
+        # Validate permission mappings exist
+        permission_mappings = mapping.get('permission_mappings')
+        if not permission_mappings:
+            return {
+                "is_valid": False,
+                "error": f"Missing permission_mappings for asset type '{asset_type}'"
+            }
+
+        # Validate 'all' key usage in permission_mappings
+        if 'all' in permission_mappings:
+            # If 'all' key is present, it must be the only key
+            if len(permission_mappings) > 1:
+                return {
+                    "is_valid": False,
+                    "error": f"When 'all' key is used in permission_mappings for asset type '{asset_type}', it must be the only key. Found other keys: {', '.join([k for k in permission_mappings.keys() if k != 'all'])}"
+                }
+
+            # Validate that 'all' has a non-empty array of permissions
+            all_permissions = permission_mappings.get('all')
+            if not all_permissions or not isinstance(all_permissions, list) or len(all_permissions) == 0:
+                return {
+                    "is_valid": False,
+                    "error": f"The 'all' key in permission_mappings for asset type '{asset_type}' must have a non-empty array of permissions"
+                }
+
+        # Validate asset_action_on_duplicate has valid value
+        valid_actions = ['SKIP', 'UPDATE', 'ERROR', 'RESET']
+        asset_action = mapping.get('asset_action_on_duplicate', '').upper()
+        if asset_action not in valid_actions:
+            return {
+                "is_valid": False,
+                "error": f"Invalid asset_action_on_duplicate '{asset_action}' for asset type '{asset_type}'. Must be one of: {', '.join(valid_actions)}"
+            }
+
+        return {"is_valid": True}
+
+    def get_asset_types_from_config(self, domain_config: Dict[str, Any]) -> List[str]:
+        """
+        Extract asset types from domain configuration.
+
+        Args:
+            domain_config: Domain configuration dictionary
+
+        Returns:
+            List of asset types to migrate
+        """
+        # Support both 'asset_types' (preferred) and 'asset_type' (backward compatibility)
+        if 'asset_types' in domain_config:
+            asset_types = domain_config['asset_types']
+            if isinstance(asset_types, list):
+                return asset_types
+            else:
+                return [asset_types]  # Convert single item to list
+        elif 'asset_type' in domain_config:
+            # Backward compatibility: convert single asset_type to list
+            return [domain_config['asset_type']]
+        else:
+            return ["COMPUTE"]  # Default fallback
+
+    def set_user_permissions(self, connection, bundle_id: str, domain_id: str, asset_type: str, asset_action_on_duplicate: str = 'UPDATE'):
         """
         Set user permissions for the bundle based on existing role mappings.
 
@@ -108,73 +333,140 @@ class AssetOnboardingMigration:
             bundle_id: Bundle identifier
             domain_id: Domain identifier
             asset_type: Asset type (COMPUTE, PIPELINE, DATASET, etc.)
+            asset_action_on_duplicate: Action for duplicate permissions (SKIP, UPDATE, ERROR, RESET)
         """
+        # Validate asset configuration
+        validation = self.validate_asset_configuration(asset_type)
+        if not validation["is_valid"]:
+            raise ValueError(f"Asset configuration validation failed: {validation['error']}")
+
+        asset_action = asset_action_on_duplicate.upper()
+
+        # Check for existing permissions
+        existing_permissions = self.get_existing_bundle_permissions(connection, bundle_id, asset_type)
+
+        # Handle ERROR action
+        if asset_action == 'ERROR' and existing_permissions:
+            raise ValueError(
+                f"Asset action is ERROR and {len(existing_permissions)} permission records already exist for {asset_type.lower()} in bundle {bundle_id}"
+            )
+
+        # Handle SKIP action
+        if asset_action == 'SKIP' and existing_permissions:
+            logger.info(f"Skipping permission setting for {asset_type.lower()} as {len(existing_permissions)} records already exist (action: SKIP)")
+            return
+
+        # Check if 'all' key is present in permission_mappings
         mapping = self.asset_mappings.get(asset_type)
-        if not mapping:
-            raise ValueError(f"Unknown asset type: {asset_type}")
+        permission_mappings = mapping.get('permission_mappings', {})
+        has_all_key = 'all' in permission_mappings
 
-        user_permissions_query = """
-            WITH all_domain_users AS (
-                SELECT dm.identity_id as username
-                FROM domain_member dm
-                         JOIN iam_user u ON u.username = dm.identity_id
-                WHERE dm.domain_id = %s
-                  AND dm.identity_type = 'USER'
-                  AND u.is_deleted = false
-            ),
-             user_all_permissions AS (
-                 SELECT
-                     adu.username,
-                     ARRAY_AGG(DISTINCT perm) FILTER (WHERE perm IS NOT NULL) as all_permissions
-                 FROM all_domain_users adu
-                          LEFT JOIN user_role_mapping_v2 urm ON urm.username = adu.username AND urm.domain = %s
-                          LEFT JOIN iam_role r ON (r.name = urm.role_name AND r.domain = urm.domain AND r.is_deleted = false)
-                     OR (r.name = 'default' AND r.domain = %s AND r.is_deleted = false)
-                          CROSS JOIN LATERAL (
-                     WITH lakehouse_service AS (
-                         SELECT jsonb_path_query(r.permissions::jsonb, '$[*] ? (@.service == "lakehouse")') as lakehouse_perms
-                     )
-                     SELECT unnest(ARRAY[
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "list")') THEN 'VIEW' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "view")') THEN 'VIEW' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'UPDATE' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'DELETE' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'EXECUTE' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'CONSUME' END
-                         ]) as perm
-                     FROM lakehouse_service
-                     WHERE lakehouse_perms IS NOT NULL
-                     ) perms
-                 GROUP BY adu.username
-             )
-            INSERT INTO bundle_permission (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
-            SELECT
-                %s,
-                %s,
-                'USER',
-                username,
-                all_permissions,
-                current_timestamp,
-                'system',
-                current_timestamp,
-                'system'
-            FROM user_all_permissions
-            WHERE all_permissions IS NOT NULL
-            ORDER BY username
-        """
+        # For UPDATE: merge permissions using array concatenation and deduplication
+        # For RESET: RESET already cleared permissions, so just insert
+        on_conflict_clause = ""
+        if asset_action == 'UPDATE':
+            on_conflict_clause = """
+            ON CONFLICT (bundle_id, asset_type, actor_type, actor_id)
+            DO UPDATE SET
+                permissions = ARRAY(SELECT DISTINCT unnest(bundle_permission.permissions || EXCLUDED.permissions)),
+                updated_at = current_timestamp,
+                updated_by = 'system'
+            """
+        elif asset_action == 'RESET':
+            on_conflict_clause = "ON CONFLICT (bundle_id, asset_type, actor_type, actor_id) DO NOTHING"
 
+        if has_all_key:
+            # Simplified query for 'all' key - grant permissions to all domain users without role checking
+            all_permissions = permission_mappings['all']
+            permissions_array = ', '.join(f"'{perm}'" for perm in all_permissions)
 
-        affected_rows = 0
-        logger.debug(f"update: {user_permissions_query}")
-        logger.debug(f"Parameters: ({domain_id}, {domain_id}, {domain_id}, {bundle_id}, {asset_type})")
+            user_permissions_query = f"""
+                WITH all_domain_users AS (
+                    SELECT DISTINCT dm.identity_id as username
+                    FROM domain_member dm
+                             JOIN iam_user u ON u.username = dm.identity_id
+                    WHERE dm.domain_id = %s
+                      AND dm.identity_type = 'USER'
+                      AND u.is_deleted = false
+                )
+                INSERT INTO bundle_permission (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
+                SELECT
+                    %s,
+                    %s,
+                    'USER',
+                    username,
+                    ARRAY[{permissions_array}],
+                    current_timestamp,
+                    'system',
+                    current_timestamp,
+                    'system'
+                FROM all_domain_users
+                ORDER BY username
+                {on_conflict_clause}
+            """
 
-        with connection.cursor() as cursor:
-                cursor.execute(user_permissions_query, (domain_id, domain_id, domain_id, bundle_id, asset_type))
-                affected_rows = cursor.rowcount
+            affected_rows = 0
+            logger.debug(f"update: {user_permissions_query}")
+            logger.debug(f"Parameters: ({domain_id}, {bundle_id}, {asset_type})")
 
-        logger.info(f"Set permissions for {affected_rows} users in domain {domain_id}")
+            with connection.cursor() as cursor:
+                    cursor.execute(user_permissions_query, (domain_id, bundle_id, asset_type))
+                    affected_rows = cursor.rowcount
 
-    def set_group_permissions(self, connection, bundle_id: str, domain_id: str, asset_type: str):
+            logger.info(f"Set permissions for {affected_rows} users in domain {domain_id} (action: {asset_action}, all: {all_permissions})")
+        else:
+            # Build dynamic permission subquery for role-based permissions
+            permission_subquery = self.build_permission_subquery(asset_type)
+
+            user_permissions_query = f"""
+                WITH all_domain_users AS (
+                    SELECT dm.identity_id as username
+                    FROM domain_member dm
+                             JOIN iam_user u ON u.username = dm.identity_id
+                    WHERE dm.domain_id = %s
+                      AND dm.identity_type = 'USER'
+                      AND u.is_deleted = false
+                ),
+                 user_all_permissions AS (
+                     SELECT
+                         adu.username,
+                         ARRAY_AGG(DISTINCT perm) FILTER (WHERE perm IS NOT NULL) as all_permissions
+                     FROM all_domain_users adu
+                              LEFT JOIN user_role_mapping_v2 urm ON urm.username = adu.username AND urm.domain = %s
+                              LEFT JOIN iam_role r ON (r.name = urm.role_name AND r.domain = urm.domain AND r.is_deleted = false)
+                         OR (r.name = 'default' AND r.domain = %s AND r.is_deleted = false)
+                              CROSS JOIN LATERAL ({permission_subquery.strip()}
+                         ) perms
+                     GROUP BY adu.username
+                 )
+                INSERT INTO bundle_permission (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
+                SELECT
+                    %s,
+                    %s,
+                    'USER',
+                    username,
+                    all_permissions,
+                    current_timestamp,
+                    'system',
+                    current_timestamp,
+                    'system'
+                FROM user_all_permissions
+                WHERE all_permissions IS NOT NULL
+                ORDER BY username
+                {on_conflict_clause}
+            """
+
+            affected_rows = 0
+            logger.debug(f"update: {user_permissions_query}")
+            logger.debug(f"Parameters: ({domain_id}, {domain_id}, {domain_id}, {bundle_id}, {asset_type})")
+
+            with connection.cursor() as cursor:
+                    cursor.execute(user_permissions_query, (domain_id, domain_id, domain_id, bundle_id, asset_type))
+                    affected_rows = cursor.rowcount
+
+            logger.info(f"Set permissions for {affected_rows} users in domain {domain_id} (action: {asset_action})")
+
+    def set_group_permissions(self, connection, bundle_id: str, domain_id: str, asset_type: str, asset_action_on_duplicate: str = 'UPDATE'):
         """
         Set group permissions for the bundle based on existing role mappings.
 
@@ -182,70 +474,136 @@ class AssetOnboardingMigration:
             connection: Database connection
             bundle_id: Bundle identifier
             domain_id: Domain identifier
-            asset_type: Asset type (typically 'COMPUTE')
+            asset_type: Asset type (COMPUTE, PIPELINE, DATASET, etc.)
+            asset_action_on_duplicate: Action for duplicate permissions (SKIP, UPDATE, ERROR, RESET)
         """
+        # Validate asset configuration
+        validation = self.validate_asset_configuration(asset_type)
+        if not validation["is_valid"]:
+            raise ValueError(f"Asset configuration validation failed: {validation['error']}")
+
+        asset_action = asset_action_on_duplicate.upper()
+
+        # Check for existing permissions
+        existing_permissions = self.get_existing_bundle_permissions(connection, bundle_id, asset_type)
+
+        # Handle ERROR action
+        if asset_action == 'ERROR' and existing_permissions:
+            raise ValueError(
+                f"Asset action is ERROR and {len(existing_permissions)} permission records already exist for {asset_type.lower()} in bundle {bundle_id}"
+            )
+
+        # Handle SKIP action
+        if asset_action == 'SKIP' and existing_permissions:
+            logger.info(f"Skipping permission setting for {asset_type.lower()} groups as {len(existing_permissions)} records already exist (action: SKIP)")
+            return
+
+        # Check if 'all' key is present in permission_mappings
         mapping = self.asset_mappings.get(asset_type)
-        if not mapping:
-            raise ValueError(f"Unknown asset type: {asset_type}")
+        permission_mappings = mapping.get('permission_mappings', {})
+        has_all_key = 'all' in permission_mappings
 
+        # For UPDATE: merge permissions using array concatenation and deduplication
+        # For RESET: RESET already cleared permissions, so just insert
+        on_conflict_clause = ""
+        if asset_action == 'UPDATE':
+            on_conflict_clause = """
+            ON CONFLICT (bundle_id, asset_type, actor_type, actor_id)
+            DO UPDATE SET
+                permissions = ARRAY(SELECT DISTINCT unnest(bundle_permission.permissions || EXCLUDED.permissions)),
+                updated_at = current_timestamp,
+                updated_by = 'system'
+            """
+        elif asset_action == 'RESET':
+            on_conflict_clause = "ON CONFLICT (bundle_id, asset_type, actor_type, actor_id) DO NOTHING"
 
-        group_permissions_query = """
-            WITH all_domain_groups AS (
-                SELECT dm.identity_id as group_name
-                FROM domain_member dm
-                         JOIN iam_group g ON g.name = dm.identity_id
-                WHERE dm.domain_id = %s
-                  AND dm.identity_type = 'GROUP'
-                  AND g.is_deleted = false
-            ),
-             group_all_permissions AS (
-                 SELECT
-                     adg.group_name,
-                     ARRAY_AGG(DISTINCT perm) FILTER (WHERE perm IS NOT NULL) as all_permissions
-                 FROM all_domain_groups adg
-                          LEFT JOIN group_role_mapping_v2 grm ON grm.group_name = adg.group_name AND grm.domain = %s
-                          LEFT JOIN iam_role r ON (r.name = grm.role_name AND r.domain = grm.domain AND r.is_deleted = false)
-                     OR (r.name = 'default' AND r.domain = %s AND r.is_deleted = false)
-                          CROSS JOIN LATERAL (
-                     WITH lakehouse_service AS (
-                         SELECT jsonb_path_query(r.permissions::jsonb, '$[*] ? (@.service == "lakehouse")') as lakehouse_perms
-                     )
-                     SELECT unnest(ARRAY[
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "list")') THEN 'VIEW' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "view")') THEN 'VIEW' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'UPDATE' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'DELETE' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'EXECUTE' END,
-                         CASE WHEN jsonb_path_exists(lakehouse_perms, '$.actions[*] ? (@.action == "manage")') THEN 'CONSUME' END
-                         ]) as perm
-                     FROM lakehouse_service
-                     WHERE lakehouse_perms IS NOT NULL
-                     ) perms
-                 GROUP BY adg.group_name
-             )
-            INSERT INTO bundle_permission (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
-            SELECT
-                %s,
-                %s,
-                'GROUP',
-                group_name,
-                all_permissions,
-                current_timestamp,
-                'system',
-                current_timestamp,
-                'system'
-            FROM group_all_permissions
-            WHERE all_permissions IS NOT NULL
-            ORDER BY group_name
-        """
+        if has_all_key:
+            # Simplified query for 'all' key - grant permissions to all domain groups without role checking
+            all_permissions = permission_mappings['all']
+            permissions_array = ', '.join(f"'{perm}'" for perm in all_permissions)
 
+            group_permissions_query = f"""
+                WITH all_domain_groups AS (
+                    SELECT DISTINCT dm.identity_id as group_name
+                    FROM domain_member dm
+                             JOIN iam_group g ON g.name = dm.identity_id
+                    WHERE dm.domain_id = %s
+                      AND dm.identity_type = 'GROUP'
+                      AND g.is_deleted = false
+                )
+                INSERT INTO bundle_permission (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
+                SELECT
+                    %s,
+                    %s,
+                    'GROUP',
+                    group_name,
+                    ARRAY[{permissions_array}],
+                    current_timestamp,
+                    'system',
+                    current_timestamp,
+                    'system'
+                FROM all_domain_groups
+                ORDER BY group_name
+                {on_conflict_clause}
+            """
 
-        affected_rows = 0
-        with connection.cursor() as cursor:
-            cursor.execute(group_permissions_query, (domain_id, domain_id, domain_id, bundle_id, asset_type))
-            affected_rows = cursor.rowcount
+            affected_rows = 0
+            logger.debug(f"update: {group_permissions_query}")
+            logger.debug(f"Parameters: ({domain_id}, {bundle_id}, {asset_type})")
 
-        logger.info(f"Set permissions for {affected_rows} groups in domain {domain_id}")
+            with connection.cursor() as cursor:
+                cursor.execute(group_permissions_query, (domain_id, bundle_id, asset_type))
+                affected_rows = cursor.rowcount
+
+            logger.info(f"Set permissions for {affected_rows} groups in domain {domain_id} (action: {asset_action}, all: {all_permissions})")
+        else:
+            # Build dynamic permission subquery for role-based permissions
+            permission_subquery = self.build_permission_subquery(asset_type)
+
+            group_permissions_query = f"""
+                WITH all_domain_groups AS (
+                    SELECT dm.identity_id as group_name
+                    FROM domain_member dm
+                             JOIN iam_group g ON g.name = dm.identity_id
+                    WHERE dm.domain_id = %s
+                      AND dm.identity_type = 'GROUP'
+                      AND g.is_deleted = false
+                ),
+                 group_all_permissions AS (
+                     SELECT
+                         adg.group_name,
+                         ARRAY_AGG(DISTINCT perm) FILTER (WHERE perm IS NOT NULL) as all_permissions
+                     FROM all_domain_groups adg
+                              LEFT JOIN group_role_mapping_v2 grm ON grm.group_name = adg.group_name AND grm.domain = %s
+                              LEFT JOIN iam_role r ON (r.name = grm.role_name AND r.domain = grm.domain AND r.is_deleted = false)
+                         OR (r.name = 'default' AND r.domain = %s AND r.is_deleted = false)
+                              CROSS JOIN LATERAL ({permission_subquery.strip()}
+                         ) perms
+                     GROUP BY adg.group_name
+                 )
+                INSERT INTO bundle_permission (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
+                SELECT
+                    %s,
+                    %s,
+                    'GROUP',
+                    group_name,
+                    all_permissions,
+                    current_timestamp,
+                    'system',
+                    current_timestamp,
+                    'system'
+                FROM group_all_permissions
+                WHERE all_permissions IS NOT NULL
+                ORDER BY group_name
+                {on_conflict_clause}
+            """
+
+            affected_rows = 0
+            with connection.cursor() as cursor:
+                cursor.execute(group_permissions_query, (domain_id, domain_id, domain_id, bundle_id, asset_type))
+                affected_rows = cursor.rowcount
+
+            logger.info(f"Set permissions for {affected_rows} groups in domain {domain_id} (action: {asset_action})")
 
     def check_existing_bundle(self, connection, domain_id: str) -> Dict[str, Any]:
         """
@@ -340,9 +698,7 @@ class AssetOnboardingMigration:
                 return {"can_proceed": False, "owner_validation_error": owner_validation['error']}
 
         # Check if domain exists and has assets
-        asset_db = self.asset_dbs.get(asset_type)
-        if not asset_db:
-            raise ValueError(f"No database configured for asset type: {asset_type}")
+        asset_db = self.asset_db
 
         assets = self.get_domain_assets(asset_db, domain_id, asset_type)
         if not assets:
@@ -439,13 +795,31 @@ class AssetOnboardingMigration:
 
         logger.info(f"Cleared {affected_rows} existing permissions for {asset_type.lower()} from bundle {bundle_id}")
 
-    def migrate_domain(self, domain_config: Dict[str, Any]) -> bool:
-        domain_id = domain_config["domain_id"]
-        owner_id = domain_config["owner_id"]
-        owner_type = domain_config["owner_type"]
-        asset_type = domain_config.get("asset_type", "COMPUTE")
+    def migrate_single_asset_type(self, domain_id: str, owner_id: str, owner_type: str, asset_type: str) -> bool:
+        """
+        Migrate a single asset type for a domain.
 
+        Args:
+            domain_id: Domain identifier
+            owner_id: Owner identifier
+            owner_type: Owner type (USER or GROUP)
+            asset_type: Asset type to migrate
+
+        Returns:
+            True if migration successful, False otherwise
+        """
         try:
+            # Validate asset configuration before starting migration
+            asset_validation = self.validate_asset_configuration(asset_type)
+            if not asset_validation["is_valid"]:
+                logger.error(f"Asset configuration validation failed for {asset_type}: {asset_validation['error']}")
+                return False
+
+            # Get asset-specific duplicate action from configuration
+            asset_mapping = self.asset_mappings.get(asset_type)
+            asset_action_on_duplicate = asset_mapping.get('asset_action_on_duplicate', 'UPDATE').upper()
+            logger.info(f"Asset action on duplicate for {asset_type}: {asset_action_on_duplicate}")
+
             with self.bundle_migration_db.get_transaction() as mig_conn:
                 # Validation
                 validation = self.validate_domain_migration(mig_conn, domain_id, asset_type, owner_id, owner_type)
@@ -458,28 +832,67 @@ class AssetOnboardingMigration:
                 if is_update and existing_bundle:
                     bundle_id = existing_bundle["id"]
                     self.update_existing_bundle(mig_conn, bundle_id, owner_id, owner_type, domain_id)
-                    self.clear_bundle_assets(mig_conn, bundle_id, asset_type)
-                    self.clear_bundle_permissions(mig_conn, bundle_id, asset_type)
+
+                    # Handle RESET action - clear assets and permissions for this asset type only
+                    if asset_action_on_duplicate == 'RESET':
+                        logger.info(f"RESET action: clearing {asset_type} assets and permissions from bundle {bundle_id}")
+                        self.clear_bundle_assets(mig_conn, bundle_id, asset_type)
+                        self.clear_bundle_permissions(mig_conn, bundle_id, asset_type)
                 else:
                     bundle_id = self.create_default_bundle(mig_conn, domain_id, owner_id, owner_type)
 
                 # Use asset DB for fetching assets
-                asset_db = self.asset_dbs.get(asset_type)
-                if not asset_db:
-                    raise Exception(f"No asset DB configured for {asset_type}")
+                asset_db = self.asset_db
 
                 asset_ids = self.get_domain_assets(asset_db, domain_id, asset_type)
 
-                # Insert assets + permissions into migration DB
-                self.move_assets_to_bundle(mig_conn, bundle_id, asset_ids, asset_type)
-                self.set_user_permissions(mig_conn, bundle_id, domain_id, asset_type)
-                self.set_group_permissions(mig_conn, bundle_id, domain_id, asset_type)
+                # Insert assets + permissions into migration DB with asset-specific action
+                self.move_assets_to_bundle(mig_conn, bundle_id, asset_ids, asset_type, asset_action_on_duplicate)
+                self.set_user_permissions(mig_conn, bundle_id, domain_id, asset_type, asset_action_on_duplicate)
+                self.set_group_permissions(mig_conn, bundle_id, domain_id, asset_type, asset_action_on_duplicate)
 
-                logger.info(f"Domain {domain_id} migrated with {len(asset_ids)} {asset_type} assets")
+                logger.info(f"Domain {domain_id} migrated with {len(asset_ids)} {asset_type} assets (action: {asset_action_on_duplicate})")
                 return True
         except Exception as e:
-            logger.error(f"Migration failed for domain {domain_id}: {e}")
+            logger.error(f"Migration failed for domain {domain_id}, asset type {asset_type}: {e}")
             return False
+
+    def migrate_domain(self, domain_config: Dict[str, Any]) -> bool:
+        """
+        Migrate a domain with one or more asset types.
+
+        Args:
+            domain_config: Domain configuration dictionary
+
+        Returns:
+            True if all asset types migrated successfully, False otherwise
+        """
+        domain_id = domain_config["domain_id"]
+        owner_id = domain_config["owner_id"]
+        owner_type = domain_config["owner_type"]
+
+        # Get list of asset types to migrate (supports both single and multiple)
+        asset_types = self.get_asset_types_from_config(domain_config)
+
+        logger.info(f"Starting migration for domain {domain_id} with asset types: {asset_types}")
+
+        success_count = 0
+        for asset_type in asset_types:
+            logger.info(f"Migrating {asset_type} assets for domain {domain_id}")
+            if self.migrate_single_asset_type(domain_id, owner_id, owner_type, asset_type):
+                success_count += 1
+            else:
+                logger.error(f"Failed to migrate {asset_type} assets for domain {domain_id}")
+
+        total_types = len(asset_types)
+        success = success_count == total_types
+
+        if success:
+            logger.info(f"Domain {domain_id} migration completed successfully: {success_count}/{total_types} asset types")
+        else:
+            logger.error(f"Domain {domain_id} migration partially failed: {success_count}/{total_types} asset types successful")
+
+        return success
 
     def run_migration(self) -> bool:
         """
