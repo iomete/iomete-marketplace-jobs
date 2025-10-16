@@ -3,7 +3,7 @@ import time
 
 from config import TableMetadata
 from data_compaction_job.constants import CompactionOperation, ConfigProperty
-from data_compaction_job.table_parser import get_table_config_override
+from table_parser import get_config_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -11,11 +11,8 @@ logger = logging.getLogger(__name__)
 def is_operation_enabled(config, table_metadata: TableMetadata, operation: CompactionOperation):
     """Check if an operation is enabled for a given table"""
     # Check for table-specific override
-    table_override = get_table_config_override(config.table_overrides,
-                                               table_metadata.database,
-                                               table_metadata.table,
-                                               operation.value,
-                                               ConfigProperty.ENABLED.value)
+    table_override = get_config_overrides(table_metadata.table_overrides, operation, ConfigProperty.ENABLED)
+
     if table_override is not None:
         return table_override
 

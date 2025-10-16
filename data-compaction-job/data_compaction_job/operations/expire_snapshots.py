@@ -2,7 +2,7 @@ from datetime import datetime, timezone, timedelta
 
 from config import TableMetadata, ExpireSnapshotConfig
 from constants import CompactionOperation, ConfigProperty
-from table_parser import get_table_config_override
+from table_parser import get_config_overrides
 
 
 def get_expire_snapshots_query(config: ExpireSnapshotConfig, table_metadata: TableMetadata) -> str:
@@ -19,12 +19,10 @@ def get_expire_snapshots_query(config: ExpireSnapshotConfig, table_metadata: Tab
 
 
 def _get_timestamp(config: ExpireSnapshotConfig, table_metadata: TableMetadata) -> datetime:
-    older_than_days = (get_table_config_override(table_metadata.table_overrides,
-                                                 table_metadata.database,
-                                                 table_metadata.table,
-                                                 CompactionOperation.EXPIRE_SNAPSHOT.value,
-                                                 ConfigProperty.OLDER_THAN_DAYS.value)
-                          or config.older_than_days)
+    older_than_days = (get_config_overrides(table_metadata.table_overrides,
+                                            CompactionOperation.EXPIRE_SNAPSHOT,
+                                            ConfigProperty.OLDER_THAN_DAYS)
+                       or config.older_than_days)
 
     return (
         datetime.now() - timedelta(minutes=5)
@@ -34,9 +32,7 @@ def _get_timestamp(config: ExpireSnapshotConfig, table_metadata: TableMetadata) 
 
 
 def _get_retain_last_value(config: ExpireSnapshotConfig, table_metadata: TableMetadata) -> int:
-    return int(get_table_config_override(table_metadata.table_overrides,
-                                         table_metadata.database,
-                                         table_metadata.table,
-                                         CompactionOperation.EXPIRE_SNAPSHOT.value,
-                                         ConfigProperty.RETAIN_LAST.value)
+    return int(get_config_overrides(table_metadata.table_overrides,
+                                         CompactionOperation.EXPIRE_SNAPSHOT,
+                                         ConfigProperty.RETAIN_LAST)
                or config.retain_last)

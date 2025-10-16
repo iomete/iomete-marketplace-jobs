@@ -13,6 +13,7 @@ from data_compaction_job.decorators import operation_enabled, timer
 from data_compaction_job.table_parser import parse_table_list, get_table_config_override
 from operations.expire_snapshots import get_expire_snapshots_query
 from stats_emitter import emit_stats, init_emitter, close_emitter
+from table_parser import get_table_metadata, get_config_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ class SqlCompaction:
                          max_files_per_record=self.config.remove_orphan_files.max_files_per_record)
             for database in self._databases:
                 for table in db_table_mapping[database]:
-                    table_metadata = TableMetadata(
+                    table_metadata = get_table_metadata(
                         catalog=catalog,
                         database=database,
                         table=table,
@@ -152,11 +153,9 @@ class SqlCompaction:
     def __remove_orphan_files(self, table_metadata: TableMetadata):
         catalog, database, table_name = table_metadata.catalog, table_metadata.database, table_metadata.table
 
-        days = int(get_table_config_override(self.config.table_overrides,
-                                             database,
-                                             table_name,
-                                             CompactionOperation.REMOVE_ORPHAN_FILES.value,
-                                             ConfigProperty.OLDER_THAN_DAYS.value)
+        days = int(get_config_overrides(table_metadata.table_overrides,
+                                             CompactionOperation.REMOVE_ORPHAN_FILES,
+                                             ConfigProperty.OLDER_THAN_DAYS)
                    or self.config.remove_orphan_files.older_than_days)
         timestamp = datetime.now(timezone.utc) - timedelta(days=days)
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`', older_than => TIMESTAMP '{timestamp}'"

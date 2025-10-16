@@ -2,6 +2,9 @@ import logging
 from collections import defaultdict
 from typing import List, Dict, Optional, Any
 
+from config import TableMetadata
+from constants import CompactionOperation, ConfigProperty
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,3 +47,27 @@ def get_table_config_override(
             return table_overrides[table_key][operation][config_name]
 
     return None
+
+
+def get_config_overrides(
+    table_overrides: Optional[dict[CompactionOperation, dict]],
+    operation: CompactionOperation,
+    config_name: ConfigProperty
+) -> Optional[Any]:
+    return table_overrides.get(operation, {}).get(config_name, None) if table_overrides else None
+
+
+def get_table_metadata(
+    catalog: str,
+    database: str,
+    table: str,
+    table_overrides: Optional[Dict[str, Dict]] = None
+) -> TableMetadata:
+    return TableMetadata(
+        catalog=catalog,
+        database=database,
+        table=table,
+        table_overrides=
+        table_overrides.get(f"{database}.{table}", None) or table_overrides.get(table, None)
+        if table_overrides else None
+    )

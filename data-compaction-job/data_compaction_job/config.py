@@ -80,7 +80,7 @@ class TableMetadata:
     catalog: str
     database: str
     table: str
-    table_overrides: Optional[dict[str, dict]] = None
+    table_overrides: Optional[dict[CompactionOperation, dict]] = None
 
 
 def get_config(application_config_path) -> ApplicationConfig:
