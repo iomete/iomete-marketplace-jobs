@@ -4,6 +4,7 @@
 
 from unittest.mock import patch, MagicMock
 
+from config import TableMetadata
 from data_compaction_job.config import get_config
 from data_compaction_job.main import start_job
 from data_compaction_job.stats_emitter import init_emitter, _add_orphan_files_metrics, StatsBatcher
@@ -440,8 +441,14 @@ def test_operation_enabled_flag_execution(mock_catalogs):
         spark.sql = track_sql
 
         try:
+            table_metadata = TableMetadata(
+                catalog="spark_catalog",
+                database="test_enabled",
+                table="test_table"
+            )
+
             # Run compaction operations
-            compaction._SqlCompaction__run_compaction_operations("spark_catalog", "test_enabled", "test_table")
+            compaction._SqlCompaction__run_compaction_operations(table_metadata)
 
             # Check which operations were called by looking at SQL queries
             expire_called = any("expire_snapshots" in call for call in sql_calls)
@@ -503,33 +510,175 @@ def test_operation_enabled_with_table_overrides(mock_catalogs):
 
     try:
         config = get_config(config_file)
-        spark = get_spark_session()
 
-        from data_compaction_job.sql_compaction import SqlCompaction
         from data_compaction_job.constants import CompactionOperation
         from data_compaction_job.decorators import is_operation_enabled
 
-        compaction = SqlCompaction(spark, config)
+        table_metadata_1 = TableMetadata(
+            catalog="spark_catalog",
+            database="test_override",
+            table="normal_table"
+        )
+
+        table_metadata_2 = TableMetadata(
+            catalog="spark_catalog",
+            database="test_override",
+            table="special_table",
+            table_overrides={
+                CompactionOperation.EXPIRE_SNAPSHOT: {"enabled": False},
+                CompactionOperation.REWRITE_DATA_FILES: {"enabled": False}
+            }
+        )
 
         # Test that operations are enabled for normal tables
-        assert is_operation_enabled(config, "test_override", "normal_table",
-                                   CompactionOperation.EXPIRE_SNAPSHOT) is True
-        assert is_operation_enabled(config, "test_override", "normal_table",
-                                   CompactionOperation.REWRITE_DATA_FILES) is True
+        assert is_operation_enabled(config, table_metadata_1, CompactionOperation.EXPIRE_SNAPSHOT) is True
+        assert is_operation_enabled(config, table_metadata_1, CompactionOperation.REWRITE_DATA_FILES) is True
 
         # Test that operations are disabled for the special table with overrides
-        assert is_operation_enabled(config, "test_override", "special_table",
-                                   CompactionOperation.EXPIRE_SNAPSHOT) is False
-        assert is_operation_enabled(config, "test_override", "special_table",
-                                   CompactionOperation.REWRITE_DATA_FILES) is False
+        assert is_operation_enabled(config, table_metadata_2, CompactionOperation.EXPIRE_SNAPSHOT) is False
+        assert is_operation_enabled(config, table_metadata_2, CompactionOperation.REWRITE_DATA_FILES) is False
 
         # Operations not overridden should remain enabled
-        assert is_operation_enabled(config, "test_override", "special_table",
-                                   CompactionOperation.REWRITE_MANIFESTS) is True
-        assert is_operation_enabled(config, "test_override", "special_table",
-                                   CompactionOperation.REMOVE_ORPHAN_FILES) is True
+        assert is_operation_enabled(config, table_metadata_2, CompactionOperation.REWRITE_MANIFESTS) is True
+        assert is_operation_enabled(config, table_metadata_2, CompactionOperation.REMOVE_ORPHAN_FILES) is True
 
     finally:
+        os.unlink(config_file)
+
+
+@patch('data_compaction_job.sql_compaction.SqlClient.catalogs', return_value={'spark_catalog'})
+def test_expire_snapshots_functionality(mock_catalogs):
+    """Test that expire_snapshots actually expires old snapshots from Iceberg tables."""
+    import tempfile
+    import os
+
+    catalog, database, table = "spark_catalog", "test_expire_snap", "snapshot_test"
+
+    # Create config with expire_snapshots enabled and retain_last = 2
+    config_content = """
+    {
+        "catalog": "spark_catalog"
+        "databases": ["test_expire_snap"]
+        "expire_snapshot": {
+            "enabled": true
+            "retain_last": 2
+            "older_than_days": 0
+        }
+        "rewrite_data_files": {
+            "enabled": false
+        }
+        "rewrite_manifests": {
+            "enabled": false
+        }
+        "remove_orphan_files": {
+            "enabled": false
+        }
+    }
+    """
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
+        f.write(config_content)
+        config_file = f.name
+
+    try:
+        config = get_config(config_file)
+        spark = get_spark_session()
+
+        # Clean up any existing database/table
+        spark.sql(f"DROP TABLE IF EXISTS {table}")
+        spark.sql(f"DROP DATABASE IF EXISTS {database}")
+
+        # Create test database and table
+        spark.sql(f"CREATE DATABASE IF NOT EXISTS {catalog}.{database}")
+        spark.sql(f"USE {catalog}.{database}")
+        spark.sql(f"""
+        CREATE TABLE IF NOT EXISTS {table} (
+            id BIGINT,
+            name STRING,
+            value INT
+        )
+        USING iceberg
+        """)
+
+        # Create multiple snapshots by inserting data multiple times
+        # Snapshot 1
+        spark.sql(f"""
+        INSERT INTO {table} VALUES
+            (1, 'first', 100),
+            (2, 'first', 200)
+        """)
+
+        # Snapshot 2
+        spark.sql(f"""
+        INSERT INTO {table} VALUES
+            (3, 'second', 300),
+            (4, 'second', 400)
+        """)
+
+        # Snapshot 3
+        spark.sql(f"""
+        INSERT INTO {table} VALUES
+            (5, 'third', 500),
+            (6, 'third', 600)
+        """)
+
+        # Snapshot 4
+        spark.sql(f"""
+        INSERT INTO {table} VALUES
+            (7, 'fourth', 700),
+            (8, 'fourth', 800)
+        """)
+
+        # Snapshot 5
+        spark.sql(f"""
+        INSERT INTO {table} VALUES
+            (9, 'fifth', 900),
+            (10, 'fifth', 1000)
+        """)
+
+        # Verify we have 5 snapshots
+        snapshots_before = spark.sql(f"""
+        SELECT * FROM {database}.{table}.snapshots
+        ORDER BY committed_at
+        """).collect()
+
+        snapshot_count_before = len(snapshots_before)
+        assert snapshot_count_before == 5, f"Expected 5 snapshots before expiration, got {snapshot_count_before}"
+
+        # Get the snapshot IDs before expiration
+        snapshot_ids_before = [row.snapshot_id for row in snapshots_before]
+
+        # Run the compaction job (which includes expire_snapshots)
+        start_job(spark, config)
+
+        # Verify snapshots were expired - should only retain last 2
+        snapshots_after = spark.sql(f"""
+        SELECT * FROM {database}.{table}.snapshots
+        ORDER BY committed_at
+        """).collect()
+
+        snapshot_count_after = len(snapshots_after)
+        assert snapshot_count_after == 2, f"Expected 2 snapshots after expiration (retain_last=2), got {snapshot_count_after}"
+
+        # Verify the retained snapshots are the last 2
+        snapshot_ids_after = [row.snapshot_id for row in snapshots_after]
+        assert snapshot_ids_after == snapshot_ids_before[-2:], "Should retain only the last 2 snapshots"
+
+        # Verify data is still intact (all 10 rows should still be there)
+        data_after = spark.sql(f"SELECT * FROM {table} ORDER BY id").collect()
+        assert len(data_after) == 10, f"Expected 10 rows after expiration, got {len(data_after)}"
+
+        # Verify the data values are correct
+        for i, row in enumerate(data_after, start=1):
+            assert row.id == i, f"Expected id {i}, got {row.id}"
+
+        # Clean up
+        spark.sql(f"DROP TABLE IF EXISTS {table}")
+        spark.sql(f"DROP DATABASE IF EXISTS {database}")
+        # _cleanup_catalog()
+
+    finally:
+        # _cleanup_catalog()
         os.unlink(config_file)
 
 
@@ -592,4 +741,5 @@ if __name__ == '__main__':
     test_orphan_files_metrics_tracking()
     test_operation_enabled_flag_execution()
     test_operation_enabled_with_table_overrides()
+    test_expire_snapshots_functionality()
     test_timer_decorator()
