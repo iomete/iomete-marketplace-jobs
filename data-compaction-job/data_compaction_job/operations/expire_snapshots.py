@@ -19,10 +19,11 @@ def get_expire_snapshots_query(config: ExpireSnapshotConfig, table_metadata: Tab
 
 
 def _get_timestamp(config: ExpireSnapshotConfig, table_metadata: TableMetadata) -> datetime:
-    older_than_days = (get_config_overrides(table_metadata.table_overrides,
+    override_value = get_config_overrides(table_metadata.table_overrides,
                                             CompactionOperation.EXPIRE_SNAPSHOT,
                                             ConfigProperty.OLDER_THAN_DAYS)
-                       or config.older_than_days)
+
+    older_than_days = override_value if override_value is not None else config.older_than_days
 
     return (
         datetime.now() - timedelta(minutes=5)
