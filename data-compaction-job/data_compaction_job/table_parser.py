@@ -29,26 +29,6 @@ def parse_table_list(table_list: List[str], databases: Optional[List[str]] = Non
     return mapping
 
 
-def get_table_config_override(
-        table_overrides: Optional[Dict],
-        database: str,
-        table: str,
-        operation: str,
-        config_name: str
-) -> Optional[Any]:
-    if not table_overrides:
-        return None
-
-    # Try with full "database.table" format first, then fallback to just table name
-    for table_key in [f"{database}.{table}", table]:
-        if (table_key in table_overrides
-                and operation in table_overrides.get(table_key)
-                and config_name in table_overrides[table_key][operation]):
-            return table_overrides[table_key][operation][config_name]
-
-    return None
-
-
 def get_config_overrides(
     table_overrides: Optional[dict[CompactionOperation, dict]],
     operation: CompactionOperation,

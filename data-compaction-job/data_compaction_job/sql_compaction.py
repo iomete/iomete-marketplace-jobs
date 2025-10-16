@@ -10,7 +10,7 @@ from config import TableMetadata
 from data_compaction_job.config import ApplicationConfig
 from data_compaction_job.constants import CompactionOperation, ConfigProperty
 from data_compaction_job.decorators import operation_enabled, timer
-from data_compaction_job.table_parser import parse_table_list, get_table_config_override
+from data_compaction_job.table_parser import parse_table_list
 from operations.expire_snapshots import get_expire_snapshots_query
 from stats_emitter import emit_stats, init_emitter, close_emitter
 from table_parser import get_table_metadata, get_config_overrides
@@ -169,11 +169,9 @@ class SqlCompaction:
         catalog, database, table_name = table_metadata.catalog, table_metadata.database, table_metadata.table
 
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`'"
-        use_caching = (get_table_config_override(self.config.table_overrides,
-                                                 database,
-                                                 table_name,
-                                                 CompactionOperation.REWRITE_MANIFESTS.value,
-                                                 ConfigProperty.USE_CACHING.value)
+        use_caching = (get_config_overrides(table_metadata.table_overrides,
+                                            CompactionOperation.REWRITE_MANIFESTS,
+                                            ConfigProperty.USE_CACHING)
                        or self.config.rewrite_manifests.use_caching)
         if use_caching:
             use_caching = str(use_caching).lower()
@@ -187,29 +185,21 @@ class SqlCompaction:
     def __rewrite_data_files(self, table_metadata: TableMetadata):
         catalog, database, table_name = table_metadata.catalog, table_metadata.database, table_metadata.table
 
-        strategy = (get_table_config_override(self.config.table_overrides,
-                                              database,
-                                              table_name,
-                                              CompactionOperation.REWRITE_DATA_FILES.value,
-                                              ConfigProperty.STRATEGY.value)
+        strategy = (get_config_overrides(table_metadata.table_overrides,
+                                        CompactionOperation.REWRITE_DATA_FILES,
+                                        ConfigProperty.STRATEGY)
                     or self.config.rewrite_data_files.strategy)
-        sort_order = (get_table_config_override(self.config.table_overrides,
-                                                database,
-                                                table_name,
-                                                CompactionOperation.REWRITE_DATA_FILES.value,
-                                                ConfigProperty.SORT_ORDER.value)
+        sort_order = (get_config_overrides(table_metadata.table_overrides,
+                                          CompactionOperation.REWRITE_DATA_FILES,
+                                          ConfigProperty.SORT_ORDER)
                       or self.config.rewrite_data_files.sort_order)
-        rewrite_options = (get_table_config_override(self.config.table_overrides,
-                                                     database,
-                                                     table_name,
-                                                     CompactionOperation.REWRITE_DATA_FILES.value,
-                                                     ConfigProperty.OPTIONS.value)
+        rewrite_options = (get_config_overrides(table_metadata.table_overrides,
+                                               CompactionOperation.REWRITE_DATA_FILES,
+                                               ConfigProperty.OPTIONS)
                            or self.config.rewrite_data_files.options)
-        where = (get_table_config_override(self.config.table_overrides,
-                                           database,
-                                           table_name,
-                                           CompactionOperation.REWRITE_DATA_FILES.value,
-                                           ConfigProperty.WHERE.value)
+        where = (get_config_overrides(table_metadata.table_overrides,
+                                     CompactionOperation.REWRITE_DATA_FILES,
+                                     ConfigProperty.WHERE)
                  or self.config.rewrite_data_files.where)
 
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`'"
