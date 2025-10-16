@@ -108,6 +108,11 @@ You can specify additional configurations
         // Set to false to skip this operation entirely
         // enabled: true,
 
+        // Filter to compact only specific rows (DEFAULT: None - compact all rows)
+        // Uses SQL WHERE clause syntax to specify which data to compact
+        // Example: "date >= '2024-01-01'" or "status = 'active'"
+        // where: "date >= '2024-01-01'",
+
         options: {
             // The minimum number of files that need to be in a file group for it to be considered for compaction.
             // Defaults to 5
@@ -241,6 +246,36 @@ You can also disable operations for specific tables while keeping them enabled g
             },
             rewrite_manifests: {
                 enabled: false
+            }
+        }
+    }
+}
+```
+
+## Rewrite Data Files with WHERE Filter
+
+Use the `where` parameter to compact only specific rows based on SQL WHERE conditions. Works on both partitioned and non-partitioned tables.
+
+**Performance:** Filtering by partition columns is more efficient as Iceberg can skip files without reading them. Non-partition columns require file scanning.
+
+**Error Handling:** If the WHERE clause references a non-existent column, the compaction will fail for that table and the error will be logged. Other tables will continue processing.
+
+### Examples
+
+```HOCON
+{
+    catalog: "spark_catalog",
+
+    // Compact recent data (works best with partition column)
+    rewrite_data_files: {
+        where: "date >= '2024-01-01'"
+    }
+
+    // Table-specific filters
+    table_overrides: {
+        analytics.events: {
+            rewrite_data_files: {
+                where: "year = 2024 AND month >= 6"
             }
         }
     }
