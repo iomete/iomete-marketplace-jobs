@@ -94,8 +94,12 @@ You can specify additional configurations
         // Set to false to skip this operation entirely
         // enabled: true,
 
-        // Number of ancestor snapshots to preserve regardless of `older_than` (DEFAULT: 1)
-        // retain_last: 1
+        // Number of ancestor snapshots to preserve (DEFAULT: 1)
+        // retain_last: 1,
+
+        // Remove snapshots older than the specified number of days (DEFAULT: None)
+        // When not specified, only retain_last is used
+        // older_than_days: 7
     },
     
     // Default fallback configs for rewrite_data_files operation
@@ -237,6 +241,55 @@ You can also disable operations for specific tables while keeping them enabled g
             },
             rewrite_manifests: {
                 enabled: false
+            }
+        }
+    }
+}
+```
+
+## Expire Snapshots Configuration
+
+The `expire_snapshot` operation uses two parameters to control snapshot retention:
+- `retain_last`: Keep the N most recent snapshots (default: 1)
+- `older_than_days`: Remove snapshots older than N days
+
+### Retention Rules
+
+| Configuration | Behavior |
+|---------------|----------|
+| **None specified** | Keeps 1 snapshot (default) |
+| **Only `retain_last`** | Keeps the last N snapshots |
+| **Only `older_than_days`** | Removes snapshots older than N days (minimum 1 snapshot always kept) |
+| **Both specified** | Keeps snapshots matching EITHER condition (maximum retention) |
+
+### Examples
+
+```HOCON
+{
+    catalog: "spark_catalog",
+
+    // Keep last 5 snapshots
+    expire_snapshot: {
+        retain_last: 5
+    }
+
+    // Remove snapshots older than 7 days (but keep at least 1)
+    expire_snapshot: {
+        older_than_days: 7
+    }
+
+    // Keep last 3 snapshots OR snapshots newer than 7 days (whichever is more)
+    expire_snapshot: {
+        retain_last: 3,
+        older_than_days: 7
+    }
+
+    // Table-specific settings
+    table_overrides: {
+        production.critical_table: {
+            expire_snapshot: {
+                retain_last: 10,
+                older_than_days: 30
             }
         }
     }
