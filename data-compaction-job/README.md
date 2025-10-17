@@ -110,8 +110,7 @@ You can specify additional configurations
 
         // Filter to compact only specific rows (DEFAULT: None - compact all rows)
         // Uses SQL WHERE clause syntax to specify which data to compact
-        // Example: "date >= '2024-01-01'" or "status = 'active'"
-        // where: "date >= '2024-01-01'",
+        // where: "date <= CURRENT_DATE - 1",
 
         options: {
             // The minimum number of files that need to be in a file group for it to be considered for compaction.
@@ -268,14 +267,22 @@ Use the `where` parameter to compact only specific rows based on SQL WHERE condi
 
     // Compact recent data (works best with partition column)
     rewrite_data_files: {
-        where: "date >= '2024-01-01'"
+        // Static date filter
+        where: "date >= '2025-01-01'"
+
+        // Dynamic filters (recommended - no manual date updates needed)
+        // where: "date <= CURRENT_DATE - 30"                         // Data older than 30 days
+        // where: "date <= CURRENT_DATE - 7"                          // Data older than 7 days
+        // where: "date <= add_months(CURRENT_DATE, -6)"              // Data older than 6 months
+        // where: "date <= trunc(CURRENT_DATE, 'MM')"                 // Data before current month
+        // where: "event_time <= CURRENT_TIMESTAMP - INTERVAL 1 DAY"  // Data older than 1 day
     }
 
     // Table-specific filters
     table_overrides: {
         analytics.events: {
             rewrite_data_files: {
-                where: "year = 2024 AND month >= 6"
+                where: "event_date <= CURRENT_DATE - 14"
             }
         }
     }

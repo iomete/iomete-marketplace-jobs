@@ -1,7 +1,7 @@
 from datetime import datetime, timezone, timedelta
 
 from config import TableMetadata, ExpireSnapshotConfig
-from constants import CompactionOperation, ConfigProperty
+from constants import CompactionOperation, ConfigProperty, ExpireSnapshotDefaults
 from table_parser import get_config_overrides
 
 
@@ -26,7 +26,7 @@ def _get_timestamp(config: ExpireSnapshotConfig, table_metadata: TableMetadata) 
     older_than_days = override_value if override_value is not None else config.older_than_days
 
     return (
-        datetime.now() - timedelta(minutes=5)
+        datetime.now() - timedelta(minutes=ExpireSnapshotDefaults.OLDER_THAN_MINUTES)
         if older_than_days is None
         else datetime.now(timezone.utc) - timedelta(days=int(older_than_days))
     )

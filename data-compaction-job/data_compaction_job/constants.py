@@ -27,6 +27,7 @@ class OperationDefaults:
 class ExpireSnapshotDefaults:
     """Default values for expire snapshot operation"""
     RETAIN_LAST = 1
+    OLDER_THAN_MINUTES = 5
 
 
 class RemoveOrphanFilesDefaults:
