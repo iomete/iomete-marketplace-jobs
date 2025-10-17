@@ -7,6 +7,8 @@ from typing import List, Dict, Any
 
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, TimestampType, MapType
+
+from config import TableMetadata
 from data_compaction_job.constants import StatsDefaults
 
 logger = logging.getLogger(__name__)
@@ -23,15 +25,15 @@ class StatsBatcher:
         self.max_files_per_record = max_files_per_record
         self.spark_app_id: str = None
 
-    def add_metric(self, spark_app_id: str, catalog_name: str, database_name: str,
-                   table_name: str, operation: str, query: str, metrics: Dict[str, str],
+    def add_metric(self, spark_app_id: str, table_metadata: TableMetadata,
+                   operation: str, query: str, metrics: Dict[str, str],
                    start_time: datetime, end_time: datetime):
         with self.lock:
             self.metrics_batch.append({
                 'spark_app_id': spark_app_id,
-                'catalog_name': catalog_name,
-                'database_name': database_name,
-                'table_name': table_name,
+                'catalog_name': table_metadata.catalog,
+                'database_name': table_metadata.database,
+                'table_name': table_metadata.table,
                 'operation': operation,
                 'query': query,
                 'metrics': metrics,
@@ -42,15 +44,14 @@ class StatsBatcher:
             if len(self.metrics_batch) >= self.batch_size:
                 self._flush_metrics_batch()
 
-    def add_error(self, spark_app_id: str, catalog_name: str, database_name: str,
-                  table_name: str, operation: str, error: str,
+    def add_error(self, spark_app_id: str, table_metadata: TableMetadata, operation: str, error: str,
                   start_time: datetime, end_time: datetime):
         with self.lock:
             self.errors_batch.append({
                 'spark_app_id': spark_app_id,
-                'catalog_name': catalog_name,
-                'database_name': database_name,
-                'table_name': table_name,
+                'catalog_name': table_metadata.catalog,
+                'database_name': table_metadata.database,
+                'table_name': table_metadata.table,
                 'operation': operation,
                 'error': error,
                 'start_time': start_time,
@@ -123,7 +124,12 @@ class StatsBatcher:
     def set_spark_session(self, spark: SparkSession):
         """Set the Spark session for database operations."""
         self.spark = spark
-        self.spark_app_id = spark.sparkContext.applicationId
+
+        try:
+            self.spark_app_id = spark.sparkContext.applicationId
+        except Exception as e:
+            logger.error(f"Could not retrieve Spark application ID: {e}")
+            self.spark_app_id = "unknown"
 
 
 # Global batcher instance
@@ -145,9 +151,7 @@ def _add_orphan_files_metrics(removed_files: List[str], args, operation: str, sq
 
         _stats_batcher.add_metric(
             spark_app_id=_stats_batcher.spark_app_id,
-            catalog_name=args[1],
-            database_name=args[2],
-            table_name=args[3],
+            table_metadata=args[1],
             operation=operation,
             query=sql,
             metrics=metrics_map,
@@ -172,9 +176,7 @@ def _add_orphan_files_metrics(removed_files: List[str], args, operation: str, sq
 
         _stats_batcher.add_metric(
             spark_app_id=_stats_batcher.spark_app_id,
-            catalog_name=args[1],
-            database_name=args[2],
-            table_name=args[3],
+            table_metadata=args[1],
             operation=operation,
             query=sql,
             metrics=metrics_map,
@@ -203,15 +205,13 @@ def emit_stats(operation: str):
 
                 _stats_batcher.add_error(
                     spark_app_id=_stats_batcher.spark_app_id,
-                    catalog_name=args[1],
-                    database_name=args[2],
-                    table_name=args[3],
+                    table_metadata=args[1],
                     operation=operation,
                     error=str(e),
                     start_time=datetime.fromtimestamp(start_time, timezone.utc),
                     end_time=datetime.fromtimestamp(end_time, timezone.utc)
                 )
-                logger.error(f"[{args[2]}.{args[3]}] Error running {operation} on table, error={e}")
+                logger.error(f"[{args[1].database}.{args[1].table}] Error running {operation} on table, error={e}")
             else:
                 # post-execute happy scenario
                 end_time = time.time()
@@ -225,9 +225,7 @@ def emit_stats(operation: str):
 
                 _stats_batcher.add_metric(
                     spark_app_id=_stats_batcher.spark_app_id,
-                    catalog_name=args[1],
-                    database_name=args[2],
-                    table_name=args[3],
+                    table_metadata=args[1],
                     operation=operation,
                     query=sql,
                     metrics=metrics_map,

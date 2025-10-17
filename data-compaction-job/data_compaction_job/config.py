@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 from pyhocon import ConfigFactory
 from data_compaction_job.constants import (
     CompactionOperation, ConfigProperty,
@@ -24,6 +24,7 @@ def clean_option_keys(options_dict: dict) -> dict:
 @dataclass
 class ExpireSnapshotConfig:
     enabled: bool = OperationDefaults.ENABLED
+    older_than_days: Optional[int] = None
     retain_last: int = ExpireSnapshotDefaults.RETAIN_LAST
 
 
@@ -74,6 +75,13 @@ class ApplicationConfig:
     stats_batch_size: int = StatsDefaults.BATCH_SIZE
     table_overrides: dict[str, dict] = None
 
+@dataclass
+class TableMetadata:
+    catalog: str
+    database: str
+    table: str
+    table_overrides: Optional[dict[CompactionOperation, dict]] = None
+
 
 def get_config(application_config_path) -> ApplicationConfig:
     config = ConfigFactory.parse_file(filename=application_config_path, required=False)
@@ -88,6 +96,8 @@ def get_config(application_config_path) -> ApplicationConfig:
         app_config.expire_snapshot = ExpireSnapshotConfig(
             enabled=config[CompactionOperation.EXPIRE_SNAPSHOT.value].get(ConfigProperty.ENABLED.value,
                                                                           OperationDefaults.ENABLED),
+            older_than_days=config[CompactionOperation.EXPIRE_SNAPSHOT.value].get(ConfigProperty.OLDER_THAN_DAYS.value,
+                                                                                  None),
             retain_last=config[CompactionOperation.EXPIRE_SNAPSHOT.value].get(ConfigProperty.RETAIN_LAST.value,
                                                                               ExpireSnapshotDefaults.RETAIN_LAST)
         )

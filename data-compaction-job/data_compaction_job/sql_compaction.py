@@ -1,17 +1,19 @@
 import logging
 import os
-import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from functools import cache
 
 import requests
 
-from data_compaction_job.config import ApplicationConfig, RewriteManifestsConfig
+from config import TableMetadata
+from data_compaction_job.config import ApplicationConfig
 from data_compaction_job.constants import CompactionOperation, ConfigProperty
 from data_compaction_job.decorators import operation_enabled, timer
-from data_compaction_job.table_parser import parse_table_list, get_table_config_override
+from data_compaction_job.table_parser import parse_table_list
+from operations.expire_snapshots import get_expire_snapshots_query
 from stats_emitter import emit_stats, init_emitter, close_emitter
+from table_parser import get_table_metadata, get_config_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +49,14 @@ class SqlCompaction:
                          max_files_per_record=self.config.remove_orphan_files.max_files_per_record)
             for database in self._databases:
                 for table in db_table_mapping[database]:
-                    futures.append(executor.submit(self.__process_table_if_iceberg, catalog, database, table))
+                    table_metadata = get_table_metadata(
+                        catalog=catalog,
+                        database=database,
+                        table=table,
+                        table_overrides=self.config.table_overrides
+                    )
+
+                    futures.append(executor.submit(self.__process_table_if_iceberg, table_metadata))
 
             for future in as_completed(futures):
                 try:
@@ -57,7 +66,9 @@ class SqlCompaction:
 
             close_emitter(self.spark)
 
-    def __process_table_if_iceberg(self, catalog, db_name, table):
+    def __process_table_if_iceberg(self, table_metadata: TableMetadata):
+        catalog, db_name, table = table_metadata.catalog, table_metadata.database, table_metadata.table
+
         try:
             table_meta = self.spark.sql(f"describe extended {catalog}.{db_name}.{table}").collect()
 
@@ -66,12 +77,14 @@ class SqlCompaction:
                 return
 
             message = f"[{db_name}.{table}] table compaction"
-            timer(message)(self.__process_table)(catalog, db_name, table)
+            timer(message)(self.__process_table)(table_metadata)
 
         except Exception as e:
             logger.error(f"[{db_name}.{table}] Error processing table, error={e}")
 
-    def __process_table(self, catalog, database, table_name):
+    def __process_table(self, table_metadata: TableMetadata):
+        catalog, database, table_name = table_metadata.catalog, table_metadata.database, table_metadata.table
+
         if self.config.gc_handling.enabled:
             gc_enabled = self.__check_gc_enabled(catalog, database, table_name)
 
@@ -81,24 +94,24 @@ class SqlCompaction:
 
                 try:
                     # Run all the compaction operations
-                    self.__run_compaction_operations(catalog, database, table_name)
+                    self.__run_compaction_operations(table_metadata)
                 finally:
                     # Disable GC again after compaction operations
                     logger.info(f"[{database}.{table_name}] Disabling G.C. after compaction.")
                     self.__set_gc_enabled(catalog, database, table_name, False)
             else:
                 # GC is already enabled or None (not set), proceed with normal flow
-                self.__run_compaction_operations(catalog, database, table_name)
+                self.__run_compaction_operations(table_metadata)
         else:
             # GC handling is not enabled, proceed with normal flow
-            self.__run_compaction_operations(catalog, database, table_name)
+            self.__run_compaction_operations(table_metadata)
 
-    def __run_compaction_operations(self, catalog, database, table_name):
+    def __run_compaction_operations(self, table_metadata: TableMetadata):
         """Run enabled compaction operations for a table"""
-        self.__rewrite_manifest(catalog, database, table_name)
-        self.__rewrite_data_files(catalog, database, table_name)
-        self.__expire_snapshots(catalog, database, table_name)
-        self.__remove_orphan_files(catalog, database, table_name)
+        self.__rewrite_manifest(table_metadata)
+        self.__rewrite_data_files(table_metadata)
+        self.__expire_snapshots(table_metadata)
+        self.__remove_orphan_files(table_metadata)
 
     def __check_gc_enabled(self, catalog, database, table_name):
         try:
@@ -130,29 +143,19 @@ class SqlCompaction:
 
     @operation_enabled(CompactionOperation.EXPIRE_SNAPSHOT)
     @emit_stats("EXPIRE_SNAPSHOTS")
-    def __expire_snapshots(self, catalog, database, table_name):
-        timestamp = datetime.now() - timedelta(minutes=5)
-        retain_last = int(get_table_config_override(self.config.table_overrides,
-                                                    database,
-                                                    table_name,
-                                                    CompactionOperation.EXPIRE_SNAPSHOT.value,
-                                                    ConfigProperty.RETAIN_LAST.value)
-                          or self.config.expire_snapshot.retain_last)
-        options = (f"table => '`{catalog}`.`{database}`.`{table_name}`',"
-                   f" retain_last => {retain_last},"
-                   f" older_than => TIMESTAMP '{timestamp}'")
-        query = f"CALL {catalog}.system.expire_snapshots({options})"
+    def __expire_snapshots(self, table_metadata: TableMetadata):
+        query = get_expire_snapshots_query(self.config.expire_snapshot, table_metadata)
         result = self.spark.sql(query).collect()
         return result, query
 
     @operation_enabled(CompactionOperation.REMOVE_ORPHAN_FILES)
     @emit_stats("REMOVE_ORPHAN_FILES")
-    def __remove_orphan_files(self, catalog, database, table_name):
-        days = int(get_table_config_override(self.config.table_overrides,
-                                             database,
-                                             table_name,
-                                             CompactionOperation.REMOVE_ORPHAN_FILES.value,
-                                             ConfigProperty.OLDER_THAN_DAYS.value)
+    def __remove_orphan_files(self, table_metadata: TableMetadata):
+        catalog, database, table_name = table_metadata.catalog, table_metadata.database, table_metadata.table
+
+        days = int(get_config_overrides(table_metadata.table_overrides,
+                                             CompactionOperation.REMOVE_ORPHAN_FILES,
+                                             ConfigProperty.OLDER_THAN_DAYS)
                    or self.config.remove_orphan_files.older_than_days)
         timestamp = datetime.now(timezone.utc) - timedelta(days=days)
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`', older_than => TIMESTAMP '{timestamp}'"
@@ -162,13 +165,13 @@ class SqlCompaction:
 
     @operation_enabled(CompactionOperation.REWRITE_MANIFESTS)
     @emit_stats("REWRITE_MANIFESTS")
-    def __rewrite_manifest(self, catalog, database, table_name):
+    def __rewrite_manifest(self, table_metadata: TableMetadata):
+        catalog, database, table_name = table_metadata.catalog, table_metadata.database, table_metadata.table
+
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`'"
-        use_caching = (get_table_config_override(self.config.table_overrides,
-                                                 database,
-                                                 table_name,
-                                                 CompactionOperation.REWRITE_MANIFESTS.value,
-                                                 ConfigProperty.USE_CACHING.value)
+        use_caching = (get_config_overrides(table_metadata.table_overrides,
+                                            CompactionOperation.REWRITE_MANIFESTS,
+                                            ConfigProperty.USE_CACHING)
                        or self.config.rewrite_manifests.use_caching)
         if use_caching:
             use_caching = str(use_caching).lower()
@@ -179,30 +182,24 @@ class SqlCompaction:
 
     @operation_enabled(CompactionOperation.REWRITE_DATA_FILES)
     @emit_stats("REWRITE_DATA_FILES")
-    def __rewrite_data_files(self, catalog, database, table_name):
-        strategy = (get_table_config_override(self.config.table_overrides,
-                                              database,
-                                              table_name,
-                                              CompactionOperation.REWRITE_DATA_FILES.value,
-                                              ConfigProperty.STRATEGY.value)
+    def __rewrite_data_files(self, table_metadata: TableMetadata):
+        catalog, database, table_name = table_metadata.catalog, table_metadata.database, table_metadata.table
+
+        strategy = (get_config_overrides(table_metadata.table_overrides,
+                                        CompactionOperation.REWRITE_DATA_FILES,
+                                        ConfigProperty.STRATEGY)
                     or self.config.rewrite_data_files.strategy)
-        sort_order = (get_table_config_override(self.config.table_overrides,
-                                                database,
-                                                table_name,
-                                                CompactionOperation.REWRITE_DATA_FILES.value,
-                                                ConfigProperty.SORT_ORDER.value)
+        sort_order = (get_config_overrides(table_metadata.table_overrides,
+                                          CompactionOperation.REWRITE_DATA_FILES,
+                                          ConfigProperty.SORT_ORDER)
                       or self.config.rewrite_data_files.sort_order)
-        rewrite_options = (get_table_config_override(self.config.table_overrides,
-                                                     database,
-                                                     table_name,
-                                                     CompactionOperation.REWRITE_DATA_FILES.value,
-                                                     ConfigProperty.OPTIONS.value)
+        rewrite_options = (get_config_overrides(table_metadata.table_overrides,
+                                               CompactionOperation.REWRITE_DATA_FILES,
+                                               ConfigProperty.OPTIONS)
                            or self.config.rewrite_data_files.options)
-        where = (get_table_config_override(self.config.table_overrides,
-                                           database,
-                                           table_name,
-                                           CompactionOperation.REWRITE_DATA_FILES.value,
-                                           ConfigProperty.WHERE.value)
+        where = (get_config_overrides(table_metadata.table_overrides,
+                                     CompactionOperation.REWRITE_DATA_FILES,
+                                     ConfigProperty.WHERE)
                  or self.config.rewrite_data_files.where)
 
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`'"
