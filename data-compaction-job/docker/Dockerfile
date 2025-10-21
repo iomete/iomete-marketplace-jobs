@@ -1,4 +1,4 @@
-FROM iomete.azurecr.io/iomete/spark-py:3.5.5-v2
+FROM iomete.azurecr.io/iomete/spark-py:3.5.5-v6
 
 WORKDIR "/app"
 

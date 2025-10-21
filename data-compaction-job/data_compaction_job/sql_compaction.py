@@ -210,7 +210,7 @@ class SqlCompaction:
             option_map = ', '.join(', '.join((f"'{k}'", f"'{v}'")) for (k, v) in rewrite_options.items())
             options += f", options => map({option_map})"
         if where:
-            options += f", where => {where}"
+            options += f", where => \"{where}\""
 
         query = f"CALL {catalog}.system.rewrite_data_files({options})"
         result = self.spark.sql(query).collect()
