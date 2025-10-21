@@ -257,6 +257,7 @@ def init_emitter(spark: SparkSession, batch_size: int = StatsDefaults.BATCH_SIZE
   start_time TIMESTAMP,
   end_time TIMESTAMP
   )
+  PARTITIONED BY (days(start_time))
   TBLPROPERTIES (
   'commit.retry.num-retries' = '200'
   )""")
@@ -270,6 +271,7 @@ def init_emitter(spark: SparkSession, batch_size: int = StatsDefaults.BATCH_SIZE
   start_time TIMESTAMP,
   end_time TIMESTAMP
   )
+  PARTITIONED BY (days(start_time))
   TBLPROPERTIES (
   'commit.retry.num-retries' = '200'
   )""")
