@@ -56,6 +56,12 @@ class GCHandlingConfig:
 
 
 @dataclass
+class LockConfig:
+    enabled: bool = False
+    ttl_seconds: int = 172800  # 48h; covers 1-day worst-case + buffer
+
+
+@dataclass
 class IncludeExcludeConfig:
     databases: list[str] = None
     table_include: list[str] = None
@@ -70,6 +76,7 @@ class ApplicationConfig:
     rewrite_data_files: RewriteDataFilesConfig = field(default_factory=RewriteDataFilesConfig)
     rewrite_manifests: RewriteManifestsConfig = field(default_factory=RewriteManifestsConfig)
     gc_handling: GCHandlingConfig = field(default_factory=GCHandlingConfig)
+    lock: LockConfig = field(default_factory=LockConfig)
     include_exclude: IncludeExcludeConfig = field(default_factory=IncludeExcludeConfig)
     parallelism: int = JobDefaults.PARALLELISM
     stats_batch_size: int = StatsDefaults.BATCH_SIZE
@@ -133,6 +140,13 @@ def get_config(application_config_path) -> ApplicationConfig:
     if "gc_handling" in config:
         app_config.gc_handling = GCHandlingConfig(
             enabled=config["gc_handling"].get("enabled", JobDefaults.GC_ENABLED)
+        )
+
+    if "lock" in config:
+        lock_cfg = config.get("lock", {})
+        app_config.lock = LockConfig(
+            enabled=lock_cfg.get("enabled", False),
+            ttl_seconds=int(lock_cfg.get("ttl_seconds", 172800))
         )
 
     if "parallelism" in config:

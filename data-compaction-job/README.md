@@ -157,6 +157,15 @@ You can specify additional configurations
         // Defaults to 100
         max_files_per_record: 100
     },
+
+    // Optional: Prevent concurrent compactions on the same table across instances
+    // Disabled by default. Uses an Iceberg table property lock with TTL, no heartbeat
+    lock: {
+        enabled: false,
+        // TTL must be >= worst-case compaction duration for a table
+        // Default is 172800 seconds (48h) to cover 1-day runs plus buffer
+        ttl_seconds: 172800
+    },
     
     // Used to override operation configs for specific tables
     // Supports two formats for table keys:
@@ -174,6 +183,32 @@ You can specify additional configurations
     }
 }
 ```
+
+### Concurrency Control via Table Property Lock
+
+- When `lock.enabled=true`, the job attempts to acquire a lock per table by setting the Iceberg table property `iomete.compaction.lock`.
+- If the property exists and is not expired, the table is skipped.
+- If the property is missing or expired, the job sets the property atomically (via `ALTER TABLE ... SET TBLPROPERTIES`);
+- The lock value includes an `ownerId`, a random `nonce`, and an `expiresAt` timestamp; release unsets the property only if ownership matches.
+
+### Troubleshooting Table Locks
+
+**Stuck Locks**: If a job crashes and leaves a lock, it will automatically expire after the configured TTL. To check or manually release a stuck lock:
+
+```sql
+-- Check current lock status
+SHOW TBLPROPERTIES catalog.database.table_name;
+
+-- Manual lock release (if needed)
+ALTER TABLE catalog.database.table_name UNSET TBLPROPERTIES ('iomete.compaction.lock');
+```
+
+**Lock Format**: The lock value contains `ownerId=<owner>;nonce=<random>;expiresAt=<timestamp>;version=1` for identification and expiry tracking.
+
+**Common Issues**:
+- **Lock acquisition failures**: Usually indicates another instance is actively running compaction on the table
+- **Premature lock expiry**: Increase `ttl_seconds` if compaction runs longer than expected
+- **Permission errors**: Ensure the job has `ALTER TABLE` privileges on the target tables
 
 ## Selective Operation Execution
 

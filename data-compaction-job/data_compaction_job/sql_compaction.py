@@ -14,6 +14,7 @@ from data_compaction_job.table_parser import parse_table_list
 from operations.expire_snapshots import get_expire_snapshots_query
 from stats_emitter import emit_stats, init_emitter, close_emitter
 from table_parser import get_table_metadata, get_config_overrides
+from data_compaction_job.locking import TablePropertyLock
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,23 @@ class SqlCompaction:
     def __process_table(self, table_metadata: TableMetadata):
         catalog, database, table_name = table_metadata.catalog, table_metadata.database, table_metadata.table
 
+        # Acquire lock if enabled; skip table if not acquired
+        if self.config.lock and self.config.lock.enabled:
+            lock = TablePropertyLock(self.spark, self.config)
+            if not lock.acquire(catalog, database, table_name):
+                logger.info(f"[{database}.{table_name}] Skipping compaction: lock held by another instance.")
+                return
+
+            try:
+                self.__process_table_within_lock(table_metadata)
+            finally:
+                lock.release(catalog, database, table_name)
+        else:
+            self.__process_table_within_lock(table_metadata)
+
+    def __process_table_within_lock(self, table_metadata: TableMetadata):
+        catalog, database, table_name = table_metadata.catalog, table_metadata.database, table_metadata.table
+
         if self.config.gc_handling.enabled:
             gc_enabled = self.__check_gc_enabled(catalog, database, table_name)
 
@@ -105,6 +123,8 @@ class SqlCompaction:
         else:
             # GC handling is not enabled, proceed with normal flow
             self.__run_compaction_operations(table_metadata)
+
+    # lock helpers moved to locking.py
 
     def __run_compaction_operations(self, table_metadata: TableMetadata):
         """Run enabled compaction operations for a table"""
