@@ -20,6 +20,7 @@ data class SchemaMetadata(
     val totalTableCount: Int,
     val totalViewCount: Int,
     val totalSizeInBytes: Long,
+    val totalDbSizeInBytes: Long,
     val totalFiles: Long,
     val failedTableCount: Int,
 )
@@ -42,7 +43,9 @@ data class TableMetadata(
 
     val lastModified: Long? = null,
     val numFiles: Long? = null,
+    val totalTableNumFiles : Long? = null,
     val sizeInBytes: Long? = null,
+    val totalTableSizeInBytes: Long? = null,
     val totalRecords: Long? = null,
 
     val columns: List<ColumnMetadata>,

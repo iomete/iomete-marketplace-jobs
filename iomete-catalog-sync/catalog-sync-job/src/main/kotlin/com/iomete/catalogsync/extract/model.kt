@@ -3,7 +3,9 @@ package com.iomete.catalogsync.extract
 data class TableStatistics(
     val lastModified: Long? = null,
     val numFiles: Long? = null,
+    val totalTableNumFiles : Long? = null,
     val sizeInBytes: Long? = null,
+    val totalTableSizeInBytes: Long? = null,
     val totalRecords: Long? = null
 )
 
