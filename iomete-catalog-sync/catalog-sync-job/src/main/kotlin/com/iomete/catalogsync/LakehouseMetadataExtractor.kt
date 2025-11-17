@@ -101,6 +101,7 @@ class LakehouseMetadataExtractor(
         val totalTableCount = tables.size
         var totalViewCount = 0
         var totalSizeInBytes = 0L
+        var totalDbSizeInBytes = 0L
         var totalFiles = 0L
         var failedTableCount = 0
 
@@ -133,7 +134,9 @@ class LakehouseMetadataExtractor(
                     synchronized(this) {
                         if (it.isView) totalViewCount++
                         totalSizeInBytes += it.sizeInBytes ?: 0L
+                        totalDbSizeInBytes += it.totalTableSizeInBytes ?: 0L
                         totalFiles += it.numFiles ?: 0L
+                        // totalSchemaFiles += it.totalTableNumFiles ?: 0L
                     }
                 }
             } catch (th: Throwable) {
@@ -160,7 +163,9 @@ class LakehouseMetadataExtractor(
             totalTableCount = totalTableCount,
             totalViewCount = totalViewCount,
             totalSizeInBytes = totalSizeInBytes,
+            totalDbSizeInBytes = totalDbSizeInBytes,
             totalFiles = totalFiles,
+            // totalSchemaFiles = 0L,
             failedTableCount = failedTableCount
         )
         dataSync.syncSchemaData(schemaMetadata)
@@ -279,7 +284,9 @@ class LakehouseMetadataExtractor(
 
             lastModified = datasetStatistics?.lastModified,
             numFiles = datasetStatistics?.numFiles,
+            totalTableNumFiles = datasetStatistics?.totalTableNumFiles,
             sizeInBytes = datasetStatistics?.sizeInBytes,
+            totalTableSizeInBytes = datasetStatistics?.totalTableSizeInBytes,
             totalRecords = datasetStatistics?.totalRecords,
 
             columns = columnMetadataList,
