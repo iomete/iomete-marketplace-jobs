@@ -7,18 +7,6 @@ test:
 test-namespace:
 	pytest tests/namespace/ -v
 
-test-unit:
-	pytest -m unit -v
-
-test-coverage:
-	pytest --cov=ras_onboarding --cov-report=html --cov-report=term --cov-report=xml
-
-test-verbose:
-	pytest -vv -s
-
-test-watch:
-	pytest-watch -- -v
-
 az-login:
 	az acr login --name iomete
 
