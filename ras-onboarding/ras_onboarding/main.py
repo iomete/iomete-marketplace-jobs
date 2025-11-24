@@ -41,7 +41,7 @@ def start_job(spark, config):
         # Run appropriate migration based on type
         if migration_type == "namespace":
             logger.info("Running namespace migration (resource-based permissions)")
-            migration = NamespaceMigration(bundle_db, asset_db, config)
+            migration = NamespaceMigration(bundle_db, asset_db, bundle_db, config)
         else:  # Default to asset migration
             logger.info("Running asset migration (role-based permissions)")
             migration = AssetOnboardingMigration(bundle_db, asset_db, config)

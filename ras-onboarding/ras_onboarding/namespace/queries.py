@@ -1,7 +1,7 @@
 GET_NAMESPACE_MAPPING_ID = """SELECT id
                               FROM domain_namespace_mapping
                               WHERE domain_id = %s
-                                AND namespace = %s"""
+                                AND namespace = %s LIMIT 1"""
 
 GET_BUNDLE_FROM_DOMAIN_AND_NAME = """
                                   SELECT id
@@ -12,9 +12,9 @@ GET_BUNDLE_FROM_DOMAIN_AND_NAME = """
 
 SET_NAMESPACE_PERMISSION = """
             INSERT INTO bundle_permission
-            (bundle_id, asset_type, asset_id, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
-            VALUES (%s, 'NAMESPACE', %s, 'USER', %s, %s, current_timestamp, 'system', current_timestamp, 'system')
-            ON CONFLICT (bundle_id, asset_type, asset_id, actor_type, actor_id)
+            (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by, updated_at, updated_by)
+            VALUES (%s, 'NAMESPACE', 'USER', %s, %s, current_timestamp, 'system', current_timestamp, 'system')
+            ON CONFLICT (bundle_id, asset_type, actor_type, actor_id)
             DO UPDATE SET
                 permissions = EXCLUDED.permissions,
                 updated_at = current_timestamp,
@@ -36,10 +36,11 @@ CREATE_NAMESPACE_BUNDLE = """
             VALUES (%s, %s, %s, %s, %s, %s, current_timestamp, 'system', current_timestamp, 'system', false)
         """
 
-GET_DOMAIN_OWNERS = """
-            SELECT owners
+GET_DOMAIN_MEMBERS = """
+            SELECT created_by
             FROM domain
-            WHERE id = %s AND is_deleted = false
+            WHERE id = %s
+            LIMIT 1
         """
 
 ADD_NAMESPACE_TO_BUNDLE = """
@@ -47,3 +48,17 @@ ADD_NAMESPACE_TO_BUNDLE = """
             VALUES (%s, 'NAMESPACE', %s, current_timestamp, 'system', current_timestamp, 'system')
             ON CONFLICT (bundle_id, asset_type, asset_id) DO NOTHING
         """
+
+DELETE_NAMESPACE_BUNDLE = """
+DELETE FROM bundle
+    WHERE id = %s"""
+
+DELETE_BUNDLE_PERMISSIONS = """
+DELETE FROM bundle_permission
+    WHERE bundle_id = %s
+"""
+
+DELETE_BUNDLE_ASSETS = """
+DELETE FROM bundle_asset
+    WHERE bundle_id = %s
+"""

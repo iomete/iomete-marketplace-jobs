@@ -1,19 +1,20 @@
 """Namespace migration logic for resource-based permissions."""
 import uuid
-import json
 from typing import Dict, Any, List, Optional
 from ..common.database import DatabaseManager
 from ..common.logger import get_logger
 from .queries import (GET_NAMESPACE_MAPPING_ID, GET_BUNDLE_FROM_DOMAIN_AND_NAME,
-                      GET_NAMESPACES_FOR_DOMAIN, CREATE_NAMESPACE_BUNDLE, GET_DOMAIN_OWNERS,
-                      ADD_NAMESPACE_TO_BUNDLE)
+                      GET_NAMESPACES_FOR_DOMAIN, CREATE_NAMESPACE_BUNDLE,
+                      GET_DOMAIN_MEMBERS, ADD_NAMESPACE_TO_BUNDLE, DELETE_BUNDLE_PERMISSIONS, DELETE_BUNDLE_ASSETS,
+                      DELETE_NAMESPACE_BUNDLE)
 from .permission_assignment import PermissionAssignment
 
 logger = get_logger(__name__)
 
 
 class NamespaceMigration:
-    def __init__(self, bundle_db: DatabaseManager, asset_db: DatabaseManager, config: Dict[str, Any]):
+    def __init__(self, bundle_db: DatabaseManager, asset_db: DatabaseManager, domain_db: DatabaseManager,
+                 config: Dict[str, Any]):
         """
         Initialize namespace migration.
 
@@ -24,6 +25,7 @@ class NamespaceMigration:
         """
         self.bundle_db = bundle_db
         self.asset_db = asset_db
+        self.domain_db = domain_db
         self.config = config
         self.migration_config = config["migration"]
         self.namespace_config = config["namespace_config"]
@@ -44,36 +46,12 @@ class NamespaceMigration:
         logger.error(error_msg)
         raise ValueError(error_msg)
 
-    def get_domain_owner(self, connection, domain_id: str) -> str:
-        """
-        Returns:
-            Owner ID (first owner from the list)
-        Raises:
-            ValueError: If domain not found or has no owners
-        """
-        results = self.asset_db.execute_query(connection, GET_DOMAIN_OWNERS, (domain_id,))
+    def get_domain_owner(self, connection, domain_id: str) -> tuple[str, str]:
+        result = self.asset_db.execute_query(connection, GET_DOMAIN_MEMBERS, (domain_id,))
+        if result and len(result) > 0:
+            return result[0]['created_by'], 'USER'
 
-        if not results:
-            error_msg = f"Domain {domain_id} not found or is deleted"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-
-        owners_text = results[0]['owners']
-        if not owners_text:
-            error_msg = f"Domain {domain_id} has no owners"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-
-        # Parse owners list stored as JSON array: ["user-id-1", "user-id-2", "user-id-3"]
-        try:
-            owners = json.loads(owners_text)
-            owner_id = owners[0]
-            logger.debug(f"Found owner {owner_id} for domain {domain_id}")
-            return owner_id
-        except (json.JSONDecodeError, IndexError, TypeError) as e:
-            error_msg = f"Could not parse owners for domain {domain_id}: {owners_text}. Error: {e}"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
+        raise ValueError(f"Domain {domain_id} not found")
 
     def get_or_create_namespace_bundle(self, connection, namespace: str, domain_id: str,
                                        owner_id: str, owner_type: str) -> Optional[str]:
@@ -89,12 +67,16 @@ class NamespaceMigration:
             duplicate_action = self.migration_config.get("duplicate_bundle_action", "FAIL")
             if duplicate_action == "FAIL":
                 raise ValueError(
-                    f"Namespace bundle already exists for {namespace} in domain {domain_id}. Use UPDATE or SKIP mode.")
+                    f"Namespace bundle already exists for {namespace} in domain {domain_id}. Use OVERWRITE or SKIP mode.")
             elif duplicate_action == "SKIP":
                 logger.info(f"Skipping bundle creation for namespace {namespace} - bundle already exists")
                 return None
-            # If UPDATE, continue with the existing bundle_id
-            return bundle_id
+            elif duplicate_action == "OVERWRITE":
+                logger.info(f"Deleting existing bundle creation for namespace {namespace}")
+                with connection.cursor() as cursor:
+                    cursor.execute(DELETE_BUNDLE_ASSETS, (bundle_id,))
+                    cursor.execute(DELETE_BUNDLE_PERMISSIONS, (bundle_id,))
+                    cursor.execute(DELETE_NAMESPACE_BUNDLE, (bundle_id,))
 
         # Create namespace bundle in database
         bundle_id = str(uuid.uuid4())
@@ -143,8 +125,8 @@ class NamespaceMigration:
                 # Use asset_db connection for asset queries (read-only, no transaction needed)
                 with self.asset_db.get_connection() as asset_conn:
                     # Get domain owner to use for bundle creation
-                    domain_owner_id = self.get_domain_owner(asset_conn, domain_id)
-                    logger.info(f"Using domain owner {domain_owner_id} for bundle creation")
+                    domain_owner_id, domain_owner_type = self.get_domain_owner(bundle_conn, domain_id)
+                    logger.info(f"Using domain owner {domain_owner_id} ({domain_owner_type}) for bundle creation")
 
                     # Get all namespaces for this domain
                     namespaces = self.get_namespaces_for_domain(asset_conn, domain_id)
@@ -160,31 +142,33 @@ class NamespaceMigration:
 
                         # Get namespace mapping ID from existing mapping
                         namespace_mapping_id = self.get_namespace_mapping_id(
-                            bundle_conn, domain_id, namespace_name
+                            asset_conn, domain_id, namespace_name
                         )
 
                         # Create or get namespace-specific bundle using domain owner
-                        bundle_id = self.get_or_create_namespace_bundle(
-                            bundle_conn, namespace_name, domain_id,
-                            owner_id=domain_owner_id, owner_type="USER"
-                        )
+                        with self.bundle_db.get_transaction() as bundle_conn2:
+                            bundle_id = self.get_or_create_namespace_bundle(
+                                bundle_conn2, namespace_name, domain_id,
+                                owner_id=domain_owner_id, owner_type=domain_owner_type
+                            )
 
-                        if bundle_id is None:
-                            logger.info(f"Skipping namespace {namespace_name} - bundle already exists")
-                            continue
+                            if bundle_id is None:
+                                logger.info(f"Skipping namespace {namespace_name} - bundle already exists")
+                                continue
 
-                        # Add namespace to bundle_asset table
-                        self.add_namespace_asset_to_bundle(bundle_conn, bundle_id, namespace_mapping_id)
+                            # Add namespace to bundle_asset table
+                            self.add_namespace_asset_to_bundle(bundle_conn2, bundle_id, namespace_mapping_id)
 
-                        # Get users who have resources in this namespace
-                        users = self.permission_assignment.get_users_for_namespace(
-                            asset_conn, namespace_name, domain_id
-                        )
+                            with self.asset_db.get_connection() as asset_conn2:
+                                # Get users who have resources in this namespace
+                                users = self.permission_assignment.get_users_for_namespace(
+                                    asset_conn2, namespace_name, domain_id
+                                )
 
-                        # Grant permissions to those users using the namespace mapping ID
-                        self.permission_assignment.set_namespace_permissions(
-                            bundle_conn, bundle_id, namespace_mapping_id, users
-                        )
+                                # Grant permissions to those users using the namespace mapping ID
+                                self.permission_assignment.set_namespace_permissions(
+                                    bundle_conn2, bundle_id, namespace_mapping_id, users
+                                )
 
                 # Dry run - rollback instead of commit
                 if self.migration_config.get("dry_run", False):

@@ -65,18 +65,13 @@ class PermissionAssignment:
                 logger.debug(f"User query for {table_name}: {combined_query}")
                 logger.debug(f"Parameters: ({namespace}, {domain_id})")
 
-            try:
-                results = self.asset_db.execute_query(connection, combined_query,
-                                                      (namespace, domain_id) * len(user_columns))
-                table_users = {r['username'] for r in results if r['username']}
-                all_users.update(table_users)
+            results = self.asset_db.execute_query(connection, combined_query,
+                                                  (namespace, domain_id) * len(user_columns))
+            table_users = {r['username'] for r in results if r['username']}
+            all_users.update(table_users)
 
-                if table_users:
-                    logger.debug(f"Found {len(table_users)} users in {table_name} for namespace {namespace}")
-            except Exception as e:
-                logger.error(f"Error querying users from {table_name} for namespace {namespace}: {e}")
-                # Continue with other tables even if one fails
-                continue
+            if table_users:
+                logger.debug(f"Found {len(table_users)} users in {table_name} for namespace {namespace}")
 
         logger.info(f"Total {len(all_users)} unique users found for namespace {namespace} in domain {domain_id}")
         return all_users
@@ -105,7 +100,7 @@ class PermissionAssignment:
                     logger.debug(f"Granting {permissions} to user {username} on namespace {namespace_id}")
 
                 self.bundle_db.execute_insert(connection, SET_NAMESPACE_PERMISSION,
-                                              (bundle_id, namespace_id, username, permissions))
+                                              (bundle_id, username, permissions))
                 success_count += 1
             except Exception as e:
                 logger.error(f"Error granting permissions to user {username} on namespace {namespace_id}: {e}")
