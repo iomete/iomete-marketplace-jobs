@@ -160,16 +160,6 @@ class TestGetDomainOwner:
 
         assert "Could not parse owners" in str(exc_info.value)
 
-    def test_get_domain_owner_invalid_json(self, migration, mock_asset_db):
-        """Test error when owners JSON is invalid."""
-        mock_connection = Mock()
-        mock_asset_db.execute_query.return_value = [{"owners": "not valid json"}]
-
-        with pytest.raises(ValueError) as exc_info:
-            migration.get_domain_owner(mock_connection, "domain-123")
-
-        assert "Could not parse owners" in str(exc_info.value)
-
     def test_get_domain_owner_multiple_owners(self, migration, mock_asset_db):
         """Test that first owner is returned when multiple exist."""
         mock_connection = Mock()

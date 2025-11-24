@@ -1,220 +1,202 @@
-# Namespace Migration - Quick Start
+# Namespace Migration - Quick Start Guide
 
 ## 5-Minute Setup
 
-### 1. Set Migration Type
+### Step 1: Set Environment Variable
 
-Edit `application.conf`:
-
-```hocon
-migration: {
-    migration_type: "namespace"  # ← Change this!
-}
+```bash
+export MIGRATION_TYPE=namespace
 ```
 
-### 2. Configure Domains
+### Step 2: Configure Databases
 
-Replace complex domain config with simple list:
+Set database credentials:
 
-```hocon
-# Before (asset migration):
-domains: [
-    {
-        domain_id: "production"
-        owner_id: "admin"
-        owner_type: "USER"
-        asset_types: ["COMPUTE"]
-    }
-]
-
-# After (namespace migration):
-domains: ["production", "staging", "dev"]  # ← Just domain IDs!
+```bash
+export DB_USER=your_iam_user
+export DB_PASSWORD=your_iam_password
+export ASSET_DB_USER=your_asset_user
+export ASSET_DB_PASSWORD=your_asset_password
 ```
 
-### 3. Verify Resource Tables
+### Step 3: Edit Configuration
 
-Default config scans these tables:
-
-```hocon
-resource_tables: [
-    { table: "lakehouse", namespace_column: "namespace", user_columns: ["created_by"] },
-    { table: "spark_job", namespace_column: "namespace", user_columns: ["created_by", "job_user"] },
-    { table: "jupyter_container", namespace_column: "namespace", user_columns: ["created_by"] }
-]
-```
-
-✅ **No changes needed** if your tables match this structure.
-
-### 4. Run Dry Run
-
-Test without making changes:
+Edit `application-namespace.conf` with your settings:
 
 ```hocon
 migration: {
     migration_type: "namespace"
+
+    # Add your domains
+    domains: ["default", "production"]
+
+    # Configure resource tables to scan
+    resource_tables: [
+        {
+            table: "lakehouse"
+            namespace_column: "lakehouse_namespace"
+            user_columns: ["created_by", "updated_by", "owner"]
+        },
+        {
+            table: "spark_job"
+            namespace_column: "namespace"
+            user_columns: ["created_by", "owner"]
+        }
+    ]
+
+    # Permissions to grant
+    namespace_permissions: ["USE"]
+}
+```
+
+### Step 4: Test First (Dry Run)
+
+Enable dry run mode in config:
+```hocon
+migration: {
     dry_run: true
     debug_mode: true
+    # ... other settings
 }
 ```
 
-Check logs to verify:
-- ✅ Namespaces are found
-- ✅ Users are discovered
-- ✅ No errors
+Run the migration:
+```bash
+python driver.py
+```
 
-### 5. Run For Real
+Check the logs - no changes will be committed.
 
+### Step 5: Run for Real
+
+Disable dry run in config:
 ```hocon
 migration: {
-    migration_type: "namespace"
     dry_run: false
-    duplicate_bundle_action: "UPDATE"
+    debug_mode: false
+    # ... other settings
 }
 ```
 
-Deploy and run the job!
+Run the migration:
+```bash
+python driver.py
+```
 
----
+## What Happens?
+
+1. **Discovers Users:** Scans your resource tables to find users with resources in each namespace
+2. **Creates Bundles:** Creates one `{namespace}_Resource_bundle` per namespace
+3. **Grants Permissions:** Gives namespace permissions to users who have resources there
+
+## Example Output
+
+```
+INFO: Starting namespace migration for domain: default
+INFO: Found 3 namespaces for domain default
+INFO: Processing namespace: analytics in domain default
+INFO: Total 5 unique users found for namespace analytics
+INFO: Created namespace bundle for namespace analytics
+INFO: Granted permissions to 5 users on namespace analytics
+INFO: Successfully migrated namespace permissions for domain default
+```
 
 ## Common Configurations
 
-### Default Configuration (Most Common)
-
+### Minimal Setup
 ```hocon
-{
-    databases: { /* your DB config */ }
-
-    migration: {
-        migration_type: "namespace"
-        domains: ["production", "staging"]
-
-        resource_tables: [
-            { table: "lakehouse", namespace_column: "namespace", user_columns: ["created_by"] },
-            { table: "spark_job", namespace_column: "namespace", user_columns: ["created_by", "job_user"] },
-            { table: "jupyter_container", namespace_column: "namespace", user_columns: ["created_by"] }
-        ]
-
-        namespace_permissions: ["USE"]
-        duplicate_bundle_action: "UPDATE"
-        dry_run: false
-        debug_mode: false
-    }
-
-    namespace_config: {
-        table: "domain_namespace_mapping"
-        id_column: "id"
-        namespace_column: "namespace"
-        domain_column: "domain_id"
-    }
+migration: {
+    migration_type: "namespace"
+    domains: ["default"]
+    resource_tables: [
+        {
+            table: "lakehouse"
+            namespace_column: "lakehouse_namespace"
+            user_columns: ["created_by"]
+        }
+    ]
+    namespace_permissions: ["USE"]
 }
 ```
 
-### Custom Table Names
-
-If your tables have different names:
-
+### Production Setup
 ```hocon
-resource_tables: [
-    { table: "compute_clusters", namespace_column: "k8s_namespace", user_columns: ["owner"] },
-    { table: "jobs", namespace_column: "k8s_namespace", user_columns: ["creator", "runner"] },
-    { table: "notebooks", namespace_column: "k8s_namespace", user_columns: ["user_id"] }
-]
+migration: {
+    migration_type: "namespace"
+    domains: ["production"]
+    dry_run: false
+    debug_mode: false
+    duplicate_bundle_action: "UPDATE"
 
-namespace_config: {
-    table: "namespace_domain_map"  # ← Your table name
-    id_column: "uuid"
-    namespace_column: "ns_name"
-    domain_column: "domain"
+    resource_tables: [
+        {
+            table: "lakehouse"
+            namespace_column: "lakehouse_namespace"
+            user_columns: ["created_by", "updated_by", "owner"]
+        },
+        {
+            table: "spark_job"
+            namespace_column: "namespace"
+            user_columns: ["created_by", "updated_by", "owner"]
+        },
+        {
+            table: "spark_connect"
+            namespace_column: "namespace"
+            user_columns: ["created_by", "updated_by"]
+        }
+    ]
+
+    namespace_permissions: ["USE", "READ"]
 }
 ```
 
-### Multiple Permissions
-
-Grant more than just USE:
-
+### Development/Testing
 ```hocon
-namespace_permissions: ["USE", "VIEW", "MANAGE"]
+migration: {
+    migration_type: "namespace"
+    domains: ["dev"]
+    dry_run: true           # Don't commit
+    debug_mode: true        # Verbose logging
+
+    resource_tables: [ ... ]
+    namespace_permissions: ["USE"]
+}
 ```
 
----
+## Quick Commands
 
-## Verification
+```bash
+# Test without changes
+export MIGRATION_TYPE=namespace
+# Set dry_run: true in config
+python driver.py
 
-After migration, check results:
+# Run for real
+export MIGRATION_TYPE=namespace
+# Set dry_run: false in config
+python driver.py
 
-```sql
--- See all namespace permissions granted
-SELECT
-    b.domain,
-    dnm.namespace,
-    bp.actor_id as username,
-    bp.permissions
-FROM bundle b
-JOIN bundle_permission bp ON b.id = bp.bundle_id
-JOIN domain_namespace_mapping dnm ON bp.asset_id = dnm.id
-WHERE b.name = 'resource'
-    AND bp.asset_type = 'NAMESPACE'
-ORDER BY b.domain, dnm.namespace, bp.actor_id;
+# With Spark
+spark-submit driver.py
 ```
 
-Expected results:
-```
-domain     | namespace         | username  | permissions
------------|-------------------|-----------|------------
-production | data-engineering  | alice     | {USE}
-production | data-engineering  | bob       | {USE}
-production | data-science      | carol     | {USE}
-```
+## Troubleshooting
 
----
+### "No users found"
+✅ Check that resource tables exist and have data
+✅ Verify namespace_column and user_columns match your schema
+✅ Enable debug_mode to see queries
 
-## Troubleshooting Quick Fixes
+### "Namespace mapping not found"
+✅ Ensure domain_namespace_mapping table is populated
+✅ Verify namespaces exist before running migration
 
-| Issue | Quick Fix |
-|-------|-----------|
-| No namespaces found | Check `namespace_config.table` and `domain_column` |
-| No users found | Verify `resource_tables` table names and column names |
-| Bundle already exists | Change to `duplicate_bundle_action: "UPDATE"` |
-| Permission errors | Check user exists in `iam_user` table |
-| Table not found | Verify table names in `resource_tables` config |
+### "Bundle already exists"
+✅ Change duplicate_bundle_action to "UPDATE" or "SKIP"
+✅ This is normal if re-running migration
 
----
+## Next Steps
 
-## When to Use Namespace Migration
-
-✅ **Use namespace migration when:**
-- You want permissions based on actual resource usage
-- Users should access namespaces where they have resources
-- No IAM roles are configured yet
-- You need automatic permission derivation
-
-❌ **Use asset migration instead when:**
-- You have IAM roles defined
-- You want role-based permissions (viewer, editor, admin)
-- You're migrating assets (COMPUTE, SPARK_JOB) to bundles
-
----
-
-## Migration Flow Summary
-
-```
-1. Read config → migration_type = "namespace"
-2. Connect to bundle_db and asset_db
-3. For each domain:
-   a. Get/create 'resource' bundle
-   b. Query domain_namespace_mapping → find namespaces
-   c. For each namespace:
-      - Query lakehouse, spark_job, jupyter_container
-      - Find users with resources in this namespace
-      - Grant USE permission to those users
-4. Commit or rollback (based on dry_run)
-```
-
----
-
-## Need Help?
-
-1. **Detailed docs:** See [README.md](./README.md)
-2. **Debug mode:** Set `debug_mode: true` for detailed logs
-3. **Dry run:** Test with `dry_run: true` first
-4. **Support:** Contact IOMETE support team
+- Read [CONFIGURATION_GUIDE.md](CONFIGURATION_GUIDE.md) for detailed options
+- See [README.md](README.md) for architecture details
+- Check [../../tests/README.md](../../tests/README.md) for testing guide
