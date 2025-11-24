@@ -41,3 +41,9 @@ GET_DOMAIN_OWNERS = """
             FROM domain
             WHERE id = %s AND is_deleted = false
         """
+
+ADD_NAMESPACE_TO_BUNDLE = """
+            INSERT INTO bundle_asset (bundle_id, asset_type, asset_id, created_at, created_by, updated_at, updated_by)
+            VALUES (%s, 'NAMESPACE', %s, current_timestamp, 'system', current_timestamp, 'system')
+            ON CONFLICT (bundle_id, asset_type, asset_id) DO NOTHING
+        """

@@ -5,7 +5,8 @@ from typing import Dict, Any, List, Optional
 from ..common.database import DatabaseManager
 from ..common.logger import get_logger
 from .queries import (GET_NAMESPACE_MAPPING_ID, GET_BUNDLE_FROM_DOMAIN_AND_NAME,
-                      GET_NAMESPACES_FOR_DOMAIN, CREATE_NAMESPACE_BUNDLE, GET_DOMAIN_OWNERS)
+                      GET_NAMESPACES_FOR_DOMAIN, CREATE_NAMESPACE_BUNDLE, GET_DOMAIN_OWNERS,
+                      ADD_NAMESPACE_TO_BUNDLE)
 from .permission_assignment import PermissionAssignment
 
 logger = get_logger(__name__)
@@ -106,6 +107,15 @@ class NamespaceMigration:
         logger.info(f"Created namespace bundle {bundle_id} for namespace {namespace} in domain {domain_id}")
         return bundle_id
 
+    def add_namespace_asset_to_bundle(self, connection, bundle_id: str, namespace_mapping_id: str):
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(ADD_NAMESPACE_TO_BUNDLE, (bundle_id, namespace_mapping_id))
+            logger.info(f"Added namespace {namespace_mapping_id} to bundle {bundle_id} in bundle_asset table")
+        except Exception as e:
+            logger.error(f"Error adding namespace {namespace_mapping_id} to bundle {bundle_id}: {e}")
+            raise
+
     def get_namespaces_for_domain(self, connection, domain_id: str) -> List[Dict[str, Any]]:
         query = GET_NAMESPACES_FOR_DOMAIN.format(
             id_column=self.namespace_config['id_column'],
@@ -162,6 +172,9 @@ class NamespaceMigration:
                         if bundle_id is None:
                             logger.info(f"Skipping namespace {namespace_name} - bundle already exists")
                             continue
+
+                        # Add namespace to bundle_asset table
+                        self.add_namespace_asset_to_bundle(bundle_conn, bundle_id, namespace_mapping_id)
 
                         # Get users who have resources in this namespace
                         users = self.permission_assignment.get_users_for_namespace(

@@ -533,5 +533,6 @@ class TestNamespaceMigrationIntegration:
         result = migration.migrate_domain("domain-123")
 
         assert result is True
-        # Verify bundles were created for both namespaces
-        assert mock_cursor.execute.call_count == 2
+        # Verify bundles were created and namespaces added to bundle_asset for both namespaces
+        # 2 bundle creations + 2 bundle_asset insertions = 4 executions
+        assert mock_cursor.execute.call_count == 4

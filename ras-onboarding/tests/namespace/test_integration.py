@@ -75,15 +75,17 @@ class TestNamespaceMigrationIntegration:
         ]
 
         # Setup asset_db responses
+        # Note: get_users_for_namespace uses UNION queries, so 1 call per table per namespace
+        # We have 2 resource tables (lakehouse, spark_job) × 3 namespaces = 6 user query calls
         asset_db.execute_query.side_effect = [
             [{"owners": domain_owners}],  # get_domain_owner
             namespaces,  # get_namespaces_for_domain
-            default_users,  # users from lakehouse table for default namespace
-            default_users,  # users from spark_job table for default namespace
-            analytics_users,  # users from lakehouse for analytics
-            analytics_users,  # users from spark_job for analytics
-            ml_users,  # users from lakehouse for ml
-            ml_users   # users from spark_job for ml
+            default_users,  # users from lakehouse table (UNION query) for default namespace
+            default_users,  # users from spark_job table (UNION query) for default namespace
+            analytics_users,  # users from lakehouse table (UNION query) for analytics
+            analytics_users,  # users from spark_job table (UNION query) for analytics
+            ml_users,  # users from lakehouse table (UNION query) for ml
+            ml_users   # users from spark_job table (UNION query) for ml
         ]
 
         # Setup bundle_db responses
@@ -125,8 +127,9 @@ class TestNamespaceMigrationIntegration:
         # Assertions
         assert result is True
 
-        # Verify 3 bundles were created (one per namespace)
-        assert cursor.execute.call_count == 3
+        # Verify 3 bundles were created and 3 namespace-bundle links added
+        # 3 bundle creations + 3 bundle_asset insertions = 6 cursor executions
+        assert cursor.execute.call_count == 6
 
         # Verify permissions were set
         # default: 3 users (alice, bob, charlie)
