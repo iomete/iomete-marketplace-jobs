@@ -246,9 +246,9 @@ class TestGetOrCreateNamespaceBundle:
             mock_connection, "my_namespace", "domain-123", "user-123", "USER"
         )
 
-        # Check that query was called with correct bundle name
+        # Check that query was called with correct bundle name (iomete-namespace-{namespace})
         query_call_args = mock_bundle_db.execute_query.call_args[0]
-        assert "my_namespace_Resource_bundle" in query_call_args[2]
+        assert "iomete-namespace-my_namespace" in query_call_args[2]
 
 
 class TestGetNamespacesForDomain:
@@ -359,8 +359,15 @@ class TestMigrateDomain:
 
         owners_json = json.dumps(["user-123"])
         mock_asset_db.execute_query.side_effect = [
-            [{"owners": owners_json}],
-            []
+            [{"owners": owners_json}],  # get_domain_owner
+            [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],  # get_namespaces (not empty)
+            []  # get_users_for_namespace
+        ]
+
+        # Mock namespace mapping
+        mock_bundle_db.execute_query.side_effect = [
+            [{"id": "mapping-123"}],  # get_namespace_mapping_id
+            []  # check if bundle exists
         ]
 
         result = migration.migrate_domain("domain-123")

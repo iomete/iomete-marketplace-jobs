@@ -525,7 +525,7 @@ INFO: Successfully migrated namespace permissions for domain production
 ### What Gets Created
 
 1. **Bundles** - One per namespace per domain
-   - Name: `{namespace}_Resource_bundle`
+   - Name: `iomete-namespace-{namespace}`
    - Owner: First owner from domain.owners
    - Type: Regular bundle (not archived)
 

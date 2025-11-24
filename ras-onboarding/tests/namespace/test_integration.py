@@ -401,17 +401,20 @@ class TestPermissionAssignmentIntegration:
             }
         }
 
-        # Same users appear in both tables
+        # Mock returns one result per resource table (UNION query combines all user_columns per table)
         asset_db.execute_query.side_effect = [
-            [{"username": "user1"}, {"username": "user2"}],  # lakehouse created_by
-            [{"username": "user1"}, {"username": "user2"}],  # lakehouse owner
-            [{"username": "user2"}, {"username": "user3"}]   # spark_job owner
+            # lakehouse table: UNION of created_by and owner columns
+            [{"username": "user1"}, {"username": "user2"}],
+            # spark_job table: owner column
+            [{"username": "user2"}, {"username": "user3"}]
         ]
 
         pa = PermissionAssignment(bundle_db, asset_db, config)
         connection = Mock()
 
         users = pa.get_users_for_namespace(connection, "default", "domain-123")
+
+        print("users >>", users)
 
         # Should have 3 unique users
         assert len(users) == 3

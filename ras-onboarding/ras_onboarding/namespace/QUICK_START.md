@@ -86,7 +86,7 @@ python driver.py
 ## What Happens?
 
 1. **Discovers Users:** Scans your resource tables to find users with resources in each namespace
-2. **Creates Bundles:** Creates one `{namespace}_Resource_bundle` per namespace
+2. **Creates Bundles:** Creates one `iomete-namespace-{namespace}` per namespace
 3. **Grants Permissions:** Gives namespace permissions to users who have resources there
 
 ## Example Output

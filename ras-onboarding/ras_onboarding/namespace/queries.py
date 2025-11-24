@@ -23,11 +23,11 @@ SET_NAMESPACE_PERMISSION = """
 
 
 GET_NAMESPACES_FOR_DOMAIN = """
-            SELECT {namespace_config['id_column']} as id,
-                   {namespace_config['namespace_column']} as namespace,
-                   {namespace_config['domain_column']} as domain_id
-            FROM {namespace_config['table']}
-            WHERE {namespace_config['domain_column']} = %s
+            SELECT {id_column} as id,
+                   {namespace_column} as namespace,
+                   {domain_column} as domain_id
+            FROM {table}
+            WHERE {domain_column} = %s
         """
 
 CREATE_NAMESPACE_BUNDLE = """

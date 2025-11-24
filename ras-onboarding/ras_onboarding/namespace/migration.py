@@ -76,7 +76,7 @@ class NamespaceMigration:
 
     def get_or_create_namespace_bundle(self, connection, namespace: str, domain_id: str,
                                        owner_id: str, owner_type: str) -> Optional[str]:
-        bundle_name = f"{namespace}_Resource_bundle"
+        bundle_name = f"iomete-namespace-{namespace}"
         check_query = GET_BUNDLE_FROM_DOMAIN_AND_NAME
 
         results = self.bundle_db.execute_query(connection, check_query, (domain_id, bundle_name))
@@ -107,7 +107,12 @@ class NamespaceMigration:
         return bundle_id
 
     def get_namespaces_for_domain(self, connection, domain_id: str) -> List[Dict[str, Any]]:
-        query = GET_NAMESPACES_FOR_DOMAIN.format(namespace_config=self.namespace_config)
+        query = GET_NAMESPACES_FOR_DOMAIN.format(
+            id_column=self.namespace_config['id_column'],
+            namespace_column=self.namespace_config['namespace_column'],
+            domain_column=self.namespace_config['domain_column'],
+            table=self.namespace_config['table']
+        )
 
         if self.debug_mode:
             logger.debug(f"Namespace query: {query}")
