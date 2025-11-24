@@ -1,27 +1,23 @@
-"""Main module for RAS onboarding migration job."""
+"""Main module for namespace onboarding migration job."""
 
-from .common.logger import init_logger, get_logger
-from .common.database import DatabaseManager
-from .asset.migration import AssetOnboardingMigration
-from .namespace.migration import NamespaceMigration
+from .logger import init_logger, get_logger
+from .database import DatabaseManager
+from .namespace_migration import NamespaceMigration
 
 logger = get_logger(__name__)
 
 
 def start_job(spark, config):
     """
-    Main entry point for RAS onboarding migration job.
-    Supports both asset and namespace migrations based on migration_type config.
+    Main entry point for namespace onboarding migration job.
 
     Args:
-        spark: Spark session
+        spark: Spark session (for compatibility with Spark job framework)
         config: Configuration dictionary
     """
     debug_mode = config.get("migration", {}).get("debug_mode", False)
-    migration_type = config.get("migration", {}).get("migration_type", "asset")
-
     init_logger(debug_mode)
-    logger.info(f"Starting RAS Onboarding Migration Job - Type: {migration_type}")
+    logger.info("Starting Namespace Onboarding Migration Job")
 
     try:
         # Initialize bundle DB (IAM database)
@@ -38,14 +34,8 @@ def start_job(spark, config):
             raise Exception("Failed to connect to asset database")
         logger.info("Asset DB connection successful")
 
-        # Run appropriate migration based on type
-        if migration_type == "namespace":
-            logger.info("Running namespace migration (resource-based permissions)")
-            migration = NamespaceMigration(bundle_db, asset_db, config)
-        else:  # Default to asset migration
-            logger.info("Running asset migration (role-based permissions)")
-            migration = AssetOnboardingMigration(bundle_db, asset_db, config)
-
+        # Run migration
+        migration = NamespaceMigration(bundle_db, asset_db, config)
         success = migration.run_migration()
 
         if success:
