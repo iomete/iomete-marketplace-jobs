@@ -153,8 +153,6 @@ def sample_bundle_permission_params():
         "permissions": ["READ", "WRITE"]
     }
 
-
-# Marker for integration tests
 def pytest_configure(config):
     """Configure custom pytest markers."""
     config.addinivalue_line(

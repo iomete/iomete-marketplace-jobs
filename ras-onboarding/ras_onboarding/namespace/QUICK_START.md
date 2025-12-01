@@ -194,9 +194,3 @@ spark-submit driver.py
 ### "Bundle already exists"
 ✅ Change duplicate_bundle_action to "UPDATE" or "SKIP"
 ✅ This is normal if re-running migration
-
-## Next Steps
-
-- Read [CONFIGURATION_GUIDE.md](CONFIGURATION_GUIDE.md) for detailed options
-- See [README.md](README.md) for architecture details
-- Check [../../tests/README.md](../../tests/README.md) for testing guide

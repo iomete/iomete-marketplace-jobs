@@ -88,13 +88,12 @@ class TestGetUsersForNamespace:
         )
 
         assert users == {"user1", "user2"}
-        assert mock_asset_db.execute_query.call_count == 2  # Two tables configured
+        assert mock_asset_db.execute_query.call_count == 2
 
     def test_get_users_from_multiple_tables(self, permission_assignment, mock_asset_db):
         """Test getting users from multiple resource tables."""
         mock_connection = Mock()
 
-        # First call returns users from first table, second from second table
         mock_asset_db.execute_query.side_effect = [
             [{"username": "user1"}, {"username": "user2"}],
             [{"username": "user2"}, {"username": "user3"}]
@@ -104,7 +103,6 @@ class TestGetUsersForNamespace:
             mock_connection, "default", "domain-123"
         )
 
-        # Should deduplicate user2
         assert users == {"user1", "user2", "user3"}
         assert len(users) == 3
 
@@ -147,7 +145,6 @@ class TestGetUsersForNamespace:
             mock_connection, "my_namespace", "domain-456"
         )
 
-        # Check first call (first table)
         first_call_query = mock_asset_db.execute_query.call_args_list[0][0][1]
         first_call_params = mock_asset_db.execute_query.call_args_list[0][0][2]
 
@@ -162,7 +159,6 @@ class TestGetUsersForNamespace:
         """Test that errors in one table don't stop processing other tables."""
         mock_connection = Mock()
 
-        # First call raises error, second succeeds
         mock_asset_db.execute_query.side_effect = [
             Exception("Database error"),
             [{"username": "user1"}]
@@ -172,7 +168,7 @@ class TestGetUsersForNamespace:
             mock_connection, "default", "domain-123"
         )
 
-        # Should still get users from second table
+
         assert users == {"user1"}
 
     def test_get_users_with_debug_mode(self, mock_bundle_db, mock_asset_db, sample_config):
@@ -186,7 +182,7 @@ class TestGetUsersForNamespace:
         with patch("ras_onboarding.namespace.permission_assignment.logger") as mock_logger:
             pa.get_users_for_namespace(mock_connection, "default", "domain-123")
 
-            # Verify debug logging was called
+
             debug_calls = [call for call in mock_logger.debug.call_args_list]
             assert len(debug_calls) > 0
 
@@ -214,7 +210,7 @@ class TestSetNamespacePermissions:
             mock_connection, "bundle-123", "namespace-456", users
         )
 
-        # Should not call execute_insert
+
         mock_bundle_db.execute_insert.assert_not_called()
 
     def test_set_permissions_correct_parameters(self, permission_assignment, mock_bundle_db):
@@ -229,7 +225,7 @@ class TestSetNamespacePermissions:
             mock_connection, bundle_id, namespace_id, users
         )
 
-        # Verify execute_insert was called with correct parameters
+
         call_args = mock_bundle_db.execute_insert.call_args
         assert call_args[0][0] == mock_connection
         assert call_args[0][2] == (bundle_id, "user1", permissions)
@@ -239,7 +235,7 @@ class TestSetNamespacePermissions:
         mock_connection = Mock()
         users = {"user1", "user2", "user3"}
 
-        # First call succeeds, second fails, third succeeds
+
         mock_bundle_db.execute_insert.side_effect = [
             None,
             Exception("Permission error"),
@@ -250,7 +246,7 @@ class TestSetNamespacePermissions:
             mock_connection, "bundle-123", "namespace-456", users
         )
 
-        # Should attempt all three users
+
         assert mock_bundle_db.execute_insert.call_count == 3
 
     def test_set_permissions_with_debug_mode(self, mock_bundle_db, mock_asset_db, sample_config):
@@ -264,7 +260,7 @@ class TestSetNamespacePermissions:
         with patch("ras_onboarding.namespace.permission_assignment.logger") as mock_logger:
             pa.set_namespace_permissions(mock_connection, "bundle-123", "namespace-456", users)
 
-            # Verify debug logging was called
+
             debug_calls = [call for call in mock_logger.debug.call_args_list]
             assert len(debug_calls) > 0
 
@@ -273,7 +269,7 @@ class TestSetNamespacePermissions:
         mock_connection = Mock()
         users = {"user1", "user2", "user3"}
 
-        # One error, two successes
+
         mock_bundle_db.execute_insert.side_effect = [
             None,
             Exception("Error"),
@@ -285,7 +281,7 @@ class TestSetNamespacePermissions:
                 mock_connection, "bundle-123", "namespace-456", users
             )
 
-            # Check that info log was called with success count
+
             info_calls = [str(call) for call in mock_logger.info.call_args_list]
             assert any("2 users" in call for call in info_calls)
             assert any("errors: 1" in call for call in info_calls)
@@ -299,23 +295,23 @@ class TestPermissionAssignmentIntegration:
         mock_asset_conn = Mock()
         mock_bundle_conn = Mock()
 
-        # Setup: Users exist in resources
+
         mock_asset_db.execute_query.return_value = [
             {"username": "user1"},
             {"username": "user2"}
         ]
 
-        # Step 1: Get users
+
         users = permission_assignment.get_users_for_namespace(
             mock_asset_conn, "default", "domain-123"
         )
 
         assert len(users) == 2
 
-        # Step 2: Set permissions
+
         permission_assignment.set_namespace_permissions(
             mock_bundle_conn, "bundle-123", "namespace-456", users
         )
 
-        # Verify permissions were set
+
         assert mock_bundle_db.execute_insert.call_count == 2
