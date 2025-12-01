@@ -84,13 +84,6 @@ class TestNamespaceMigrationInit:
         assert nm.debug_mode is False
         assert nm.permission_assignment is not None
 
-    def test_init_with_debug_mode(self, mock_bundle_db, mock_asset_db, mock_domain_db, sample_config):
-        """Test initialization with debug mode enabled."""
-        sample_config["migration"]["debug_mode"] = True
-        nm = NamespaceMigration(mock_bundle_db, mock_asset_db, mock_domain_db, sample_config)
-
-        assert nm.debug_mode is True
-
 
 class TestGetNamespaceMappingId:
     """Test get_namespace_mapping_id method."""

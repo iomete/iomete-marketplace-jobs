@@ -42,7 +42,6 @@ class NamespaceMigration:
             logger.debug(f"Found namespace mapping {mapping_id} for {namespace} in domain {domain_id}")
             return mapping_id
 
-        # Mapping doesn't exist - this shouldn't happen if namespaces are pre-populated
         error_msg = f"Namespace mapping not found for {namespace} in domain {domain_id}. Ensure domain_namespace_mapping table is populated."
         logger.error(error_msg)
         raise ValueError(error_msg)
@@ -231,7 +230,6 @@ class NamespaceMigration:
             if isinstance(domains_config[0], str):
                 domains = domains_config
             else:
-                # List of domain objects - extract domain_id
                 domains = [d["domain_id"] for d in domains_config]
 
         logger.info(f"Starting namespace migration for {len(domains)} domain(s)")

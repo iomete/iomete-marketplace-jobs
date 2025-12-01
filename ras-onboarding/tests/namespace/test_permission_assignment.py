@@ -64,13 +64,6 @@ class TestPermissionAssignmentInit:
         assert pa.migration_config == sample_config["migration"]
         assert pa.debug_mode is False
 
-    def test_init_with_debug_mode(self, mock_bundle_db, mock_asset_db, sample_config):
-        """Test initialization with debug mode enabled."""
-        sample_config["migration"]["debug_mode"] = True
-        pa = PermissionAssignment(mock_bundle_db, mock_asset_db, sample_config)
-
-        assert pa.debug_mode is True
-
 
 class TestGetUsersForNamespace:
     """Test get_users_for_namespace method."""

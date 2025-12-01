@@ -372,7 +372,6 @@ class TestNamespaceMigrationIntegration:
 
         migration = NamespaceMigration(bundle_db, asset_db, domain_db, config)
 
-        # Mock migrate_domain to track calls
         with patch.object(migration, 'migrate_domain', return_value=True) as mock_migrate:
             result = migration.run_migration()
 
@@ -413,9 +412,7 @@ class TestPermissionAssignmentIntegration:
 
         # Mock returns one result per resource table (UNION query combines all user_columns per table)
         asset_db.execute_query.side_effect = [
-            # lakehouse table: UNION of created_by and owner columns
             [{"username": "user1"}, {"username": "user2"}],
-            # spark_job table: owner column
             [{"username": "user2"}, {"username": "user3"}]
         ]
 
@@ -423,10 +420,6 @@ class TestPermissionAssignmentIntegration:
         connection = Mock()
 
         users = pa.get_users_for_namespace(connection, "default", "domain-123")
-
-        print("users >>", users)
-
-        # Should have 3 unique users
         assert len(users) == 3
         assert users == {"user1", "user2", "user3"}
 
@@ -456,8 +449,5 @@ class TestPermissionAssignmentIntegration:
         connection = Mock()
         users = {"user1", "user2", "user3", "user4", "user5"}
 
-        # Should not raise exception
         pa.set_namespace_permissions(connection, "bundle-123", "ns-123", users)
-
-        # All users should be attempted
         assert bundle_db.execute_insert.call_count == 5
