@@ -27,6 +27,15 @@ def mock_asset_db():
 
 
 @pytest.fixture
+def mock_domain_db():
+    """Mock domain database manager."""
+    db = Mock()
+    db.execute_query = Mock(return_value=[])
+    db.get_connection = Mock()
+    return db
+
+
+@pytest.fixture
 def sample_config():
     """Sample configuration for tests."""
     return {
@@ -54,30 +63,31 @@ def sample_config():
 
 
 @pytest.fixture
-def migration(mock_bundle_db, mock_asset_db, sample_config):
+def migration(mock_bundle_db, mock_asset_db, mock_domain_db, sample_config):
     """Create NamespaceMigration instance with mocks."""
-    return NamespaceMigration(mock_bundle_db, mock_asset_db, sample_config)
+    return NamespaceMigration(mock_bundle_db, mock_asset_db, mock_domain_db, sample_config)
 
 
 class TestNamespaceMigrationInit:
     """Test NamespaceMigration initialization."""
 
-    def test_init_with_valid_config(self, mock_bundle_db, mock_asset_db, sample_config):
+    def test_init_with_valid_config(self, mock_bundle_db, mock_asset_db, mock_domain_db, sample_config):
         """Test initialization with valid configuration."""
-        nm = NamespaceMigration(mock_bundle_db, mock_asset_db, sample_config)
+        nm = NamespaceMigration(mock_bundle_db, mock_asset_db, mock_domain_db, sample_config)
 
         assert nm.bundle_db == mock_bundle_db
         assert nm.asset_db == mock_asset_db
+        assert nm.domain_db == mock_domain_db
         assert nm.config == sample_config
         assert nm.migration_config == sample_config["migration"]
         assert nm.namespace_config == sample_config["namespace_config"]
         assert nm.debug_mode is False
         assert nm.permission_assignment is not None
 
-    def test_init_with_debug_mode(self, mock_bundle_db, mock_asset_db, sample_config):
+    def test_init_with_debug_mode(self, mock_bundle_db, mock_asset_db, mock_domain_db, sample_config):
         """Test initialization with debug mode enabled."""
         sample_config["migration"]["debug_mode"] = True
-        nm = NamespaceMigration(mock_bundle_db, mock_asset_db, sample_config)
+        nm = NamespaceMigration(mock_bundle_db, mock_asset_db, mock_domain_db, sample_config)
 
         assert nm.debug_mode is True
 
@@ -122,12 +132,12 @@ class TestGetDomainOwner:
     def test_get_domain_owner_success(self, migration, mock_asset_db):
         """Test successfully getting domain owner."""
         mock_connection = Mock()
-        owners_json = json.dumps(["user-123", "user-456"])
-        mock_asset_db.execute_query.return_value = [{"owners": owners_json}]
+        mock_asset_db.execute_query.return_value = [{"created_by": "user-123"}]
 
-        result = migration.get_domain_owner(mock_connection, "domain-123")
+        owner_id, owner_type = migration.get_domain_owner(mock_connection, "domain-123")
 
-        assert result == "user-123"
+        assert owner_id == "user-123"
+        assert owner_type == "USER"
 
     def test_get_domain_owner_domain_not_found(self, migration, mock_asset_db):
         """Test error when domain doesn't exist."""
@@ -141,34 +151,34 @@ class TestGetDomainOwner:
         assert "not found" in str(exc_info.value)
 
     def test_get_domain_owner_no_owners(self, migration, mock_asset_db):
-        """Test error when domain has no owners."""
+        """Test when created_by is None."""
         mock_connection = Mock()
-        mock_asset_db.execute_query.return_value = [{"owners": None}]
+        mock_asset_db.execute_query.return_value = [{"created_by": None}]
 
-        with pytest.raises(ValueError) as exc_info:
-            migration.get_domain_owner(mock_connection, "domain-123")
+        owner_id, owner_type = migration.get_domain_owner(mock_connection, "domain-123")
 
-        assert "has no owners" in str(exc_info.value)
+        assert owner_id is None
+        assert owner_type == "USER"
 
     def test_get_domain_owner_empty_owners_list(self, migration, mock_asset_db):
-        """Test error when owners list is empty."""
+        """Test error when created_by is empty string."""
         mock_connection = Mock()
-        mock_asset_db.execute_query.return_value = [{"owners": "[]"}]
+        mock_asset_db.execute_query.return_value = [{"created_by": ""}]
 
-        with pytest.raises(ValueError) as exc_info:
-            migration.get_domain_owner(mock_connection, "domain-123")
+        owner_id, owner_type = migration.get_domain_owner(mock_connection, "domain-123")
 
-        assert "Could not parse owners" in str(exc_info.value)
+        assert owner_id == ""
+        assert owner_type == "USER"
 
     def test_get_domain_owner_multiple_owners(self, migration, mock_asset_db):
-        """Test that first owner is returned when multiple exist."""
+        """Test that created_by user is returned."""
         mock_connection = Mock()
-        owners_json = json.dumps(["user-first", "user-second", "user-third"])
-        mock_asset_db.execute_query.return_value = [{"owners": owners_json}]
+        mock_asset_db.execute_query.return_value = [{"created_by": "user-first"}]
 
-        result = migration.get_domain_owner(mock_connection, "domain-123")
+        owner_id, owner_type = migration.get_domain_owner(mock_connection, "domain-123")
 
-        assert result == "user-first"
+        assert owner_id == "user-first"
+        assert owner_type == "USER"
 
 
 class TestGetOrCreateNamespaceBundle:
@@ -219,18 +229,25 @@ class TestGetOrCreateNamespaceBundle:
 
         assert result is None
 
-    def test_existing_bundle_update_mode(self, migration, mock_bundle_db):
-        """Test UPDATE mode when bundle already exists."""
+    def test_existing_bundle_overwrite_mode(self, migration, mock_bundle_db):
+        """Test OVERWRITE mode when bundle already exists."""
         mock_connection = Mock()
+        mock_cursor = MagicMock()
+        mock_connection.cursor.return_value.__enter__ = Mock(return_value=mock_cursor)
+        mock_connection.cursor.return_value.__exit__ = Mock(return_value=False)
+
         mock_bundle_db.execute_query.return_value = [{"id": "bundle-123"}]
 
-        migration.migration_config["duplicate_bundle_action"] = "UPDATE"
+        migration.migration_config["duplicate_bundle_action"] = "OVERWRITE"
 
         result = migration.get_or_create_namespace_bundle(
             mock_connection, "default", "domain-123", "user-123", "USER"
         )
 
-        assert result == "bundle-123"
+        assert result is not None
+        assert isinstance(result, str)
+        # Verify deletion queries were executed
+        assert mock_cursor.execute.call_count >= 3  # DELETE permissions, assets, bundle
 
     def test_bundle_name_format(self, migration, mock_bundle_db):
         """Test that bundle name follows correct format."""
@@ -305,15 +322,13 @@ class TestMigrateDomain:
         mock_asset_db.get_connection.return_value.__enter__ = Mock(return_value=mock_asset_conn)
         mock_asset_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
-        # Mock domain owner
-        owners_json = json.dumps(["user-123"])
+        # Mock responses
         mock_asset_db.execute_query.side_effect = [
-            [{"owners": owners_json}],  # get_domain_owner
+            [{"created_by": "user-123"}],  # get_domain_owner
             [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],  # get_namespaces
             []  # get_users_for_namespace (from resource tables)
         ]
 
-        # Mock namespace mapping
         mock_bundle_db.execute_query.side_effect = [
             [{"id": "mapping-123"}],  # get_namespace_mapping_id
             []  # check if bundle exists
@@ -334,9 +349,8 @@ class TestMigrateDomain:
         mock_asset_db.get_connection.return_value.__enter__ = Mock(return_value=mock_asset_conn)
         mock_asset_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
-        owners_json = json.dumps(["user-123"])
         mock_asset_db.execute_query.side_effect = [
-            [{"owners": owners_json}],  # get_domain_owner
+            [{"created_by": "user-123"}],  # get_domain_owner
             []  # get_namespaces - empty
         ]
 
@@ -357,14 +371,12 @@ class TestMigrateDomain:
         mock_asset_db.get_connection.return_value.__enter__ = Mock(return_value=mock_asset_conn)
         mock_asset_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
-        owners_json = json.dumps(["user-123"])
         mock_asset_db.execute_query.side_effect = [
-            [{"owners": owners_json}],  # get_domain_owner
+            [{"created_by": "user-123"}],  # get_domain_owner
             [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],  # get_namespaces (not empty)
             []  # get_users_for_namespace
         ]
 
-        # Mock namespace mapping
         mock_bundle_db.execute_query.side_effect = [
             [{"id": "mapping-123"}],  # get_namespace_mapping_id
             []  # check if bundle exists
@@ -406,14 +418,13 @@ class TestMigrateDomain:
         mock_asset_db.get_connection.return_value.__enter__ = Mock(return_value=mock_asset_conn)
         mock_asset_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
-        owners_json = json.dumps(["user-123"])
         mock_asset_db.execute_query.side_effect = [
-            [{"owners": owners_json}],
-            [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],
+            [{"created_by": "user-123"}],  # get_domain_owner
+            [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}]  # get_namespaces
         ]
 
         mock_bundle_db.execute_query.side_effect = [
-            [{"id": "mapping-123"}],
+            [{"id": "mapping-123"}],  # get_namespace_mapping_id
             [{"id": "bundle-123"}]  # Bundle already exists
         ]
 
@@ -505,11 +516,9 @@ class TestNamespaceMigrationIntegration:
         mock_asset_db.get_connection.return_value.__enter__ = Mock(return_value=mock_asset_conn)
         mock_asset_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
-        owners_json = json.dumps(["owner-123"])
-
         # Setup responses for multiple namespaces
         mock_asset_db.execute_query.side_effect = [
-            [{"owners": owners_json}],  # get_domain_owner
+            [{"created_by": "owner-123"}],  # get_domain_owner
             [  # get_namespaces
                 {"id": "ns-1", "namespace": "default", "domain_id": "domain-123"},
                 {"id": "ns-2", "namespace": "dev", "domain_id": "domain-123"}

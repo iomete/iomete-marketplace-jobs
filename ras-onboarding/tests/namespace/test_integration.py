@@ -18,7 +18,7 @@ class TestNamespaceMigrationIntegration:
             "migration": {
                 "debug_mode": True,
                 "dry_run": False,
-                "duplicate_bundle_action": "UPDATE",
+                "duplicate_bundle_action": "OVERWRITE",
                 "namespace_permissions": ["READ", "WRITE", "EXECUTE"],
                 "domains": ["domain-prod-123", "domain-dev-456"],
                 "resource_tables": [
@@ -47,10 +47,9 @@ class TestNamespaceMigrationIntegration:
         """Setup a complete migration scenario with mocked database responses."""
         bundle_db = Mock()
         asset_db = Mock()
+        domain_db = Mock()
 
         # Scenario: Domain with 3 namespaces, multiple users, some with overlapping resources
-        domain_owners = json.dumps(["admin-user"])
-
         namespaces = [
             {"id": "ns-default", "namespace": "default", "domain_id": "domain-prod-123"},
             {"id": "ns-analytics", "namespace": "analytics", "domain_id": "domain-prod-123"},
@@ -78,7 +77,7 @@ class TestNamespaceMigrationIntegration:
         # Note: get_users_for_namespace uses UNION queries, so 1 call per table per namespace
         # We have 2 resource tables (lakehouse, spark_job) × 3 namespaces = 6 user query calls
         asset_db.execute_query.side_effect = [
-            [{"owners": domain_owners}],  # get_domain_owner
+            [{"created_by": "admin-user"}],  # get_domain_owner
             namespaces,  # get_namespaces_for_domain
             default_users,  # users from lakehouse table (UNION query) for default namespace
             default_users,  # users from spark_job table (UNION query) for default namespace
@@ -99,11 +98,11 @@ class TestNamespaceMigrationIntegration:
         ]
         bundle_db.execute_query.side_effect = namespace_mappings_and_bundles
 
-        return bundle_db, asset_db, integration_config
+        return bundle_db, asset_db, domain_db, integration_config
 
     def test_multi_namespace_migration(self, setup_migration_scenario):
         """Test migrating domain with multiple namespaces and overlapping users."""
-        bundle_db, asset_db, config = setup_migration_scenario
+        bundle_db, asset_db, domain_db, config = setup_migration_scenario
 
         # Setup transaction context managers
         bundle_conn = MagicMock()
@@ -121,7 +120,7 @@ class TestNamespaceMigrationIntegration:
         bundle_conn.cursor.return_value.__exit__ = Mock(return_value=False)
 
         # Create migration instance and run
-        migration = NamespaceMigration(bundle_db, asset_db, config)
+        migration = NamespaceMigration(bundle_db, asset_db, domain_db, config)
         result = migration.migrate_domain("domain-prod-123")
 
         # Assertions
@@ -141,16 +140,17 @@ class TestNamespaceMigrationIntegration:
         # Verify transaction was committed (not rolled back)
         bundle_conn.rollback.assert_not_called()
 
-    def test_migration_with_existing_bundles_update_mode(self):
-        """Test migration when bundles exist and update mode is enabled."""
+    def test_migration_with_existing_bundles_overwrite_mode(self):
+        """Test migration when bundles exist and overwrite mode is enabled."""
         bundle_db = Mock()
         asset_db = Mock()
+        domain_db = Mock()
 
         config = {
             "migration": {
                 "debug_mode": False,
                 "dry_run": False,
-                "duplicate_bundle_action": "UPDATE",
+                "duplicate_bundle_action": "OVERWRITE",
                 "namespace_permissions": ["READ"],
                 "domains": ["domain-123"],
                 "resource_tables": [
@@ -170,12 +170,11 @@ class TestNamespaceMigrationIntegration:
         }
 
         # Setup responses
-        owners = json.dumps(["owner-123"])
         namespaces = [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}]
         users = [{"username": "user1"}]
 
         asset_db.execute_query.side_effect = [
-            [{"owners": owners}],
+            [{"created_by": "owner-123"}],  # get_domain_owner
             namespaces,
             users
         ]
@@ -196,17 +195,25 @@ class TestNamespaceMigrationIntegration:
         asset_db.get_connection.return_value.__enter__ = Mock(return_value=asset_conn)
         asset_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
-        migration = NamespaceMigration(bundle_db, asset_db, config)
+        # Setup cursor for bundle deletion and recreation
+        cursor = MagicMock()
+        bundle_conn.cursor.return_value.__enter__ = Mock(return_value=cursor)
+        bundle_conn.cursor.return_value.__exit__ = Mock(return_value=False)
+
+        migration = NamespaceMigration(bundle_db, asset_db, domain_db, config)
         result = migration.migrate_domain("domain-123")
 
         assert result is True
-        # Permissions should still be set for existing bundle
+        # Verify bundle was deleted and recreated (3 deletes + 1 create + 1 add to bundle_asset = 5 executions)
+        assert cursor.execute.call_count >= 4
+        # Permissions should still be set
         assert bundle_db.execute_insert.call_count == 1
 
     def test_migration_dry_run_doesnt_commit(self):
         """Test that dry run mode doesn't commit changes."""
         bundle_db = Mock()
         asset_db = Mock()
+        domain_db = Mock()
 
         config = {
             "migration": {
@@ -231,12 +238,11 @@ class TestNamespaceMigrationIntegration:
             }
         }
 
-        owners = json.dumps(["owner-123"])
         namespaces = [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}]
         users = [{"username": "user1"}]
 
         asset_db.execute_query.side_effect = [
-            [{"owners": owners}],
+            [{"created_by": "owner-123"}],  # get_domain_owner
             namespaces,
             users
         ]
@@ -259,7 +265,7 @@ class TestNamespaceMigrationIntegration:
         bundle_conn.cursor.return_value.__enter__ = Mock(return_value=cursor)
         bundle_conn.cursor.return_value.__exit__ = Mock(return_value=False)
 
-        migration = NamespaceMigration(bundle_db, asset_db, config)
+        migration = NamespaceMigration(bundle_db, asset_db, domain_db, config)
         result = migration.migrate_domain("domain-123")
 
         assert result is True
@@ -270,6 +276,7 @@ class TestNamespaceMigrationIntegration:
         """Test that migration continues when some operations fail."""
         bundle_db = Mock()
         asset_db = Mock()
+        domain_db = Mock()
 
         config = {
             "migration": {
@@ -294,7 +301,6 @@ class TestNamespaceMigrationIntegration:
             }
         }
 
-        owners = json.dumps(["owner-123"])
         namespaces = [
             {"id": "ns-1", "namespace": "default", "domain_id": "domain-123"},
             {"id": "ns-2", "namespace": "dev", "domain_id": "domain-123"}
@@ -302,7 +308,7 @@ class TestNamespaceMigrationIntegration:
 
         # One namespace has users, other fails
         asset_db.execute_query.side_effect = [
-            [{"owners": owners}],
+            [{"created_by": "owner-123"}],  # get_domain_owner
             namespaces,
             [{"username": "user1"}],  # Users for first namespace
             Exception("Query failed")  # Second namespace query fails
@@ -329,7 +335,7 @@ class TestNamespaceMigrationIntegration:
         bundle_conn.cursor.return_value.__enter__ = Mock(return_value=cursor)
         bundle_conn.cursor.return_value.__exit__ = Mock(return_value=False)
 
-        migration = NamespaceMigration(bundle_db, asset_db, config)
+        migration = NamespaceMigration(bundle_db, asset_db, domain_db, config)
         result = migration.migrate_domain("domain-123")
 
         # Migration continues despite one failure
@@ -339,6 +345,7 @@ class TestNamespaceMigrationIntegration:
         """Test running migration across multiple domains."""
         bundle_db = Mock()
         asset_db = Mock()
+        domain_db = Mock()
 
         config = {
             "migration": {
@@ -363,7 +370,7 @@ class TestNamespaceMigrationIntegration:
             }
         }
 
-        migration = NamespaceMigration(bundle_db, asset_db, config)
+        migration = NamespaceMigration(bundle_db, asset_db, domain_db, config)
 
         # Mock migrate_domain to track calls
         with patch.object(migration, 'migrate_domain', return_value=True) as mock_migrate:

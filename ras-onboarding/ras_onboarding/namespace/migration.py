@@ -72,10 +72,10 @@ class NamespaceMigration:
                 logger.info(f"Skipping bundle creation for namespace {namespace} - bundle already exists")
                 return None
             elif duplicate_action == "OVERWRITE":
-                logger.info(f"Deleting existing bundle creation for namespace {namespace}")
+                logger.info(f"Deleting existing bundle for namespace {namespace}")
                 with connection.cursor() as cursor:
-                    cursor.execute(DELETE_BUNDLE_ASSETS, (bundle_id,))
                     cursor.execute(DELETE_BUNDLE_PERMISSIONS, (bundle_id,))
+                    cursor.execute(DELETE_BUNDLE_ASSETS, (bundle_id,))
                     cursor.execute(DELETE_NAMESPACE_BUNDLE, (bundle_id,))
 
         # Create namespace bundle in database

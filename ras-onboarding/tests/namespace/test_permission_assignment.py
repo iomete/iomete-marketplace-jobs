@@ -232,7 +232,7 @@ class TestSetNamespacePermissions:
         # Verify execute_insert was called with correct parameters
         call_args = mock_bundle_db.execute_insert.call_args
         assert call_args[0][0] == mock_connection
-        assert call_args[0][2] == (bundle_id, namespace_id, "user1", permissions)
+        assert call_args[0][2] == (bundle_id, "user1", permissions)
 
     def test_set_permissions_handles_user_error(self, permission_assignment, mock_bundle_db):
         """Test that error for one user doesn't stop processing others."""

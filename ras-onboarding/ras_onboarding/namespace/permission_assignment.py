@@ -45,10 +45,11 @@ class PermissionAssignment:
             namespace_col = resource_table["namespace_column"]
             user_columns = resource_table["user_columns"]
 
-            # Build UNION query for all user columns in this table
-            union_queries = []
-            for user_col in user_columns:
-                query = f"""
+            try:
+                # Build UNION query for all user columns in this table
+                union_queries = []
+                for user_col in user_columns:
+                    query = f"""
                     SELECT DISTINCT {user_col} as username
                     FROM {table_name}
                     WHERE {namespace_col} = %s
@@ -56,22 +57,25 @@ class PermissionAssignment:
                       AND is_deleted = false
                       AND {user_col} IS NOT NULL
                 """
-                union_queries.append(query)
+                    union_queries.append(query)
 
-            # Combine all user columns with UNION
-            combined_query = " UNION ".join(union_queries)
+                # Combine all user columns with UNION
+                combined_query = " UNION ".join(union_queries)
 
-            if self.debug_mode:
-                logger.debug(f"User query for {table_name}: {combined_query}")
-                logger.debug(f"Parameters: ({namespace}, {domain_id})")
+                if self.debug_mode:
+                    logger.debug(f"User query for {table_name}: {combined_query}")
+                    logger.debug(f"Parameters: ({namespace}, {domain_id})")
 
-            results = self.asset_db.execute_query(connection, combined_query,
-                                                  (namespace, domain_id) * len(user_columns))
-            table_users = {r['username'] for r in results if r['username']}
-            all_users.update(table_users)
+                results = self.asset_db.execute_query(connection, combined_query,
+                                                      (namespace, domain_id) * len(user_columns))
+                table_users = {r['username'] for r in results if r['username']}
+                all_users.update(table_users)
 
-            if table_users:
-                logger.debug(f"Found {len(table_users)} users in {table_name} for namespace {namespace}")
+                if table_users:
+                    logger.debug(f"Found {len(table_users)} users in {table_name} for namespace {namespace}")
+            except Exception as e:
+                logger.error(f"Error querying users from {table_name} for namespace {namespace}: {e}")
+                # Continue processing other tables
 
         logger.info(f"Total {len(all_users)} unique users found for namespace {namespace} in domain {domain_id}")
         return all_users
