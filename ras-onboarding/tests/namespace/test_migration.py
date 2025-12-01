@@ -194,12 +194,13 @@ class TestGetOrCreateNamespaceBundle:
 
         mock_bundle_db.execute_query.return_value = []  # Bundle doesn't exist
 
-        result = migration.get_or_create_namespace_bundle(
+        bundle_id, bundle_existed = migration.get_or_create_namespace_bundle(
             mock_connection, "default", "domain-123", "user-123", "USER"
         )
 
-        assert result is not None
-        assert isinstance(result, str)
+        assert bundle_id is not None
+        assert isinstance(bundle_id, str)
+        assert bundle_existed is False
         mock_cursor.execute.assert_called_once()
 
     def test_existing_bundle_fail_mode(self, migration, mock_bundle_db):
@@ -223,11 +224,61 @@ class TestGetOrCreateNamespaceBundle:
 
         migration.migration_config["duplicate_bundle_action"] = "SKIP"
 
-        result = migration.get_or_create_namespace_bundle(
+        bundle_id, bundle_existed = migration.get_or_create_namespace_bundle(
             mock_connection, "default", "domain-123", "user-123", "USER"
         )
 
-        assert result is None
+        assert bundle_id is None
+        assert bundle_existed is False
+
+    def test_existing_bundle_update_mode(self, migration, mock_bundle_db):
+        """Test UPDATE mode when bundle already exists."""
+        mock_connection = Mock()
+        mock_bundle_db.execute_query.return_value = [{"id": "bundle-123"}]
+
+        migration.migration_config["duplicate_bundle_action"] = "UPDATE"
+
+        bundle_id, bundle_existed = migration.get_or_create_namespace_bundle(
+            mock_connection, "default", "domain-123", "user-123", "USER"
+        )
+
+        assert bundle_id == "bundle-123"
+        assert bundle_existed is True
+        # Verify no deletion occurred in UPDATE mode
+        mock_connection.cursor.assert_not_called()
+
+    def test_update_mode_duplicate_asset_error(self, migration, mock_bundle_db):
+        """Test that UPDATE mode raises error when namespace asset already exists in bundle."""
+        mock_connection = Mock()
+
+        # Mock that the namespace asset already exists in the bundle
+        mock_bundle_db.execute_query.return_value = [{"exists": 1}]
+
+        with pytest.raises(ValueError) as exc_info:
+            migration.add_namespace_asset_to_bundle(
+                mock_connection, "bundle-123", "namespace-456", check_duplicate=True
+            )
+
+        assert "already exists" in str(exc_info.value)
+        assert "Cannot add duplicate namespace asset" in str(exc_info.value)
+
+    def test_update_mode_add_new_asset_success(self, migration, mock_bundle_db):
+        """Test that UPDATE mode successfully adds new namespace asset when it doesn't exist."""
+        mock_connection = Mock()
+        mock_cursor = MagicMock()
+        mock_connection.cursor.return_value.__enter__ = Mock(return_value=mock_cursor)
+        mock_connection.cursor.return_value.__exit__ = Mock(return_value=False)
+
+        # Mock that the namespace asset does NOT exist in the bundle
+        mock_bundle_db.execute_query.return_value = []
+
+        # Should succeed without raising error
+        migration.add_namespace_asset_to_bundle(
+            mock_connection, "bundle-123", "namespace-456", check_duplicate=True
+        )
+
+        # Verify the asset was added
+        mock_cursor.execute.assert_called_once()
 
     def test_existing_bundle_overwrite_mode(self, migration, mock_bundle_db):
         """Test OVERWRITE mode when bundle already exists."""
@@ -240,12 +291,13 @@ class TestGetOrCreateNamespaceBundle:
 
         migration.migration_config["duplicate_bundle_action"] = "OVERWRITE"
 
-        result = migration.get_or_create_namespace_bundle(
+        bundle_id, bundle_existed = migration.get_or_create_namespace_bundle(
             mock_connection, "default", "domain-123", "user-123", "USER"
         )
 
-        assert result is not None
-        assert isinstance(result, str)
+        assert bundle_id is not None
+        assert isinstance(bundle_id, str)
+        assert bundle_existed is False
         # Verify deletion queries were executed
         assert mock_cursor.execute.call_count >= 3  # DELETE permissions, assets, bundle
 
@@ -259,13 +311,14 @@ class TestGetOrCreateNamespaceBundle:
 
         mock_bundle_db.execute_query.return_value = []
 
-        migration.get_or_create_namespace_bundle(
+        bundle_id, bundle_existed = migration.get_or_create_namespace_bundle(
             mock_connection, "my_namespace", "domain-123", "user-123", "USER"
         )
 
-        # Check that query was called with correct bundle name (iomete-namespace-{namespace})
+        # Check that query was called with correct bundle name (namespace-{domain_id}-{namespace})
         query_call_args = mock_bundle_db.execute_query.call_args[0]
-        assert "iomete-namespace-my_namespace" in query_call_args[2]
+        assert "namespace-domain-123-my_namespace" in query_call_args[2]
+        assert bundle_existed is False
 
 
 class TestGetNamespacesForDomain:
