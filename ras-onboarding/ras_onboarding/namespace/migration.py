@@ -16,14 +16,6 @@ logger = get_logger(__name__)
 class NamespaceMigration:
     def __init__(self, bundle_db: DatabaseManager, asset_db: DatabaseManager, domain_db: DatabaseManager,
                  config: Dict[str, Any]):
-        """
-        Initialize namespace migration.
-
-        Args:
-            bundle_db: Database manager for bundle/IAM database
-            asset_db: Database manager for asset database (resources)
-            config: Configuration dictionary
-        """
         self.bundle_db = bundle_db
         self.asset_db = asset_db
         self.domain_db = domain_db

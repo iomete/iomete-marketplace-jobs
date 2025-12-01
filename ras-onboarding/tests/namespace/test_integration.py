@@ -13,7 +13,6 @@ class TestNamespaceMigrationIntegration:
 
     @pytest.fixture
     def integration_config(self):
-        """Configuration for integration tests."""
         return {
             "migration": {
                 "debug_mode": True,
@@ -44,7 +43,6 @@ class TestNamespaceMigrationIntegration:
 
     @pytest.fixture
     def setup_migration_scenario(self, integration_config):
-        """Setup a complete migration scenario with mocked database responses."""
         bundle_db = Mock()
         asset_db = Mock()
         domain_db = Mock()
@@ -101,7 +99,6 @@ class TestNamespaceMigrationIntegration:
         return bundle_db, asset_db, domain_db, integration_config
 
     def test_multi_namespace_migration(self, setup_migration_scenario):
-        """Test migrating domain with multiple namespaces and overlapping users."""
         bundle_db, asset_db, domain_db, config = setup_migration_scenario
 
         # Setup transaction context managers
@@ -114,30 +111,17 @@ class TestNamespaceMigrationIntegration:
         asset_db.get_connection.return_value.__enter__ = Mock(return_value=asset_conn)
         asset_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
-        # Setup cursor for bundle creation
         cursor = MagicMock()
         bundle_conn.cursor.return_value.__enter__ = Mock(return_value=cursor)
         bundle_conn.cursor.return_value.__exit__ = Mock(return_value=False)
 
-        # Create migration instance and run
         migration = NamespaceMigration(bundle_db, asset_db, domain_db, config)
         result = migration.migrate_domain("domain-prod-123")
 
-        # Assertions
         assert result is True
-
-        # Verify 3 bundles were created and 3 namespace-bundle links added
-        # 3 bundle creations + 3 bundle_asset insertions = 6 cursor executions
         assert cursor.execute.call_count == 6
-
-        # Verify permissions were set
-        # default: 3 users (alice, bob, charlie)
-        # analytics: 2 users (bob, diana)
-        # ml: 2 users (eve, alice)
-        # Total: 7 permission assignments (some users in multiple namespaces)
         assert bundle_db.execute_insert.call_count == 7
 
-        # Verify transaction was committed (not rolled back)
         bundle_conn.rollback.assert_not_called()
 
     def test_migration_with_existing_bundles_overwrite_mode(self):
@@ -169,7 +153,6 @@ class TestNamespaceMigrationIntegration:
             }
         }
 
-        # Setup responses
         namespaces = [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}]
         users = [{"username": "user1"}]
 
@@ -179,13 +162,11 @@ class TestNamespaceMigrationIntegration:
             users
         ]
 
-        # Bundle already exists
         bundle_db.execute_query.side_effect = [
             [{"id": "map-1"}],
             [{"id": "existing-bundle-123"}]  # Existing bundle
         ]
 
-        # Setup connections
         bundle_conn = MagicMock()
         asset_conn = MagicMock()
 
@@ -204,9 +185,7 @@ class TestNamespaceMigrationIntegration:
         result = migration.migrate_domain("domain-123")
 
         assert result is True
-        # Verify bundle was deleted and recreated (3 deletes + 1 create + 1 add to bundle_asset = 5 executions)
         assert cursor.execute.call_count >= 4
-        # Permissions should still be set
         assert bundle_db.execute_insert.call_count == 1
 
     def test_migration_dry_run_doesnt_commit(self):
@@ -269,7 +248,6 @@ class TestNamespaceMigrationIntegration:
         result = migration.migrate_domain("domain-123")
 
         assert result is True
-        # Verify rollback was called for dry run
         bundle_conn.rollback.assert_called_once()
 
     def test_migration_handles_partial_failures(self):
@@ -410,7 +388,6 @@ class TestPermissionAssignmentIntegration:
             }
         }
 
-        # Mock returns one result per resource table (UNION query combines all user_columns per table)
         asset_db.execute_query.side_effect = [
             [{"username": "user1"}, {"username": "user2"}],
             [{"username": "user2"}, {"username": "user3"}]

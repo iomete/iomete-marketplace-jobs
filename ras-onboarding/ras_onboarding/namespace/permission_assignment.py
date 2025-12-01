@@ -12,14 +12,6 @@ class PermissionAssignment:
     """Handles permission assignment for namespace resources."""
 
     def __init__(self, bundle_db: DatabaseManager, asset_db: DatabaseManager, config: Dict[str, Any]):
-        """
-        Initialize permission assignment.
-
-        Args:
-            bundle_db: Database manager for bundle/IAM database
-            asset_db: Database manager for asset database (resources)
-            config: Configuration dictionary
-        """
         self.bundle_db = bundle_db
         self.asset_db = asset_db
         self.config = config
@@ -27,17 +19,6 @@ class PermissionAssignment:
         self.debug_mode = self.migration_config.get("debug_mode", False)
 
     def get_users_for_namespace(self, connection, namespace: str, domain_id: str) -> Set[str]:
-        """
-        Get all users who have resources in a specific namespace.
-
-        Args:
-            connection: Database connection to asset_db
-            namespace: Namespace identifier
-            domain_id: Domain identifier
-
-        Returns:
-            Set of usernames
-        """
         all_users = set()
 
         for resource_table in self.migration_config["resource_tables"]:
@@ -81,15 +62,6 @@ class PermissionAssignment:
         return all_users
 
     def set_namespace_permissions(self, connection, bundle_id: str, namespace_id: str, users: Set[str]):
-        """
-        Grant namespace permissions to users in the bundle.
-
-        Args:
-            connection: Database connection to bundle_db
-            bundle_id: Bundle identifier
-            namespace_id: Namespace identifier (from domain_namespace_mapping.id)
-            users: Set of usernames to grant permissions to
-        """
         if not users:
             logger.info(f"No users to grant permissions for namespace {namespace_id}")
             return
