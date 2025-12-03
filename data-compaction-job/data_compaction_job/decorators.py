@@ -1,7 +1,7 @@
 import logging
 import time
 
-from common.config import TableMetadata
+from config import TableMetadata
 from data_compaction_job.constants import CompactionOperation, ConfigProperty
 from table_parser import get_config_overrides
 

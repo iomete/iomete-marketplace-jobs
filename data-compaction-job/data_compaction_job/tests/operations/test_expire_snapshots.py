@@ -5,7 +5,7 @@
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
-from common.config import TableMetadata, ExpireSnapshotConfig
+from config import TableMetadata, ExpireSnapshotConfig
 from constants import CompactionOperation, ConfigProperty, ExpireSnapshotDefaults
 from operations.expire_snapshots import get_expire_snapshots_query, _get_timestamp, _get_retain_last_value
 

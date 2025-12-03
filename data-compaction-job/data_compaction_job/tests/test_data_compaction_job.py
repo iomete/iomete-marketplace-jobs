@@ -2,9 +2,9 @@
 
 """Tests for `data_compaction_job` package."""
 
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
-from common.config import TableMetadata
+from config import TableMetadata
 from data_compaction_job.config import get_config
 from data_compaction_job.main import start_job
 from data_compaction_job.stats_emitter import init_emitter, _add_orphan_files_metrics, StatsBatcher
