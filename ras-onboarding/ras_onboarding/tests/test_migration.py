@@ -3,8 +3,8 @@
 import pytest
 from unittest.mock import Mock, MagicMock
 
-from asset.migration import AssetOnboardingMigration
-from common.database import DatabaseManager
+from ras_onboarding.asset.migration import AssetOnboardingMigration
+from ras_onboarding.common.database import DatabaseManager
 
 @pytest.fixture
 def db_manager():
