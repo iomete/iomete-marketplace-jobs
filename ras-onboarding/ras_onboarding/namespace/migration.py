@@ -6,8 +6,8 @@ from ..common.logger import get_logger
 from .queries import (GET_NAMESPACE_MAPPING_ID, GET_BUNDLE_FROM_DOMAIN_AND_NAME,
                       GET_NAMESPACES_FOR_DOMAIN, CREATE_NAMESPACE_BUNDLE,
                       GET_DOMAIN_MEMBERS, ADD_NAMESPACE_TO_BUNDLE, CHECK_NAMESPACE_IN_BUNDLE,
-                      DELETE_BUNDLE_PERMISSIONS, DELETE_BUNDLE_ASSETS,
-                      DELETE_NAMESPACE_BUNDLE)
+                      CHECK_NAMESPACE_IN_ANY_BUNDLE, DELETE_BUNDLE_PERMISSIONS,
+                      DELETE_BUNDLE_ASSETS, DELETE_NAMESPACE_BUNDLE)
 from .permission_assignment import PermissionAssignment
 
 logger = get_logger(__name__)
@@ -85,7 +85,7 @@ class NamespaceMigration:
         return (bundle_id, False)  # New bundle created, no duplicate check needed
 
     def add_namespace_asset_to_bundle(self, connection, bundle_id: str, namespace_mapping_id: str,
-                                       check_duplicate: bool = False):
+                                       domain_id: str, namespace: str, check_duplicate: bool = False):
         """
         Add namespace asset to bundle.
 
@@ -93,19 +93,27 @@ class NamespaceMigration:
             connection: Database connection
             bundle_id: Bundle identifier
             namespace_mapping_id: Namespace mapping identifier
-            check_duplicate: If True, raises error if asset already exists in bundle
+            domain_id: Domain identifier
+            namespace: Namespace name
+            check_duplicate: If True, raises error if asset already exists in a different bundle
         """
         try:
-            # Check if asset already exists when in UPDATE mode
+            # Check if asset already exists in a different bundle when in UPDATE mode
             if check_duplicate:
                 existing = self.bundle_db.execute_query(
-                    connection, CHECK_NAMESPACE_IN_BUNDLE, (bundle_id, namespace_mapping_id)
+                    connection, CHECK_NAMESPACE_IN_ANY_BUNDLE, (namespace_mapping_id,)
                 )
                 if existing:
-                    raise ValueError(
-                        f"Namespace asset {namespace_mapping_id} already exists in bundle {bundle_id}. "
-                        "Cannot add duplicate namespace asset in UPDATE mode."
-                    )
+                    existing_bundle_name = existing[0]['name']
+                    expected_bundle_name = f"namespace-{domain_id}-{namespace}"
+
+                    print(">>>>>>>", existing_bundle_name, expected_bundle_name)
+                    if existing_bundle_name != expected_bundle_name:
+                        raise ValueError(
+                            f"Namespace asset {namespace_mapping_id} already exists in bundle '{existing_bundle_name}'. "
+                            f"Expected bundle name: '{expected_bundle_name}'. "
+                            "Cannot add duplicate namespace asset in UPDATE mode."
+                        )
 
             with connection.cursor() as cursor:
                 cursor.execute(ADD_NAMESPACE_TO_BUNDLE, (bundle_id, namespace_mapping_id))
@@ -171,6 +179,7 @@ class NamespaceMigration:
 
                             self.add_namespace_asset_to_bundle(
                                 bundle_conn2, bundle_id, namespace_mapping_id,
+                                domain_id, namespace_name,
                                 check_duplicate=bundle_existed
                             )
 

@@ -51,6 +51,14 @@ CHECK_NAMESPACE_IN_BUNDLE = """
             LIMIT 1
         """
 
+CHECK_NAMESPACE_IN_ANY_BUNDLE = """
+            SELECT b.id, b.name FROM bundle_asset ba
+            JOIN bundle b ON ba.bundle_id = b.id
+            WHERE ba.asset_type = 'NAMESPACE'
+              AND ba.asset_id = %s
+            LIMIT 1
+        """
+
 ADD_NAMESPACE_TO_BUNDLE = """
             INSERT INTO bundle_asset (bundle_id, asset_type, asset_id, created_at, created_by, updated_at, updated_by)
             VALUES (%s, 'NAMESPACE', %s, current_timestamp, 'system', current_timestamp, 'system')

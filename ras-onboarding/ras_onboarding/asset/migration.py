@@ -1,8 +1,8 @@
 """Core migration logic for asset onboarding."""
 
 from typing import Dict, Any, List
-from common.database import DatabaseManager
-from common.logger import get_logger
+from ras_onboarding.common.database import DatabaseManager
+from ras_onboarding.common.logger import get_logger
 
 logger = get_logger(__name__)
 
