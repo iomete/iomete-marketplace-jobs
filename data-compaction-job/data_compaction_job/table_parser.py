@@ -2,7 +2,7 @@ import logging
 from collections import defaultdict
 from typing import List, Dict, Optional, Any
 
-from common.config import TableMetadata
+from config import TableMetadata
 from constants import CompactionOperation, ConfigProperty
 
 logger = logging.getLogger(__name__)

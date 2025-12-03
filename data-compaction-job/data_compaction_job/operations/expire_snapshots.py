@@ -1,6 +1,6 @@
 from datetime import datetime, timezone, timedelta
 
-from common.config import TableMetadata, ExpireSnapshotConfig
+from config import TableMetadata, ExpireSnapshotConfig
 from constants import CompactionOperation, ConfigProperty, ExpireSnapshotDefaults
 from table_parser import get_config_overrides
 
