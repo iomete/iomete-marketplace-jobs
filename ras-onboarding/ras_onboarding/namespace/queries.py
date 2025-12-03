@@ -70,9 +70,10 @@ DELETE FROM bundle
     WHERE id = %s"""
 
 DELETE_BUNDLE_PERMISSIONS = """
-DELETE FROM bundle_permission
-    WHERE bundle_id = %s
-"""
+                            DELETE
+                            FROM bundle_permission
+                            WHERE bundle_id = %s \
+                            """
 
 DELETE_BUNDLE_ASSETS = """
 DELETE FROM bundle_asset

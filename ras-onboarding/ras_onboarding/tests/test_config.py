@@ -4,7 +4,7 @@ import os
 import tempfile
 import pytest
 
-from common.config import get_config
+from ras_onboarding.common.config import get_config
 
 def test_get_config_with_file():
     """Test configuration loading from file."""

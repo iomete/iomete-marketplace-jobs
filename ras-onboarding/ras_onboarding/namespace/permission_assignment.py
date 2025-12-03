@@ -1,9 +1,10 @@
 """Permission assignment logic for namespace migrations."""
 
 from typing import Set, Dict, Any
-from ..common.database import DatabaseManager
-from ..common.logger import get_logger
-from .queries import SET_NAMESPACE_PERMISSION
+
+from ras_onboarding.common.database import DatabaseManager
+from ras_onboarding.common.logger import get_logger
+from ras_onboarding.namespace.queries import SET_NAMESPACE_PERMISSION
 
 logger = get_logger(__name__)
 
