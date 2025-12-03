@@ -3,8 +3,8 @@
 import os
 import tempfile
 import pytest
-from asset_ras_onboarding_migration_job.config import get_config
 
+from common.config import get_config
 
 def test_get_config_with_file():
     """Test configuration loading from file."""
