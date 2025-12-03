@@ -2,7 +2,8 @@
 
 import pytest
 from unittest.mock import Mock, MagicMock, patch, call
-from ras_onboarding.namespace.permission_assignment import PermissionAssignment
+
+from namespace.permission_assignment import PermissionAssignment
 
 
 @pytest.fixture

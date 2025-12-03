@@ -4,6 +4,9 @@ docker_tag := latest
 test:
 	pytest --capture=no --log-cli-level=DEBUG
 
+test-namespace:
+	pytest tests/namespace/ -v
+
 az-login:
 	az acr login --name iomete
 
