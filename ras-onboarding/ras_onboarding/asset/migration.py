@@ -1,8 +1,8 @@
 """Core migration logic for asset onboarding."""
 
 from typing import Dict, Any, List
-from .database import DatabaseManager
-from .logger import get_logger
+from common.database import DatabaseManager
+from common.logger import get_logger
 
 logger = get_logger(__name__)
 

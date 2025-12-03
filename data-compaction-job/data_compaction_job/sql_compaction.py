@@ -6,7 +6,7 @@ from functools import cache
 
 import requests
 
-from config import TableMetadata
+from common.config import TableMetadata
 from data_compaction_job.config import ApplicationConfig
 from data_compaction_job.constants import CompactionOperation, ConfigProperty
 from data_compaction_job.decorators import operation_enabled, timer
