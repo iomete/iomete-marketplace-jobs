@@ -1,8 +1,8 @@
 """Main module for asset onboarding migration job."""
 
-from .logger import init_logger, get_logger
-from .database import DatabaseManager
-from .migration import AssetOnboardingMigration
+from common.logger import init_logger, get_logger
+from common.database import DatabaseManager
+from asset.migration import AssetOnboardingMigration
 
 logger = get_logger(__name__)
 
