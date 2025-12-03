@@ -5,6 +5,7 @@ import psycopg2.extras
 from contextlib import contextmanager
 from typing import Dict, Any, List, Optional
 from ras_onboarding.common.logger import get_logger
+from common.logger import get_logger
 
 logger = get_logger(__name__)
 

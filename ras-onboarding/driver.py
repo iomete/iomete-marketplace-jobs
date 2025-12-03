@@ -1,6 +1,6 @@
 from pyspark.sql import SparkSession
 
-from common.config import get_config
+from ras_onboarding.common.config import get_config
 from ras_onboarding.main import start_job
 
 config = get_config("/etc/configs/application.conf")
