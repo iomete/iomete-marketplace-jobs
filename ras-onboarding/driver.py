@@ -1,5 +1,3 @@
-"""Spark job driver for RAS onboarding migration."""
-
 import os
 import sys
 from pyspark.sql import SparkSession

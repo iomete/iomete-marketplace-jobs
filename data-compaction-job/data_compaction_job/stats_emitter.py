@@ -8,7 +8,7 @@ from typing import List, Dict, Any
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, TimestampType, MapType
 
-from config import TableMetadata
+from common.config import TableMetadata
 from data_compaction_job.constants import StatsDefaults
 
 logger = logging.getLogger(__name__)
