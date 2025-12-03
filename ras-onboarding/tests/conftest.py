@@ -153,14 +153,3 @@ def sample_bundle_permission_params():
         "permissions": ["READ", "WRITE"]
     }
 
-def pytest_configure(config):
-    """Configure custom pytest markers."""
-    config.addinivalue_line(
-        "markers", "integration: mark test as integration test (slow)"
-    )
-    config.addinivalue_line(
-        "markers", "unit: mark test as unit test (fast)"
-    )
-    config.addinivalue_line(
-        "markers", "database: mark test as requiring database connection"
-    )
