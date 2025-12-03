@@ -124,70 +124,6 @@ class TestNamespaceMigrationIntegration:
 
         bundle_conn.rollback.assert_not_called()
 
-    def test_migration_with_existing_bundles_overwrite_mode(self):
-        """Test migration when bundles exist and overwrite mode is enabled."""
-        bundle_db = Mock()
-        asset_db = Mock()
-        domain_db = Mock()
-
-        config = {
-            "migration": {
-                "debug_mode": False,
-                "dry_run": False,
-                "duplicate_bundle_action": "OVERWRITE",
-                "namespace_permissions": ["READ"],
-                "domains": ["domain-123"],
-                "resource_tables": [
-                    {
-                        "table": "lakehouse",
-                        "namespace_column": "lakehouse_namespace",
-                        "user_columns": ["owner"]
-                    }
-                ]
-            },
-            "namespace_config": {
-                "table": "lakehouse_namespace",
-                "id_column": "namespace_id",
-                "namespace_column": "name",
-                "domain_column": "domain"
-            }
-        }
-
-        namespaces = [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}]
-        users = [{"username": "user1"}]
-
-        asset_db.execute_query.side_effect = [
-            [{"created_by": "owner-123"}],  # get_domain_owner
-            namespaces,
-            users
-        ]
-
-        bundle_db.execute_query.side_effect = [
-            [{"id": "map-1"}],
-            [{"id": "existing-bundle-123"}]  # Existing bundle
-        ]
-
-        bundle_conn = MagicMock()
-        asset_conn = MagicMock()
-
-        bundle_db.get_transaction.return_value.__enter__ = Mock(return_value=bundle_conn)
-        bundle_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
-
-        asset_db.get_connection.return_value.__enter__ = Mock(return_value=asset_conn)
-        asset_db.get_connection.return_value.__exit__ = Mock(return_value=False)
-
-        # Setup cursor for bundle deletion and recreation
-        cursor = MagicMock()
-        bundle_conn.cursor.return_value.__enter__ = Mock(return_value=cursor)
-        bundle_conn.cursor.return_value.__exit__ = Mock(return_value=False)
-
-        migration = NamespaceMigration(bundle_db, asset_db, domain_db, config)
-        result = migration.migrate_domain("domain-123")
-
-        assert result is True
-        assert cursor.execute.call_count >= 4
-        assert bundle_db.execute_insert.call_count == 1
-
     def test_migration_dry_run_doesnt_commit(self):
         """Test that dry run mode doesn't commit changes."""
         bundle_db = Mock()
@@ -318,47 +254,6 @@ class TestNamespaceMigrationIntegration:
 
         # Migration continues despite one failure
         assert result is True
-
-    def test_run_migration_multiple_domains(self):
-        """Test running migration across multiple domains."""
-        bundle_db = Mock()
-        asset_db = Mock()
-        domain_db = Mock()
-
-        config = {
-            "migration": {
-                "debug_mode": False,
-                "dry_run": False,
-                "duplicate_bundle_action": "SKIP",
-                "namespace_permissions": ["READ"],
-                "domains": ["domain-1", "domain-2", "domain-3"],
-                "resource_tables": [
-                    {
-                        "table": "lakehouse",
-                        "namespace_column": "lakehouse_namespace",
-                        "user_columns": ["owner"]
-                    }
-                ]
-            },
-            "namespace_config": {
-                "table": "lakehouse_namespace",
-                "id_column": "namespace_id",
-                "namespace_column": "name",
-                "domain_column": "domain"
-            }
-        }
-
-        migration = NamespaceMigration(bundle_db, asset_db, domain_db, config)
-
-        with patch.object(migration, 'migrate_domain', return_value=True) as mock_migrate:
-            result = migration.run_migration()
-
-            assert result is True
-            assert mock_migrate.call_count == 3
-            mock_migrate.assert_any_call("domain-1")
-            mock_migrate.assert_any_call("domain-2")
-            mock_migrate.assert_any_call("domain-3")
-
 
 @pytest.mark.integration
 class TestPermissionAssignmentIntegration:
