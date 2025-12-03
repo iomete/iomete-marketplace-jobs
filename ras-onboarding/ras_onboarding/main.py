@@ -1,9 +1,8 @@
-"""Main module for RAS onboarding migration job."""
+"""Main module for asset onboarding migration job."""
 
-from .common.logger import init_logger, get_logger
-from .common.database import DatabaseManager
-from .asset.migration import AssetOnboardingMigration
-from .namespace.migration import NamespaceMigration
+from common.logger import init_logger, get_logger
+from common.database import DatabaseManager
+from asset.migration import AssetOnboardingMigration
 
 logger = get_logger(__name__)
 
