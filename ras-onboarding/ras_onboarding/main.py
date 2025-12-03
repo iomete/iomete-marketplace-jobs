@@ -9,14 +9,6 @@ logger = get_logger(__name__)
 
 
 def start_job(spark, config):
-    """
-    Main entry point for RAS onboarding migration job.
-    Supports both asset and namespace migrations based on migration_type config.
-
-    Args:
-        spark: Spark session
-        config: Configuration dictionary
-    """
     debug_mode = config.get("migration", {}).get("debug_mode", False)
     migration_type = config.get("migration", {}).get("migration_type", "asset")
 

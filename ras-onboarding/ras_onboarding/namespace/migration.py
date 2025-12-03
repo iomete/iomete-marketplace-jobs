@@ -141,30 +141,24 @@ class NamespaceMigration:
         try:
             # Use bundle_db transaction for bundle operations
             with self.bundle_db.get_transaction() as bundle_conn:
-                # Use asset_db connection for asset queries (read-only, no transaction needed)
                 with self.asset_db.get_connection() as asset_conn:
-                    # Get domain owner to use for bundle creation
                     domain_owner_id, domain_owner_type = self.get_domain_owner(bundle_conn, domain_id)
                     logger.info(f"Using domain owner {domain_owner_id} ({domain_owner_type}) for bundle creation")
 
-                    # Get all namespaces for this domain
                     namespaces = self.get_namespaces_for_domain(asset_conn, domain_id)
 
                     if not namespaces:
                         logger.warning(f"No namespaces found for domain {domain_id}")
                         return True
 
-                    # Process each namespace
                     for namespace_record in namespaces:
                         namespace_name = namespace_record['namespace']
                         logger.info(f"Processing namespace: {namespace_name} in domain {domain_id}")
 
-                        # Get namespace mapping ID from existing mapping
                         namespace_mapping_id = self.get_namespace_mapping_id(
                             asset_conn, domain_id, namespace_name
                         )
 
-                        # Create or get namespace-specific bundle using domain owner
                         with self.bundle_db.get_transaction() as bundle_conn2:
                             bundle_id, bundle_existed = self.get_or_create_namespace_bundle(
                                 bundle_conn2, namespace_name, domain_id,
@@ -175,30 +169,24 @@ class NamespaceMigration:
                                 logger.info(f"Skipping namespace {namespace_name} - bundle already exists")
                                 continue
 
-                            # Add namespace to bundle_asset table
-                            # In UPDATE mode with existing bundle, check for duplicate assets
                             self.add_namespace_asset_to_bundle(
                                 bundle_conn2, bundle_id, namespace_mapping_id,
                                 check_duplicate=bundle_existed
                             )
 
                             with self.asset_db.get_connection() as asset_conn2:
-                                # Get users who have resources in this namespace
                                 users = self.permission_assignment.get_users_for_namespace(
                                     asset_conn2, namespace_name, domain_id
                                 )
 
-                                # Grant permissions to those users using the namespace mapping ID
                                 self.permission_assignment.set_namespace_permissions(
                                     bundle_conn2, bundle_id, namespace_mapping_id, users
                                 )
 
-                # Dry run - rollback instead of commit
                 if self.migration_config.get("dry_run", False):
                     bundle_conn.rollback()
                     logger.info(f"DRY RUN: Changes rolled back for domain {domain_id}")
                 else:
-                    # Transaction will auto-commit when context exits successfully
                     logger.info(f"Successfully migrated namespace permissions for domain {domain_id}")
 
             return True
