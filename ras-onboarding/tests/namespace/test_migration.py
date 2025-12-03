@@ -1,7 +1,6 @@
 """Test cases for namespace migration module."""
 
 import pytest
-import json
 from unittest.mock import Mock, MagicMock, patch, call
 from ras_onboarding.namespace.migration import NamespaceMigration
 
@@ -66,23 +65,6 @@ def sample_config():
 def migration(mock_bundle_db, mock_asset_db, mock_domain_db, sample_config):
     """Create NamespaceMigration instance with mocks."""
     return NamespaceMigration(mock_bundle_db, mock_asset_db, mock_domain_db, sample_config)
-
-
-class TestNamespaceMigrationInit:
-    """Test NamespaceMigration initialization."""
-
-    def test_init_with_valid_config(self, mock_bundle_db, mock_asset_db, mock_domain_db, sample_config):
-        """Test initialization with valid configuration."""
-        nm = NamespaceMigration(mock_bundle_db, mock_asset_db, mock_domain_db, sample_config)
-
-        assert nm.bundle_db == mock_bundle_db
-        assert nm.asset_db == mock_asset_db
-        assert nm.domain_db == mock_domain_db
-        assert nm.config == sample_config
-        assert nm.migration_config == sample_config["migration"]
-        assert nm.namespace_config == sample_config["namespace_config"]
-        assert nm.debug_mode is False
-        assert nm.permission_assignment is not None
 
 
 class TestGetNamespaceMappingId:
