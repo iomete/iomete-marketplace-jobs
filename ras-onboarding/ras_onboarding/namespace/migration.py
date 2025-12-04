@@ -85,7 +85,7 @@ class NamespaceMigration:
         return (bundle_id, False)  # New bundle created, no duplicate check needed
 
     def add_namespace_asset_to_bundle(self, connection, bundle_id: str, namespace_mapping_id: str,
-                                       domain_id: str, namespace: str, check_duplicate: bool = False):
+                                      domain_id: str, namespace: str, validate_bundle_uniqueness: bool = False):
         """
         Add namespace asset to bundle.
 
@@ -95,11 +95,11 @@ class NamespaceMigration:
             namespace_mapping_id: Namespace mapping identifier
             domain_id: Domain identifier
             namespace: Namespace name
-            check_duplicate: If True, raises error if asset already exists in a different bundle
+            validate_bundle_uniqueness: If True, raises error if asset already exists in a different bundle
         """
         try:
             # Check if asset already exists in a different bundle when in UPDATE mode
-            if check_duplicate:
+            if validate_bundle_uniqueness:
                 existing = self.bundle_db.execute_query(
                     connection, CHECK_NAMESPACE_IN_ANY_BUNDLE, (namespace_mapping_id,)
                 )
@@ -180,7 +180,7 @@ class NamespaceMigration:
                             self.add_namespace_asset_to_bundle(
                                 bundle_conn2, bundle_id, namespace_mapping_id,
                                 domain_id, namespace_name,
-                                check_duplicate=bundle_existed
+                                validate_bundle_uniqueness=bundle_existed
                             )
 
                             with self.asset_db.get_connection() as asset_conn2:

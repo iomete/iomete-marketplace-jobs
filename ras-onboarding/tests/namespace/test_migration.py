@@ -159,12 +159,12 @@ class TestGetOrCreateNamespaceBundle:
 
         migration.migration_config["duplicate_bundle_action"] = "SKIP"
 
-        bundle_id, bundle_existed = migration.get_or_create_namespace_bundle(
+        bundle_id, bundle_created = migration.get_or_create_namespace_bundle(
             mock_connection, "default", "domain-123", "user-123", "USER"
         )
 
         assert bundle_id is None
-        assert bundle_existed is False
+        assert bundle_created is False
 
     def test_existing_bundle_update_mode(self, migration, mock_bundle_db):
         """Test UPDATE mode when bundle already exists."""
@@ -190,7 +190,7 @@ class TestGetOrCreateNamespaceBundle:
 
         with pytest.raises(ValueError) as exc_info:
             migration.add_namespace_asset_to_bundle(
-                mock_connection, "bundle-123", "namespace-456", check_duplicate=True
+                mock_connection, "bundle-123", "namespace-456", validate_bundle_uniqueness=True
             )
 
         assert "already exists" in str(exc_info.value)
@@ -206,7 +206,7 @@ class TestGetOrCreateNamespaceBundle:
         mock_bundle_db.execute_query.return_value = []
 
         migration.add_namespace_asset_to_bundle(
-            mock_connection, "bundle-123", "namespace-456", check_duplicate=True
+            mock_connection, "bundle-123", "namespace-456", validate_bundle_uniqueness=True
         )
 
         mock_cursor.execute.assert_called_once()
