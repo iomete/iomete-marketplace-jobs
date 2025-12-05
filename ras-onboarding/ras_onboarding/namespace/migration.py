@@ -5,7 +5,7 @@ from ..common.database import DatabaseManager
 from ..common.logger import get_logger
 from .queries import (GET_NAMESPACE_MAPPING_ID, GET_BUNDLE_FROM_DOMAIN_AND_NAME,
                       GET_NAMESPACES_FOR_DOMAIN, CREATE_NAMESPACE_BUNDLE,
-                      ADD_NAMESPACE_TO_BUNDLE, CHECK_NAMESPACE_IN_BUNDLE,
+                      ADD_NAMESPACE_TO_BUNDLE,
                       CHECK_NAMESPACE_IN_ANY_BUNDLE, DELETE_BUNDLE_PERMISSIONS,
                       DELETE_BUNDLE_ASSETS, DELETE_NAMESPACE_BUNDLE)
 from .permission_assignment import PermissionAssignment

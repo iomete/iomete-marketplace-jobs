@@ -47,14 +47,6 @@ GET_ALL_DOMAIN_USERS = """
               AND u.is_deleted = false
         """
 
-CHECK_NAMESPACE_IN_BUNDLE = """
-            SELECT 1 FROM bundle_asset
-            WHERE bundle_id = %s
-              AND asset_type = 'NAMESPACE'
-              AND asset_id = %s
-            LIMIT 1
-        """
-
 CHECK_NAMESPACE_IN_ANY_BUNDLE = """
             SELECT b.id, b.name FROM bundle_asset ba
             JOIN bundle b ON ba.bundle_id = b.id
