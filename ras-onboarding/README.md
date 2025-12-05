@@ -1,13 +1,17 @@
-# Asset RAS Onboarding Migration Job
+# RAS Onboarding Migration Job
 
 A dynamic PySpark job that automates migration from **domain-based access control** to the new **bundle-based Resource Access Security (RAS)** system in IOMETE.
 
+**Supports Two Migration Types:**
+- **Namespace Migration**: Grants namespace permissions to all domain users
+- **Asset Migration**: Handles asset-based permission migration with role mappings
+
 **Key Features:**
+- **Unified Configuration**: Single config file supports both migration types
+- **All Domain Users**: Namespace migration grants permissions to all users in the domain
 - **Dynamic Asset Type Support**: Handles multiple asset types (COMPUTE, SPARK_JOB etc.) through configuration
 - **Multi-Asset Domain Migration**: Migrates multiple asset types per domain in a single execution
 - **Configuration-Driven Architecture**: Add new asset types without code changes
-- **Dynamic Query Generation**: Automatically builds queries based on asset type configuration
-- **Dynamic Permission Mapping**: Maps permissions based on service types and asset configurations
 
 This README will guide you through creating and running the job template in the IOMETE Console, following the same flow as the **Create Job Template** page.
 
@@ -15,20 +19,21 @@ This README will guide you through creating and running the job template in the 
 
 ## Table of Contents
 1. [Overview](#overview)
-2. [Prerequisites](#prerequisites)
-3. [Step 1 – Job Details](#step-1--job-details)
-4. [Step 2 – Docker Image Configuration](#step-2--docker-image-configuration)
-5. [Step 3 – Config Map](#step-3--config-map)
-6. [Step 4 – Instance Configuration](#step-4--instance-configuration)
-7. [Step 5 – Run Job](#step-5--run-job)
-8. [Step 6 – Monitor Execution](#step-6--monitor-execution)
-9. [Migration Logic Explained](#migration-logic-explained)
-10. [Duplicate Bundle Handling](#duplicate-bundle-handling)
-11. [Per-Asset-Type Duplicate Handling](#per-asset-type-duplicate-handling)
-12. [Universal Permission Grant with 'all' Key](#universal-permission-grant-with-all-key)
-13. [Troubleshooting](#troubleshooting)
-14. [Security Notes](#security-notes)
-15. [Monitoring and Logging](#monitoring-and-logging)
+2. [Migration Types](#migration-types)
+3. [Prerequisites](#prerequisites)
+4. [Step 1 – Job Details](#step-1--job-details)
+5. [Step 2 – Docker Image Configuration](#step-2--docker-image-configuration)
+6. [Step 3 – Config Map](#step-3--config-map)
+7. [Step 4 – Instance Configuration](#step-4--instance-configuration)
+8. [Step 5 – Run Job](#step-5--run-job)
+9. [Step 6 – Monitor Execution](#step-6--monitor-execution)
+10. [Migration Logic Explained](#migration-logic-explained)
+11. [Duplicate Bundle Handling](#duplicate-bundle-handling)
+12. [Per-Asset-Type Duplicate Handling](#per-asset-type-duplicate-handling)
+13. [Universal Permission Grant with 'all' Key](#universal-permission-grant-with-all-key)
+14. [Troubleshooting](#troubleshooting)
+15. [Security Notes](#security-notes)
+16. [Monitoring and Logging](#monitoring-and-logging)
 
 ---
 
@@ -46,6 +51,63 @@ This job helps IOMETE customers migrate assets (compute, spark jobs, pipelines, 
 - **SPARK_JOB**: Spark job definitions
 
 *Additional asset types can be added through configuration without code changes.*
+
+---
+
+## Migration Types
+
+The job supports two migration types, controlled by the `migration_type` field in the configuration:
+
+### Namespace Migration (`migration_type: "namespace"`)
+
+Creates namespace bundles and grants **USE** permissions to **all users** in the domain.
+
+**How it works:**
+1. For each domain, fetches all namespaces from `domain_namespace_mapping`
+2. Creates a bundle for each namespace (e.g., `namespace-{domain}-{namespace}`)
+3. Queries all users from `domain_member` table (joined with `iam_user`)
+4. Grants `namespace_permissions` (default: `["USE"]`) to all domain users
+
+**Config Example:**
+```hocon
+migration: {
+    migration_type: "namespace"
+    domains: [
+        {
+            domain_id: "production"
+            owner_id: "admin"
+            owner_type: "USER"
+        }
+    ]
+    namespace_permissions: ["USE"]
+    duplicate_bundle_action: "UPDATE"
+}
+```
+
+### Asset Migration (`migration_type: "asset"`)
+
+Creates asset bundles with role-based permissions for specific asset types.
+
+**How it works:**
+1. For each domain, creates a default bundle
+2. Moves assets (COMPUTE, SPARK_JOB, etc.) into the bundle
+3. Grants permissions based on user roles from `user_role_mapping_v2`
+
+**Config Example:**
+```hocon
+migration: {
+    migration_type: "asset"
+    domains: [
+        {
+            domain_id: "production"
+            owner_id: "admin"
+            owner_type: "USER"
+            asset_types: ["COMPUTE", "SPARK_JOB"]
+        }
+    ]
+    duplicate_bundle_action: "UPDATE"
+}
+```
 
 ---
 
@@ -90,20 +152,19 @@ Main Application File: local:///app/driver.py
 2. Set the file path to: `/etc/configs/application.conf`
 3. Copy the below config map and edit DB hosts, credentials, and domain details
 
+### For Namespace Migration
+
 ```hocon
 {
-  # Database configuration - will be overridden by environment variables
   databases: {
-    bundle_db: {
+    iam_db: {
       host: "your-db-host"
       port: 5432
       name: "iomete_iam_db"
       user: ${?DB_USER}
       password: ${?DB_PASSWORD}
     }
-
-    # asset database
-    asset_db: {
+    core_db: {
       host: "your-db-host"
       port: 5432
       name: "iomete_core_db"
@@ -112,52 +173,75 @@ Main Application File: local:///app/driver.py
     }
   }
 
-  # Migration configuration
   migration: {
-    # List of domains to migrate with their configurations
+    migration_type: "namespace"
     domains: [
         {
             domain_id: "production"
             owner_id: "admin_user"
-            owner_type: "USER"  # USER or GROUP
-            asset_types: ["COMPUTE", "SPARK_JOB"]  # Multiple asset types - all use same asset_db
+            owner_type: "USER"
         }
         {
             domain_id: "staging"
             owner_id: "data_engineering"
             owner_type: "GROUP"
-            asset_types: ["COMPUTE"]  # Different combinations per domain
         }
-        {
-            domain_id: "development"
-            owner_id: "dev_team"
-            owner_type: "GROUP"
-            asset_types: ["SPARK_JOB"]  # Single asset type (also supported)
-        }
-        # Add more domains as needed
     ]
+    debug_mode: false
+    dry_run: false
+    duplicate_bundle_action: "UPDATE"
+    namespace_permissions: ["USE"]
+  }
 
-    # Transaction settings
+  namespace_config: {
+    table: "domain_namespace_mapping"
+    id_column: "id"
+    namespace_column: "namespace"
+    domain_column: "domain_id"
+  }
+}
+```
+
+### For Asset Migration
+
+```hocon
+{
+  databases: {
+    iam_db: {
+      host: "your-db-host"
+      port: 5432
+      name: "iomete_iam_db"
+      user: ${?DB_USER}
+      password: ${?DB_PASSWORD}
+    }
+    core_db: {
+      host: "your-db-host"
+      port: 5432
+      name: "iomete_core_db"
+      user: ${?ASSET_DB_USER}
+      password: ${?ASSET_DB_PASSWORD}
+    }
+  }
+
+  migration: {
+    migration_type: "asset"
+    domains: [
+        {
+            domain_id: "production"
+            owner_id: "admin_user"
+            owner_type: "USER"
+            asset_types: ["COMPUTE", "SPARK_JOB"]
+        }
+    ]
     batch_size: 1000
     retry_attempts: 3
-
-    # Validation settings
     validate_before_migration: true
     dry_run: false
-
-    # Debug mode - enables detailed logging and query output
     debug_mode: false
-
-    # Duplicate bundle behavior: FAIL, SKIP, or UPDATE
-    # FAIL: Stop execution if default bundle already exists (default behavior)
-    # SKIP: Skip migration for domains where default bundle already exists
-    # UPDATE: Update existing bundle ownership and re-process assets/permissions
     duplicate_bundle_action: "UPDATE"
   }
 
-  # INTERNAL USE ONLY: Do not edit or change the below CONFIGS WITHOUT CHECKING WITH SUPPORT FIRST
-  # Asset type mappings - defines how to query assets for each type
-  # All asset types use the same asset_db connection but different tables
+  # INTERNAL USE ONLY
   asset_mappings: {
       COMPUTE: {
           table: "lakehouse"
@@ -170,11 +254,6 @@ Main Application File: local:///app/driver.py
               view: ["VIEW"]
               manage: ["UPDATE", "DELETE", "EXECUTE", "CONSUME"]
           }
-          # Action when asset already exists in bundle: SKIP, UPDATE, ERROR, or RESET
-          # SKIP: Skip assets that already exist in the bundle
-          # UPDATE: Add new assets, merge permissions for existing ones
-          # ERROR: Raise error if any asset already exists
-          # RESET: Clear all assets and permissions for this asset type before migration
           asset_action_on_duplicate: "UPDATE"
       }
       SPARK_JOB: {
@@ -188,11 +267,6 @@ Main Application File: local:///app/driver.py
               view: ["VIEW"]
               manage: ["UPDATE", "DELETE", "RUN", "CONSUME"]
           }
-          # Action when asset already exists in bundle: SKIP, UPDATE, ERROR, or RESET
-          # SKIP: Skip assets that already exist in the bundle
-          # UPDATE: Add new assets, merge permissions for existing ones
-          # ERROR: Raise error if any asset already exists
-          # RESET: Clear all assets and permissions for this asset type before migration
           asset_action_on_duplicate: "UPDATE"
       }
   }
@@ -218,11 +292,20 @@ Choose the instance to run on:
 ## Step 6 – Monitor Execution
 - **Logs:** Check real-time logs in the IOMETE console
 - **Verification:**
-    - Ensure a default bundle is created per domain
-    - Confirm assets are reassigned
+    - Ensure bundles are created for each domain/namespace
+    - Confirm assets or namespaces are assigned
     - Validate bundle permissions
 
-Sample log output:
+### Namespace Migration Log Output:
+```
+INFO: Starting namespace migration for domain: production
+INFO: Found 5 namespaces for domain production
+INFO: Created namespace bundle abc-123 for namespace default in domain production
+INFO: Found 25 users in domain production for namespace default
+INFO: Granted permissions to 25 users on namespace default
+```
+
+### Asset Migration Log Output:
 ```
 INFO: Created default bundle abc-123-def for domain production
 INFO: Moved 25 compute assets to bundle abc-123-def

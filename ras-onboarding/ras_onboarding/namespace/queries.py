@@ -38,13 +38,6 @@ CREATE_NAMESPACE_BUNDLE = """
             VALUES (%s, %s, %s, %s, %s, %s, current_timestamp, 'system', current_timestamp, 'system', false)
         """
 
-GET_DOMAIN_OWNER = """
-            SELECT created_by
-            FROM domain
-            WHERE id = %s
-            LIMIT 1
-        """
-
 GET_ALL_DOMAIN_USERS = """
             SELECT DISTINCT dm.identity_id as username
             FROM domain_member dm

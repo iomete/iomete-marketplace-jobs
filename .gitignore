@@ -26,5 +26,3 @@ nb-configuration.xml
 *.rej
 
 poetry.lock
-ras-onboarding/test_namespace_migration.py
-ras-onboarding/temp.py

@@ -5,7 +5,7 @@ from ..common.database import DatabaseManager
 from ..common.logger import get_logger
 from .queries import (GET_NAMESPACE_MAPPING_ID, GET_BUNDLE_FROM_DOMAIN_AND_NAME,
                       GET_NAMESPACES_FOR_DOMAIN, CREATE_NAMESPACE_BUNDLE,
-                      GET_DOMAIN_OWNER, ADD_NAMESPACE_TO_BUNDLE, CHECK_NAMESPACE_IN_BUNDLE,
+                      ADD_NAMESPACE_TO_BUNDLE, CHECK_NAMESPACE_IN_BUNDLE,
                       CHECK_NAMESPACE_IN_ANY_BUNDLE, DELETE_BUNDLE_PERMISSIONS,
                       DELETE_BUNDLE_ASSETS, DELETE_NAMESPACE_BUNDLE)
 from .permission_assignment import PermissionAssignment
@@ -35,13 +35,6 @@ class NamespaceMigration:
         error_msg = f"Namespace mapping not found for {namespace} in domain {domain_id}. Ensure domain_namespace_mapping table is populated."
         logger.error(error_msg)
         raise ValueError(error_msg)
-
-    def get_domain_owner(self, connection, domain_id: str) -> tuple[str, str]:
-        result = self.core_db.execute_query(connection, GET_DOMAIN_OWNER, (domain_id,))
-        if result and len(result) > 0:
-            return result[0]['created_by'], 'USER'
-
-        raise ValueError(f"Domain {domain_id} not found")
 
     def get_or_create_namespace_bundle(self, connection, namespace: str, domain_id: str,
                                        owner_id: str, owner_type: str) -> tuple[Optional[str], bool]:
@@ -138,7 +131,11 @@ class NamespaceMigration:
         logger.info(f"Found {len(results)} namespaces for domain {domain_id}")
         return results
 
-    def migrate_domain(self, domain_id: str) -> bool:
+    def migrate_domain(self, domain_config: Dict[str, Any]) -> bool:
+        domain_id = domain_config["domain_id"]
+        owner_id = domain_config["owner_id"]
+        owner_type = domain_config.get("owner_type", "USER")
+
         logger.info(f"Starting namespace migration for domain: {domain_id}")
 
         if self.migration_config.get("dry_run", False):
@@ -147,8 +144,7 @@ class NamespaceMigration:
             # Use iam_db transaction for bundle operations
             with self.iam_db.get_transaction() as iam_conn:
                 with self.core_db.get_connection() as core_conn:
-                    domain_owner_id, domain_owner_type = self.get_domain_owner(iam_conn, domain_id)
-                    logger.info(f"Using domain owner {domain_owner_id} ({domain_owner_type}) for bundle creation")
+                    logger.info(f"Using owner {owner_id} ({owner_type}) for bundle creation")
 
                     namespaces = self.get_namespaces_for_domain(core_conn, domain_id)
 
@@ -166,7 +162,7 @@ class NamespaceMigration:
 
                         bundle_id, bundle_existed = self.get_or_create_namespace_bundle(
                             iam_conn, namespace_name, domain_id,
-                            owner_id=domain_owner_id, owner_type=domain_owner_type
+                            owner_id=owner_id, owner_type=owner_type
                         )
 
                         if bundle_id is None:
@@ -208,20 +204,12 @@ class NamespaceMigration:
         """
         domains_config = self.migration_config["domains"]
 
-        # Handle both list of strings and list of objects
-        domains = []
-        if isinstance(domains_config, list) and len(domains_config) > 0:
-            if isinstance(domains_config[0], str):
-                domains = domains_config
-            else:
-                domains = [d["domain_id"] for d in domains_config]
-
-        logger.info(f"Starting namespace migration for {len(domains)} domain(s)")
+        logger.info(f"Starting namespace migration for {len(domains_config)} domain(s)")
         success_count = 0
         error_count = 0
 
-        for domain_id in domains:
-            if self.migrate_domain(domain_id):
+        for domain_config in domains_config:
+            if self.migrate_domain(domain_config):
                 success_count += 1
             else:
                 error_count += 1
