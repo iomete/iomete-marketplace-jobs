@@ -19,7 +19,6 @@ class NamespaceMigration:
         self.core_db = core_db
         self.config = config
         self.migration_config = config["migration"]
-        self.namespace_config = config["namespace_config"]
         self.debug_mode = self.migration_config.get("debug_mode", False)
         self.permission_assignment = PermissionAssignment(iam_db, core_db, config)
 
@@ -116,18 +115,10 @@ class NamespaceMigration:
             raise
 
     def get_namespaces_for_domain(self, connection, domain_id: str) -> List[Dict[str, Any]]:
-        query = GET_NAMESPACES_FOR_DOMAIN.format(
-            id_column=self.namespace_config['id_column'],
-            namespace_column=self.namespace_config['namespace_column'],
-            domain_column=self.namespace_config['domain_column'],
-            table=self.namespace_config['table']
-        )
-
         if self.debug_mode:
-            logger.debug(f"Namespace query: {query}")
-            logger.debug(f"Parameters: ({domain_id},)")
+            logger.debug(f"Fetching namespaces for domain: {domain_id}")
 
-        results = self.core_db.execute_query(connection, query, (domain_id,))
+        results = self.core_db.execute_query(connection, GET_NAMESPACES_FOR_DOMAIN, (domain_id,))
         logger.info(f"Found {len(results)} namespaces for domain {domain_id}")
         return results
 

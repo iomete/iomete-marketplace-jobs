@@ -175,32 +175,23 @@ Main Application File: local:///app/driver.py
   }
 
   migration: {
-    # List of domains to migrate with their configurations
+    migration_type: "namespace"
     domains: [
         {
             domain_id: "production"
             owner_id: "admin_user"
-            owner_type: "USER"  # USER or GROUP
-            asset_types: ["COMPUTE", "SPARK_JOB"]  # Multiple asset types - all use same asset_db
+            owner_type: "USER"
         }
         {
             domain_id: "staging"
             owner_id: "data_engineering"
             owner_type: "GROUP"
-            asset_types: ["COMPUTE"]  # Different combinations per domain
         }
     ]
     debug_mode: false
     dry_run: false
     duplicate_bundle_action: "UPDATE"
     namespace_permissions: ["USE"]
-  }
-
-  namespace_config: {
-    table: "domain_namespace_mapping"
-    id_column: "id"
-    namespace_column: "namespace"
-    domain_column: "domain_id"
   }
 }
 ```

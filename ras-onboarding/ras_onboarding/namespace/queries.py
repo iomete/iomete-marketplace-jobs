@@ -25,11 +25,9 @@ SET_NAMESPACE_PERMISSION = """
 
 
 GET_NAMESPACES_FOR_DOMAIN = """
-            SELECT {id_column} as id,
-                   {namespace_column} as namespace,
-                   {domain_column} as domain_id
-            FROM {table}
-            WHERE {domain_column} = %s
+            SELECT id, namespace, domain_id
+            FROM domain_namespace_mapping
+            WHERE domain_id = %s
         """
 
 CREATE_NAMESPACE_BUNDLE = """
