@@ -156,6 +156,7 @@ Main Application File: local:///app/driver.py
 
 ```hocon
 {
+  # Database configuration - will be overridden by environment variables
   databases: {
     iam_db: {
       host: "your-db-host"
@@ -174,17 +175,19 @@ Main Application File: local:///app/driver.py
   }
 
   migration: {
-    migration_type: "namespace"
+    # List of domains to migrate with their configurations
     domains: [
         {
             domain_id: "production"
             owner_id: "admin_user"
-            owner_type: "USER"
+            owner_type: "USER"  # USER or GROUP
+            asset_types: ["COMPUTE", "SPARK_JOB"]  # Multiple asset types - all use same asset_db
         }
         {
             domain_id: "staging"
             owner_id: "data_engineering"
             owner_type: "GROUP"
+            asset_types: ["COMPUTE"]  # Different combinations per domain
         }
     ]
     debug_mode: false
@@ -235,13 +238,24 @@ Main Application File: local:///app/driver.py
     ]
     batch_size: 1000
     retry_attempts: 3
+    
+    # Validation settings
     validate_before_migration: true
     dry_run: false
+
+    # Debug mode - enables detailed logging and query output
     debug_mode: false
+
+    # Duplicate bundle behavior: FAIL, SKIP, or UPDATE
+    # FAIL: Stop execution if default bundle already exists (default behavior)
+    # SKIP: Skip migration for domains where default bundle already exists
+    # UPDATE: Update existing bundle ownership and re-process assets/permissions
     duplicate_bundle_action: "UPDATE"
   }
 
-  # INTERNAL USE ONLY
+  # INTERNAL USE ONLY: Do not edit or change the below CONFIGS WITHOUT CHECKING WITH SUPPORT FIRST
+  # Asset type mappings - defines how to query assets for each type
+  # All asset types use the same asset_db connection but different tables
   asset_mappings: {
       COMPUTE: {
           table: "lakehouse"
@@ -254,6 +268,11 @@ Main Application File: local:///app/driver.py
               view: ["VIEW"]
               manage: ["UPDATE", "DELETE", "EXECUTE", "CONSUME"]
           }
+          # Action when asset already exists in bundle: SKIP, UPDATE, ERROR, or RESET
+          # SKIP: Skip assets that already exist in the bundle
+          # UPDATE: Add new assets, merge permissions for existing ones
+          # ERROR: Raise error if any asset already exists
+          # RESET: Clear all assets and permissions for this asset type before migration
           asset_action_on_duplicate: "UPDATE"
       }
       SPARK_JOB: {
@@ -267,6 +286,11 @@ Main Application File: local:///app/driver.py
               view: ["VIEW"]
               manage: ["UPDATE", "DELETE", "RUN", "CONSUME"]
           }
+          # Action when asset already exists in bundle: SKIP, UPDATE, ERROR, or RESET
+          # SKIP: Skip assets that already exist in the bundle
+          # UPDATE: Add new assets, merge permissions for existing ones
+          # ERROR: Raise error if any asset already exists
+          # RESET: Clear all assets and permissions for this asset type before migration
           asset_action_on_duplicate: "UPDATE"
       }
   }
