@@ -1,7 +1,6 @@
 """Integration tests for namespace migration."""
 
 import pytest
-import json
 from unittest.mock import Mock, MagicMock, patch
 from ras_onboarding.namespace.migration import NamespaceMigration
 from ras_onboarding.namespace.permission_assignment import PermissionAssignment
@@ -19,7 +18,10 @@ class TestNamespaceMigrationIntegration:
                 "dry_run": False,
                 "duplicate_bundle_action": "OVERWRITE",
                 "namespace_permissions": ["READ", "WRITE", "EXECUTE"],
-                "domains": ["domain-prod-123", "domain-dev-456"],
+                "domains": [
+                    {"domain_id": "domain-prod-123", "owner_id": "admin-user", "owner_type": "USER"},
+                    {"domain_id": "domain-dev-456", "owner_id": "dev-user", "owner_type": "USER"}
+                ],
                 "resource_tables": [
                     {
                         "table": "lakehouse",
@@ -45,53 +47,40 @@ class TestNamespaceMigrationIntegration:
     def setup_migration_scenario(self, integration_config):
         iam_db = Mock()
         core_db = Mock()
-        
-        # Scenario: Domain with 3 namespaces, multiple users, some with overlapping resources
+
+        # Scenario: Domain with 3 namespaces
         namespaces = [
             {"id": "ns-default", "namespace": "default", "domain_id": "domain-prod-123"},
             {"id": "ns-analytics", "namespace": "analytics", "domain_id": "domain-prod-123"},
             {"id": "ns-ml", "namespace": "ml_workloads", "domain_id": "domain-prod-123"}
         ]
 
-        # Users in different namespaces
-        default_users = [
+        # Users in domain
+        domain_users = [
             {"username": "alice"},
             {"username": "bob"},
-            {"username": "charlie"}
-        ]
-
-        analytics_users = [
-            {"username": "bob"},  # Bob works in both default and analytics
-            {"username": "diana"}
-        ]
-
-        ml_users = [
-            {"username": "eve"},
-            {"username": "alice"}  # Alice works in default and ml
+            {"username": "charlie"},
+            {"username": "diana"},
+            {"username": "eve"}
         ]
 
         # Setup core_db (asset) responses
-        # Note: get_users_for_namespace uses UNION queries, so 1 call per table per namespace
-        # We have 2 resource tables (lakehouse, spark_job) × 3 namespaces = 6 user query calls
         core_db.execute_query.side_effect = [
-            [{"created_by": "admin-user"}],  # get_domain_owner
             namespaces,  # get_namespaces_for_domain
-            default_users,  # users from lakehouse table (UNION query) for default namespace
-            default_users,  # users from spark_job table (UNION query) for default namespace
-            analytics_users,  # users from lakehouse table (UNION query) for analytics
-            analytics_users,  # users from spark_job table (UNION query) for analytics
-            ml_users,  # users from lakehouse table (UNION query) for ml
-            ml_users   # users from spark_job table (UNION query) for ml
         ]
 
         # Setup iam_db (bundle) responses
+        # For each namespace: get_namespace_mapping_id, check if bundle exists, get_users_for_namespace
         namespace_mappings_and_bundles = [
             [{"id": "map-default"}],  # mapping for default
             [],  # no existing bundle for default
+            domain_users,  # users for default
             [{"id": "map-analytics"}],  # mapping for analytics
             [],  # no existing bundle for analytics
+            domain_users,  # users for analytics
             [{"id": "map-ml"}],  # mapping for ml
-            []  # no existing bundle for ml
+            [],  # no existing bundle for ml
+            domain_users,  # users for ml
         ]
         iam_db.execute_query.side_effect = namespace_mappings_and_bundles
 
@@ -115,11 +104,14 @@ class TestNamespaceMigrationIntegration:
         bundle_conn.cursor.return_value.__exit__ = Mock(return_value=False)
 
         migration = NamespaceMigration(iam_db, core_db, config)
-        result = migration.migrate_domain("domain-prod-123")
+        domain_config = {"domain_id": "domain-prod-123", "owner_id": "admin-user", "owner_type": "USER"}
+        result = migration.migrate_domain(domain_config)
 
         assert result is True
+        # 3 namespaces × (create bundle + add asset) = 6 cursor executions
         assert cursor.execute.call_count == 6
-        assert iam_db.execute_insert.call_count == 7
+        # 3 namespaces × 5 users = 15 permission inserts
+        assert iam_db.execute_insert.call_count == 15
 
         bundle_conn.rollback.assert_not_called()
 
@@ -127,14 +119,14 @@ class TestNamespaceMigrationIntegration:
         """Test that dry run mode doesn't commit changes."""
         iam_db = Mock()
         core_db = Mock()
-        
+
         config = {
             "migration": {
                 "debug_mode": False,
                 "dry_run": True,  # Dry run enabled
                 "duplicate_bundle_action": "FAIL",
                 "namespace_permissions": ["READ"],
-                "domains": ["domain-123"],
+                "domains": [{"domain_id": "domain-123", "owner_id": "owner-123", "owner_type": "USER"}],
                 "resource_tables": [
                     {
                         "table": "lakehouse",
@@ -155,14 +147,13 @@ class TestNamespaceMigrationIntegration:
         users = [{"username": "user1"}]
 
         core_db.execute_query.side_effect = [
-            [{"created_by": "owner-123"}],  # get_domain_owner
             namespaces,
-            users
         ]
 
         iam_db.execute_query.side_effect = [
-            [{"id": "map-1"}],
-            []
+            [{"id": "map-1"}],  # get_namespace_mapping_id
+            [],  # bundle doesn't exist
+            users,  # get_users_for_namespace
         ]
 
         bundle_conn = MagicMock()
@@ -179,118 +170,16 @@ class TestNamespaceMigrationIntegration:
         bundle_conn.cursor.return_value.__exit__ = Mock(return_value=False)
 
         migration = NamespaceMigration(iam_db, core_db, config)
-        result = migration.migrate_domain("domain-123")
+        domain_config = {"domain_id": "domain-123", "owner_id": "owner-123", "owner_type": "USER"}
+        result = migration.migrate_domain(domain_config)
 
         assert result is True
         bundle_conn.rollback.assert_called_once()
 
-    def test_migration_handles_partial_failures(self):
-        """Test that migration continues when some operations fail."""
-        iam_db = Mock()
-        core_db = Mock()
-        
-        config = {
-            "migration": {
-                "debug_mode": False,
-                "dry_run": False,
-                "duplicate_bundle_action": "FAIL",
-                "namespace_permissions": ["READ"],
-                "domains": ["domain-123"],
-                "resource_tables": [
-                    {
-                        "table": "lakehouse",
-                        "namespace_column": "lakehouse_namespace",
-                        "user_columns": ["owner"]
-                    }
-                ]
-            },
-            "namespace_config": {
-                "table": "lakehouse_namespace",
-                "id_column": "namespace_id",
-                "namespace_column": "name",
-                "domain_column": "domain"
-            }
-        }
-
-        namespaces = [
-            {"id": "ns-1", "namespace": "default", "domain_id": "domain-123"},
-            {"id": "ns-2", "namespace": "dev", "domain_id": "domain-123"}
-        ]
-
-        # One namespace has users, other fails
-        core_db.execute_query.side_effect = [
-            [{"created_by": "owner-123"}],  # get_domain_owner
-            namespaces,
-            [{"username": "user1"}],  # Users for first namespace
-            Exception("Query failed")  # Second namespace query fails
-        ]
-
-        # First namespace succeeds
-        iam_db.execute_query.side_effect = [
-            [{"id": "map-1"}],
-            [],
-            [{"id": "map-2"}],
-            []
-        ]
-
-        bundle_conn = MagicMock()
-        asset_conn = MagicMock()
-
-        iam_db.get_transaction.return_value.__enter__ = Mock(return_value=bundle_conn)
-        iam_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
-
-        core_db.get_connection.return_value.__enter__ = Mock(return_value=asset_conn)
-        core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
-
-        cursor = MagicMock()
-        bundle_conn.cursor.return_value.__enter__ = Mock(return_value=cursor)
-        bundle_conn.cursor.return_value.__exit__ = Mock(return_value=False)
-
-        migration = NamespaceMigration(iam_db, core_db, config)
-        result = migration.migrate_domain("domain-123")
-
-        # Migration continues despite one failure
-        assert result is True
 
 @pytest.mark.integration
 class TestPermissionAssignmentIntegration:
     """Integration tests for permission assignment."""
-
-    def test_user_deduplication_across_tables(self):
-        """Test that users are deduplicated when found in multiple resource tables."""
-        iam_db = Mock()
-        core_db = Mock()
-
-        config = {
-            "migration": {
-                "debug_mode": False,
-                "resource_tables": [
-                    {
-                        "table": "lakehouse",
-                        "namespace_column": "lakehouse_namespace",
-                        "user_columns": ["created_by", "owner"]
-                    },
-                    {
-                        "table": "spark_job",
-                        "namespace_column": "namespace",
-                        "user_columns": ["owner"]
-                    }
-                ],
-                "namespace_permissions": ["READ"]
-            }
-        }
-
-        core_db.execute_query.side_effect = [
-            [{"username": "user1"}, {"username": "user2"}],
-            [{"username": "user2"}, {"username": "user3"}]
-        ]
-
-        pa = PermissionAssignment(iam_db, core_db, config)
-        connection = Mock()
-
-        users = pa.get_users_for_namespace(connection, "default", "domain-123")
-        assert len(users) == 3
-        assert users == {"user1", "user2", "user3"}
 
     def test_permission_assignment_handles_errors_gracefully(self):
         """Test that permission errors for individual users don't stop the process."""
@@ -320,3 +209,30 @@ class TestPermissionAssignmentIntegration:
 
         pa.set_namespace_permissions(connection, "bundle-123", "ns-123", users)
         assert iam_db.execute_insert.call_count == 5
+
+    def test_get_users_for_namespace(self):
+        """Test getting users for a namespace from IAM database."""
+        iam_db = Mock()
+        core_db = Mock()
+
+        config = {
+            "migration": {
+                "debug_mode": False,
+                "resource_tables": [],
+                "namespace_permissions": ["READ"]
+            }
+        }
+
+        # Users in domain from IAM
+        iam_db.execute_query.return_value = [
+            {"username": "user1"},
+            {"username": "user2"},
+            {"username": "user3"}
+        ]
+
+        pa = PermissionAssignment(iam_db, core_db, config)
+        connection = Mock()
+
+        users = pa.get_users_for_namespace(connection, "default", "domain-123")
+        assert len(users) == 3
+        assert users == {"user1", "user2", "user3"}

@@ -34,7 +34,7 @@ def sample_config():
             "dry_run": False,
             "duplicate_bundle_action": "FAIL",
             "namespace_permissions": ["READ", "WRITE"],
-            "domains": ["domain-123"],
+            "domains": [{"domain_id": "domain-123", "owner_id": "user-123", "owner_type": "USER"}],
             "resource_tables": [
                 {
                     "table": "lakehouse",
@@ -80,31 +80,6 @@ class TestGetNamespaceMappingId:
             migration.get_namespace_mapping_id(mock_connection, "domain-123", "default")
 
         assert "Namespace mapping not found" in str(exc_info.value)
-
-
-class TestGetDomainOwner:
-    """Test get_domain_owner method."""
-
-    def test_get_domain_owner_success(self, migration, mock_core_db):
-        """Test successfully getting domain owner."""
-        mock_connection = Mock()
-        mock_core_db.execute_query.return_value = [{"created_by": "user-123"}]
-
-        owner_id, owner_type = migration.get_domain_owner(mock_connection, "domain-123")
-
-        assert owner_id == "user-123"
-        assert owner_type == "USER"
-
-    def test_get_domain_owner_domain_not_found(self, migration, mock_core_db):
-        """Test error when domain doesn't exist."""
-        mock_connection = Mock()
-        mock_core_db.execute_query.return_value = []
-
-        with pytest.raises(ValueError) as exc_info:
-            migration.get_domain_owner(mock_connection, "domain-123")
-
-        assert "Domain" in str(exc_info.value)
-        assert "not found" in str(exc_info.value)
 
 
 class TestGetOrCreateNamespaceBundle:
@@ -173,35 +148,6 @@ class TestGetOrCreateNamespaceBundle:
 
         mock_connection.cursor.assert_not_called()
 
-    def test_update_mode_duplicate_asset_error(self, migration, mock_iam_db):
-        """Test that UPDATE mode raises error when namespace asset already exists in bundle."""
-        mock_connection = Mock()
-
-        mock_iam_db.execute_query.return_value = [{"exists": 1}]
-
-        with pytest.raises(ValueError) as exc_info:
-            migration.add_namespace_asset_to_bundle(
-                mock_connection, "bundle-123", "namespace-456", validate_bundle_uniqueness=True
-            )
-
-        assert "already exists" in str(exc_info.value)
-        assert "Cannot add duplicate namespace asset" in str(exc_info.value)
-
-    def test_update_mode_add_new_asset_success(self, migration, mock_iam_db):
-        """Test that UPDATE mode successfully adds new namespace asset when it doesn't exist."""
-        mock_connection = Mock()
-        mock_cursor = MagicMock()
-        mock_connection.cursor.return_value.__enter__ = Mock(return_value=mock_cursor)
-        mock_connection.cursor.return_value.__exit__ = Mock(return_value=False)
-
-        mock_iam_db.execute_query.return_value = []
-
-        migration.add_namespace_asset_to_bundle(
-            mock_connection, "bundle-123", "namespace-456", validate_bundle_uniqueness=True
-        )
-
-        mock_cursor.execute.assert_called_once()
-
     def test_existing_bundle_overwrite_mode(self, migration, mock_iam_db):
         """Test OVERWRITE mode when bundle already exists."""
         mock_connection = Mock()
@@ -240,6 +186,59 @@ class TestGetOrCreateNamespaceBundle:
         query_call_args = mock_iam_db.execute_query.call_args[0]
         assert "namespace-domain-123-my_namespace" in query_call_args[2]
         assert bundle_existed is False
+
+
+class TestAddNamespaceAssetToBundle:
+    """Test add_namespace_asset_to_bundle method."""
+
+    def test_add_new_asset_success(self, migration, mock_iam_db):
+        """Test successfully adding a new namespace asset to bundle."""
+        mock_connection = Mock()
+        mock_cursor = MagicMock()
+        mock_connection.cursor.return_value.__enter__ = Mock(return_value=mock_cursor)
+        mock_connection.cursor.return_value.__exit__ = Mock(return_value=False)
+
+        mock_iam_db.execute_query.return_value = []
+
+        migration.add_namespace_asset_to_bundle(
+            mock_connection, "bundle-123", "namespace-456",
+            "domain-123", "default", validate_bundle_uniqueness=False
+        )
+
+        mock_cursor.execute.assert_called_once()
+
+    def test_update_mode_duplicate_asset_error(self, migration, mock_iam_db):
+        """Test that UPDATE mode raises error when namespace asset already exists in a different bundle."""
+        mock_connection = Mock()
+
+        # Asset exists in a different bundle
+        mock_iam_db.execute_query.return_value = [{"name": "namespace-other-domain-other"}]
+
+        with pytest.raises(ValueError) as exc_info:
+            migration.add_namespace_asset_to_bundle(
+                mock_connection, "bundle-123", "namespace-456",
+                "domain-123", "default", validate_bundle_uniqueness=True
+            )
+
+        assert "already exists" in str(exc_info.value)
+        assert "Cannot add duplicate namespace asset" in str(exc_info.value)
+
+    def test_update_mode_same_bundle_no_error(self, migration, mock_iam_db):
+        """Test that UPDATE mode does not raise error when asset exists in the same bundle."""
+        mock_connection = Mock()
+        mock_cursor = MagicMock()
+        mock_connection.cursor.return_value.__enter__ = Mock(return_value=mock_cursor)
+        mock_connection.cursor.return_value.__exit__ = Mock(return_value=False)
+
+        # Asset exists in the expected bundle (same namespace-domain combination)
+        mock_iam_db.execute_query.return_value = [{"name": "namespace-domain-123-default"}]
+
+        migration.add_namespace_asset_to_bundle(
+            mock_connection, "bundle-123", "namespace-456",
+            "domain-123", "default", validate_bundle_uniqueness=True
+        )
+
+        mock_cursor.execute.assert_called_once()
 
 
 class TestGetNamespacesForDomain:
@@ -285,17 +284,17 @@ class TestMigrateDomain:
         mock_core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
         mock_core_db.execute_query.side_effect = [
-            [{"created_by": "user-123"}],
             [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],
-            []  # get_users_for_namespace (from resource tables)
         ]
 
         mock_iam_db.execute_query.side_effect = [
             [{"id": "mapping-123"}],  # get_namespace_mapping_id
-            []  # check if bundle exists
+            [],  # check if bundle exists
+            [{"username": "user1"}],  # get_users_for_namespace
         ]
 
-        result = migration.migrate_domain("domain-123")
+        domain_config = {"domain_id": "domain-123", "owner_id": "user-123", "owner_type": "USER"}
+        result = migration.migrate_domain(domain_config)
 
         assert result is True
 
@@ -311,11 +310,11 @@ class TestMigrateDomain:
         mock_core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
         mock_core_db.execute_query.side_effect = [
-            [{"created_by": "user-123"}],
-            []
+            []  # No namespaces
         ]
 
-        result = migration.migrate_domain("domain-123")
+        domain_config = {"domain_id": "domain-123", "owner_id": "user-123", "owner_type": "USER"}
+        result = migration.migrate_domain(domain_config)
 
         assert result is True
 
@@ -333,7 +332,8 @@ class TestMigrateDomain:
         # Simulate error
         mock_core_db.execute_query.side_effect = Exception("Database error")
 
-        result = migration.migrate_domain("domain-123")
+        domain_config = {"domain_id": "domain-123", "owner_id": "user-123", "owner_type": "USER"}
+        result = migration.migrate_domain(domain_config)
 
         assert result is False
 
@@ -351,16 +351,16 @@ class TestMigrateDomain:
         mock_core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
         mock_core_db.execute_query.side_effect = [
-            [{"created_by": "user-123"}],  # get_domain_owner
             [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}]  # get_namespaces
         ]
 
         mock_iam_db.execute_query.side_effect = [
-            [{"id": "mapping-123"}],
-            [{"id": "bundle-123"}]
+            [{"id": "mapping-123"}],  # get_namespace_mapping_id
+            [{"id": "bundle-123"}]  # bundle exists
         ]
 
-        result = migration.migrate_domain("domain-123")
+        domain_config = {"domain_id": "domain-123", "owner_id": "user-123", "owner_type": "USER"}
+        result = migration.migrate_domain(domain_config)
 
         assert result is True
 
@@ -370,7 +370,11 @@ class TestRunMigration:
 
     def test_run_migration_multiple_domains(self, migration, mock_iam_db, mock_core_db):
         """Test running migration for multiple domains."""
-        migration.migration_config["domains"] = ["domain-1", "domain-2", "domain-3"]
+        migration.migration_config["domains"] = [
+            {"domain_id": "domain-1", "owner_id": "user-1"},
+            {"domain_id": "domain-2", "owner_id": "user-2"},
+            {"domain_id": "domain-3", "owner_id": "user-3"}
+        ]
 
         with patch.object(migration, 'migrate_domain', return_value=True) as mock_migrate:
             result = migration.run_migration()
@@ -380,25 +384,14 @@ class TestRunMigration:
 
     def test_run_migration_with_failures(self, migration, mock_iam_db, mock_core_db):
         """Test migration when some domains fail."""
-        migration.migration_config["domains"] = ["domain-1", "domain-2", "domain-3"]
+        migration.migration_config["domains"] = [
+            {"domain_id": "domain-1", "owner_id": "user-1"},
+            {"domain_id": "domain-2", "owner_id": "user-2"},
+            {"domain_id": "domain-3", "owner_id": "user-3"}
+        ]
 
         with patch.object(migration, 'migrate_domain', side_effect=[True, False, True]) as mock_migrate:
             result = migration.run_migration()
 
             assert result is False
             assert mock_migrate.call_count == 3
-
-    def test_run_migration_domain_objects(self, migration, mock_iam_db, mock_core_db):
-        """Test migration with domain objects instead of strings."""
-        migration.migration_config["domains"] = [
-            {"domain_id": "domain-1"},
-            {"domain_id": "domain-2"}
-        ]
-
-        with patch.object(migration, 'migrate_domain', return_value=True) as mock_migrate:
-            result = migration.run_migration()
-
-            assert result is True
-            assert mock_migrate.call_count == 2
-            mock_migrate.assert_any_call("domain-1")
-            mock_migrate.assert_any_call("domain-2")

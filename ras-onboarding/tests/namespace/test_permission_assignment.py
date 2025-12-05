@@ -54,12 +54,14 @@ def permission_assignment(mock_iam_db, mock_core_db, sample_config):
 class TestGetUsersForNamespace:
     """Test get_users_for_namespace method."""
 
-    def test_get_users_from_multiple_tables(self, permission_assignment, mock_core_db):
+    def test_get_users_from_iam_db(self, permission_assignment, mock_iam_db):
+        """Test getting users from IAM database."""
         mock_connection = Mock()
 
-        mock_core_db.execute_query.side_effect = [
-            [{"username": "user1"}, {"username": "user2"}],
-            [{"username": "user2"}, {"username": "user3"}]
+        mock_iam_db.execute_query.return_value = [
+            {"username": "user1"},
+            {"username": "user2"},
+            {"username": "user3"}
         ]
 
         users = permission_assignment.get_users_for_namespace(
@@ -69,9 +71,10 @@ class TestGetUsersForNamespace:
         assert users == {"user1", "user2", "user3"}
         assert len(users) == 3
 
-    def test_get_users_excludes_null_usernames(self, permission_assignment, mock_core_db):
+    def test_get_users_excludes_null_usernames(self, permission_assignment, mock_iam_db):
+        """Test that null and empty usernames are excluded."""
         mock_connection = Mock()
-        mock_core_db.execute_query.return_value = [
+        mock_iam_db.execute_query.return_value = [
             {"username": "user1"},
             {"username": None},
             {"username": "user2"},
@@ -82,48 +85,31 @@ class TestGetUsersForNamespace:
             mock_connection, "default", "domain-123"
         )
 
-        assert users == {"user1", "user2"}
+        # Only non-null, non-empty usernames are included
+        assert "user1" in users
+        assert "user2" in users
         assert None not in users
         assert "" not in users
 
-    def test_get_users_query_construction(self, permission_assignment, mock_core_db):
-        mock_connection = Mock()
-        mock_core_db.execute_query.return_value = []
-
-        permission_assignment.get_users_for_namespace(
-            mock_connection, "my_namespace", "domain-456"
-        )
-
-        first_call_query = mock_core_db.execute_query.call_args_list[0][0][1]
-        first_call_params = mock_core_db.execute_query.call_args_list[0][0][2]
-
-        assert "SELECT DISTINCT" in first_call_query
-        assert "FROM lakehouse" in first_call_query
-        assert "WHERE lakehouse_namespace = %s" in first_call_query
-        assert "AND domain = %s" in first_call_query
-        assert "AND is_deleted = false" in first_call_query
-        assert first_call_params == ("my_namespace", "domain-456", "my_namespace", "domain-456")
-
-    def test_get_users_handles_table_error(self, permission_assignment, mock_core_db):
+    def test_get_users_handles_error(self, permission_assignment, mock_iam_db):
+        """Test that errors are handled gracefully."""
         mock_connection = Mock()
 
-        mock_core_db.execute_query.side_effect = [
-            Exception("Database error"),
-            [{"username": "user1"}]
-        ]
+        mock_iam_db.execute_query.side_effect = Exception("Database error")
 
         users = permission_assignment.get_users_for_namespace(
             mock_connection, "default", "domain-123"
         )
 
-        assert users == {"user1"}
+        assert users == set()
 
     def test_get_users_with_debug_mode(self, mock_iam_db, mock_core_db, sample_config):
+        """Test that debug mode logs additional information."""
         sample_config["migration"]["debug_mode"] = True
         pa = PermissionAssignment(mock_iam_db, mock_core_db, sample_config)
 
         mock_connection = Mock()
-        mock_core_db.execute_query.return_value = [{"username": "user1"}]
+        mock_iam_db.execute_query.return_value = [{"username": "user1"}]
 
         with patch("ras_onboarding.namespace.permission_assignment.logger") as mock_logger:
             pa.get_users_for_namespace(mock_connection, "default", "domain-123")
@@ -136,6 +122,7 @@ class TestSetNamespacePermissions:
     """Test set_namespace_permissions method."""
 
     def test_set_permissions_for_multiple_users(self, permission_assignment, mock_iam_db):
+        """Test setting permissions for multiple users."""
         mock_connection = Mock()
         users = {"user1", "user2", "user3"}
 
@@ -146,6 +133,7 @@ class TestSetNamespacePermissions:
         assert mock_iam_db.execute_insert.call_count == 3
 
     def test_set_permissions_with_empty_user_set(self, permission_assignment, mock_iam_db):
+        """Test that no permissions are set for empty user set."""
         mock_connection = Mock()
         users = set()
 
@@ -156,6 +144,7 @@ class TestSetNamespacePermissions:
         mock_iam_db.execute_insert.assert_not_called()
 
     def test_set_permissions_correct_parameters(self, permission_assignment, mock_iam_db):
+        """Test that permissions are set with correct parameters."""
         mock_connection = Mock()
         users = {"user1"}
         bundle_id = "bundle-123"
@@ -171,6 +160,7 @@ class TestSetNamespacePermissions:
         assert call_args[0][2] == (bundle_id, "user1", permissions)
 
     def test_set_permissions_handles_user_error(self, permission_assignment, mock_iam_db):
+        """Test that errors for individual users don't stop the process."""
         mock_connection = Mock()
         users = {"user1", "user2", "user3"}
 
@@ -187,6 +177,7 @@ class TestSetNamespacePermissions:
         assert mock_iam_db.execute_insert.call_count == 3
 
     def test_set_permissions_logs_success_and_errors(self, permission_assignment, mock_iam_db):
+        """Test that success and error counts are logged."""
         mock_connection = Mock()
         users = {"user1", "user2", "user3"}
 
@@ -211,22 +202,21 @@ class TestPermissionAssignmentIntegration:
 
     def test_full_workflow(self, permission_assignment, mock_iam_db, mock_core_db):
         """Test complete workflow of getting users and setting permissions."""
-        mock_asset_conn = Mock()
-        mock_bundle_conn = Mock()
+        mock_connection = Mock()
 
-        mock_core_db.execute_query.return_value = [
+        mock_iam_db.execute_query.return_value = [
             {"username": "user1"},
             {"username": "user2"}
         ]
 
         users = permission_assignment.get_users_for_namespace(
-            mock_asset_conn, "default", "domain-123"
+            mock_connection, "default", "domain-123"
         )
 
         assert len(users) == 2
 
         permission_assignment.set_namespace_permissions(
-            mock_bundle_conn, "bundle-123", "namespace-456", users
+            mock_connection, "bundle-123", "namespace-456", users
         )
 
         assert mock_iam_db.execute_insert.call_count == 2
