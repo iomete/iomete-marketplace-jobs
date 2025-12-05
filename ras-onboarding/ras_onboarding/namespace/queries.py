@@ -7,7 +7,7 @@ GET_BUNDLE_FROM_DOMAIN_AND_NAME = """
                                   SELECT id
                                   FROM bundle
                                   WHERE domain = %s
-                                    AND name = %s \
+                                    AND name = %s
                                   """
 
 SET_NAMESPACE_PERMISSION = """
@@ -20,7 +20,7 @@ SET_NAMESPACE_PERMISSION = """
                            UPDATE SET
                                permissions = EXCLUDED.permissions,
                                updated_at = current_timestamp,
-                               updated_by = 'system' \
+                               updated_by = 'system'
                            """
 
 
@@ -74,7 +74,7 @@ DELETE FROM bundle
 DELETE_BUNDLE_PERMISSIONS = """
                             DELETE
                             FROM bundle_permission
-                            WHERE bundle_id = %s \
+                            WHERE bundle_id = %s
                             """
 
 DELETE_BUNDLE_ASSETS = """

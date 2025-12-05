@@ -107,7 +107,6 @@ class NamespaceMigration:
                     existing_bundle_name = existing[0]['name']
                     expected_bundle_name = f"namespace-{domain_id}-{namespace}"
 
-                    print(">>>>>>>", existing_bundle_name, expected_bundle_name)
                     if existing_bundle_name != expected_bundle_name:
                         raise ValueError(
                             f"Namespace asset {namespace_mapping_id} already exists in bundle '{existing_bundle_name}'. "
@@ -167,30 +166,28 @@ class NamespaceMigration:
                             asset_conn, domain_id, namespace_name
                         )
 
-                        with self.bundle_db.get_transaction() as bundle_conn2:
-                            bundle_id, bundle_existed = self.get_or_create_namespace_bundle(
-                                bundle_conn2, namespace_name, domain_id,
-                                owner_id=domain_owner_id, owner_type=domain_owner_type
-                            )
+                        bundle_id, bundle_existed = self.get_or_create_namespace_bundle(
+                            bundle_conn, namespace_name, domain_id,
+                            owner_id=domain_owner_id, owner_type=domain_owner_type
+                        )
 
-                            if bundle_id is None:
-                                logger.info(f"Skipping namespace {namespace_name} - bundle already exists")
-                                continue
+                        if bundle_id is None:
+                            logger.info(f"Skipping namespace {namespace_name} - bundle already exists")
+                            continue
 
-                            self.add_namespace_asset_to_bundle(
-                                bundle_conn2, bundle_id, namespace_mapping_id,
-                                domain_id, namespace_name,
-                                validate_bundle_uniqueness=bundle_existed
-                            )
+                        self.add_namespace_asset_to_bundle(
+                            bundle_conn, bundle_id, namespace_mapping_id,
+                            domain_id, namespace_name,
+                            validate_bundle_uniqueness=bundle_existed
+                        )
 
-                            with self.asset_db.get_connection() as asset_conn2:
-                                users = self.permission_assignment.get_users_for_namespace(
-                                    asset_conn2, namespace_name, domain_id
-                                )
+                        users = self.permission_assignment.get_users_for_namespace(
+                            asset_conn, namespace_name, domain_id
+                        )
 
-                                self.permission_assignment.set_namespace_permissions(
-                                    bundle_conn2, bundle_id, namespace_mapping_id, users
-                                )
+                        self.permission_assignment.set_namespace_permissions(
+                            bundle_conn, bundle_id, namespace_mapping_id, users
+                        )
 
                 if self.migration_config.get("dry_run", False):
                     bundle_conn.rollback()
