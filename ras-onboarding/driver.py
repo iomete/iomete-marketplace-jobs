@@ -21,7 +21,6 @@ else:
     print(f"Error: Invalid MIGRATION_TYPE '{migration_type_env}'. Must be 'asset' or 'namespace'")
     sys.exit(1)
 
-# Load configuration
 config = get_config(config_path)
 
 # Dynamic app name based on migration type

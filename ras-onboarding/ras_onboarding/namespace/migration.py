@@ -144,13 +144,13 @@ class NamespaceMigration:
         if self.migration_config.get("dry_run", False):
             logger.warning("DRY RUN MODE - No changes will be committed")
         try:
-            # Use bundle_db transaction for bundle operations
-            with self.iam_db.get_transaction() as bundle_conn:
-                with self.core_db.get_connection() as asset_conn:
-                    domain_owner_id, domain_owner_type = self.get_domain_owner(bundle_conn, domain_id)
+            # Use iam_db transaction for bundle operations
+            with self.iam_db.get_transaction() as iam_conn:
+                with self.core_db.get_connection() as core_conn:
+                    domain_owner_id, domain_owner_type = self.get_domain_owner(iam_conn, domain_id)
                     logger.info(f"Using domain owner {domain_owner_id} ({domain_owner_type}) for bundle creation")
 
-                    namespaces = self.get_namespaces_for_domain(asset_conn, domain_id)
+                    namespaces = self.get_namespaces_for_domain(core_conn, domain_id)
 
                     if not namespaces:
                         logger.warning(f"No namespaces found for domain {domain_id}")
@@ -161,11 +161,11 @@ class NamespaceMigration:
                         logger.info(f"Processing namespace: {namespace_name} in domain {domain_id}")
 
                         namespace_mapping_id = self.get_namespace_mapping_id(
-                            asset_conn, domain_id, namespace_name
+                            core_conn, domain_id, namespace_name
                         )
 
                         bundle_id, bundle_existed = self.get_or_create_namespace_bundle(
-                            bundle_conn, namespace_name, domain_id,
+                            iam_conn, namespace_name, domain_id,
                             owner_id=domain_owner_id, owner_type=domain_owner_type
                         )
 
@@ -174,21 +174,21 @@ class NamespaceMigration:
                             continue
 
                         self.add_namespace_asset_to_bundle(
-                            bundle_conn, bundle_id, namespace_mapping_id,
+                            iam_conn, bundle_id, namespace_mapping_id,
                             domain_id, namespace_name,
                             validate_bundle_uniqueness=bundle_existed
                         )
 
                         users = self.permission_assignment.get_users_for_namespace(
-                            asset_conn, namespace_name, domain_id
+                            core_conn, namespace_name, domain_id
                         )
 
                         self.permission_assignment.set_namespace_permissions(
-                            bundle_conn, bundle_id, namespace_mapping_id, users
+                            iam_conn, bundle_id, namespace_mapping_id, users
                         )
 
                 if self.migration_config.get("dry_run", False):
-                    bundle_conn.rollback()
+                    iam_conn.rollback()
                     logger.info(f"DRY RUN: Changes rolled back for domain {domain_id}")
                 else:
                     logger.info(f"Successfully migrated namespace permissions for domain {domain_id}")
