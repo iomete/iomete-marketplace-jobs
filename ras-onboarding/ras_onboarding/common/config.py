@@ -7,6 +7,32 @@ from pyhocon import ConfigFactory
 
 logger = logging.getLogger(__name__)
 
+def _validate_database_config(config: dict, migration_type: str) -> None:
+    """Validate that the config has the expected database keys for the migration type."""
+    databases = config.get("databases", {})
+
+    if migration_type == "namespace":
+        required_keys = ["iam_db", "core_db"]
+        wrong_keys = ["bundle_db", "asset_db"]
+    else:
+        required_keys = ["bundle_db", "asset_db"]
+        wrong_keys = ["iam_db", "core_db"]
+
+    missing = [k for k in required_keys if k not in databases]
+    if missing:
+        raise ValueError(
+            f"Missing required database config for {migration_type} migration: {missing}. "
+            f"Expected keys: {required_keys}"
+        )
+
+    present_wrong = [k for k in wrong_keys if k in databases]
+    if present_wrong and not all(k in databases for k in required_keys):
+        raise ValueError(
+            f"Config file appears to be for a different migration type. "
+            f"Found {present_wrong} but migration_type is '{migration_type}'. "
+            f"Expected database keys: {required_keys}"
+        )
+
 
 def get_config(config_path: str = None) -> Dict[str, Any]:
     # Check MIGRATION_TYPE env var for config file selection
@@ -54,5 +80,5 @@ def get_config(config_path: str = None) -> Dict[str, Any]:
                 config["databases"]["bundle_db"][key] = (
                     int(os.environ[env]) if key == "port" else os.environ[env]
                 )
-
+    _validate_database_config(config, config_migration_type)
     return config
