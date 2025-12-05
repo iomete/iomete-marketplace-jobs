@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 def get_config(config_path: str = None) -> Dict[str, Any]:
     # Check MIGRATION_TYPE env var for config file selection
-    env_migration_type = os.environ.get("MIGRATION_TYPE", "").lower()
+    env_migration_type = os.environ.get("MIGRATION_TYPE", "asset").lower()
 
     if config_path is None:
         if env_migration_type == "namespace":
