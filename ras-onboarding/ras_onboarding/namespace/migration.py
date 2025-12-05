@@ -5,7 +5,7 @@ from ..common.database import DatabaseManager
 from ..common.logger import get_logger
 from .queries import (GET_NAMESPACE_MAPPING_ID, GET_BUNDLE_FROM_DOMAIN_AND_NAME,
                       GET_NAMESPACES_FOR_DOMAIN, CREATE_NAMESPACE_BUNDLE,
-                      GET_DOMAIN_MEMBERS, ADD_NAMESPACE_TO_BUNDLE, CHECK_NAMESPACE_IN_BUNDLE,
+                      GET_DOMAIN_OWNER, ADD_NAMESPACE_TO_BUNDLE, CHECK_NAMESPACE_IN_BUNDLE,
                       CHECK_NAMESPACE_IN_ANY_BUNDLE, DELETE_BUNDLE_PERMISSIONS,
                       DELETE_BUNDLE_ASSETS, DELETE_NAMESPACE_BUNDLE)
 from .permission_assignment import PermissionAssignment
@@ -37,7 +37,7 @@ class NamespaceMigration:
         raise ValueError(error_msg)
 
     def get_domain_owner(self, connection, domain_id: str) -> tuple[str, str]:
-        result = self.core_db.execute_query(connection, GET_DOMAIN_MEMBERS, (domain_id,))
+        result = self.core_db.execute_query(connection, GET_DOMAIN_OWNER, (domain_id,))
         if result and len(result) > 0:
             return result[0]['created_by'], 'USER'
 
@@ -180,7 +180,7 @@ class NamespaceMigration:
                         )
 
                         users = self.permission_assignment.get_users_for_namespace(
-                            core_conn, namespace_name, domain_id
+                            iam_conn, namespace_name, domain_id
                         )
 
                         self.permission_assignment.set_namespace_permissions(

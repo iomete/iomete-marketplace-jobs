@@ -4,7 +4,7 @@ from typing import Set, Dict, Any
 
 from ras_onboarding.common.database import DatabaseManager
 from ras_onboarding.common.logger import get_logger
-from ras_onboarding.namespace.queries import SET_NAMESPACE_PERMISSION
+from ras_onboarding.namespace.queries import SET_NAMESPACE_PERMISSION, GET_ALL_DOMAIN_USERS
 
 logger = get_logger(__name__)
 
@@ -20,46 +20,20 @@ class PermissionAssignment:
         self.debug_mode = self.migration_config.get("debug_mode", False)
 
     def get_users_for_namespace(self, connection, namespace: str, domain_id: str) -> Set[str]:
+        """Get all users in the domain who should have namespace permissions."""
         all_users = set()
 
-        for resource_table in self.migration_config["resource_tables"]:
-            table_name = resource_table["table"]
-            namespace_col = resource_table["namespace_column"]
-            user_columns = resource_table["user_columns"]
+        try:
+            if self.debug_mode:
+                logger.debug(f"Fetching all domain users for domain {domain_id}")
 
-            try:
-                # Build UNION query for all user columns in this table
-                union_queries = []
-                for user_col in user_columns:
-                    query = f"""
-                    SELECT DISTINCT {user_col} as username
-                    FROM {table_name}
-                    WHERE {namespace_col} = %s
-                      AND domain = %s
-                      AND is_deleted = false
-                      AND {user_col} IS NOT NULL
-                """
-                    union_queries.append(query)
+            results = self.iam_db.execute_query(connection, GET_ALL_DOMAIN_USERS, (domain_id,))
+            all_users = {r['username'] for r in results if r['username']}
 
-                # Combine all user columns with UNION
-                combined_query = " UNION ".join(union_queries)
+            logger.info(f"Found {len(all_users)} users in domain {domain_id} for namespace {namespace}")
+        except Exception as e:
+            logger.error(f"Error fetching domain users for namespace {namespace}: {e}")
 
-                if self.debug_mode:
-                    logger.debug(f"User query for {table_name}: {combined_query}")
-                    logger.debug(f"Parameters: ({namespace}, {domain_id})")
-
-                results = self.core_db.execute_query(connection, combined_query,
-                                                      (namespace, domain_id) * len(user_columns))
-                table_users = {r['username'] for r in results if r['username']}
-                all_users.update(table_users)
-
-                if table_users:
-                    logger.debug(f"Found {len(table_users)} users in {table_name} for namespace {namespace}")
-            except Exception as e:
-                logger.error(f"Error querying users from {table_name} for namespace {namespace}: {e}")
-                # Continue processing other tables
-
-        logger.info(f"Total {len(all_users)} unique users found for namespace {namespace} in domain {domain_id}")
         return all_users
 
     def set_namespace_permissions(self, connection, bundle_id: str, namespace_id: str, users: Set[str]):
