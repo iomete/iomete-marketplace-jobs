@@ -43,10 +43,9 @@ class TestNamespaceMigrationIntegration:
 
     @pytest.fixture
     def setup_migration_scenario(self, integration_config):
-        bundle_db = Mock()
-        asset_db = Mock()
-        domain_db = Mock()
-
+        iam_db = Mock()
+        core_db = Mock()
+        
         # Scenario: Domain with 3 namespaces, multiple users, some with overlapping resources
         namespaces = [
             {"id": "ns-default", "namespace": "default", "domain_id": "domain-prod-123"},
@@ -71,10 +70,10 @@ class TestNamespaceMigrationIntegration:
             {"username": "alice"}  # Alice works in default and ml
         ]
 
-        # Setup asset_db responses
+        # Setup core_db (asset) responses
         # Note: get_users_for_namespace uses UNION queries, so 1 call per table per namespace
         # We have 2 resource tables (lakehouse, spark_job) × 3 namespaces = 6 user query calls
-        asset_db.execute_query.side_effect = [
+        core_db.execute_query.side_effect = [
             [{"created_by": "admin-user"}],  # get_domain_owner
             namespaces,  # get_namespaces_for_domain
             default_users,  # users from lakehouse table (UNION query) for default namespace
@@ -85,7 +84,7 @@ class TestNamespaceMigrationIntegration:
             ml_users   # users from spark_job table (UNION query) for ml
         ]
 
-        # Setup bundle_db responses
+        # Setup iam_db (bundle) responses
         namespace_mappings_and_bundles = [
             [{"id": "map-default"}],  # mapping for default
             [],  # no existing bundle for default
@@ -94,42 +93,41 @@ class TestNamespaceMigrationIntegration:
             [{"id": "map-ml"}],  # mapping for ml
             []  # no existing bundle for ml
         ]
-        bundle_db.execute_query.side_effect = namespace_mappings_and_bundles
+        iam_db.execute_query.side_effect = namespace_mappings_and_bundles
 
-        return bundle_db, asset_db, domain_db, integration_config
+        return iam_db, core_db, integration_config
 
     def test_multi_namespace_migration(self, setup_migration_scenario):
-        bundle_db, asset_db, domain_db, config = setup_migration_scenario
+        iam_db, core_db, config = setup_migration_scenario
 
         # Setup transaction context managers
         bundle_conn = MagicMock()
         asset_conn = MagicMock()
 
-        bundle_db.get_transaction.return_value.__enter__ = Mock(return_value=bundle_conn)
-        bundle_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
+        iam_db.get_transaction.return_value.__enter__ = Mock(return_value=bundle_conn)
+        iam_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
 
-        asset_db.get_connection.return_value.__enter__ = Mock(return_value=asset_conn)
-        asset_db.get_connection.return_value.__exit__ = Mock(return_value=False)
+        core_db.get_connection.return_value.__enter__ = Mock(return_value=asset_conn)
+        core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
         cursor = MagicMock()
         bundle_conn.cursor.return_value.__enter__ = Mock(return_value=cursor)
         bundle_conn.cursor.return_value.__exit__ = Mock(return_value=False)
 
-        migration = NamespaceMigration(bundle_db, asset_db, domain_db, config)
+        migration = NamespaceMigration(iam_db, core_db, config)
         result = migration.migrate_domain("domain-prod-123")
 
         assert result is True
         assert cursor.execute.call_count == 6
-        assert bundle_db.execute_insert.call_count == 7
+        assert iam_db.execute_insert.call_count == 7
 
         bundle_conn.rollback.assert_not_called()
 
     def test_migration_dry_run_doesnt_commit(self):
         """Test that dry run mode doesn't commit changes."""
-        bundle_db = Mock()
-        asset_db = Mock()
-        domain_db = Mock()
-
+        iam_db = Mock()
+        core_db = Mock()
+        
         config = {
             "migration": {
                 "debug_mode": False,
@@ -156,13 +154,13 @@ class TestNamespaceMigrationIntegration:
         namespaces = [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}]
         users = [{"username": "user1"}]
 
-        asset_db.execute_query.side_effect = [
+        core_db.execute_query.side_effect = [
             [{"created_by": "owner-123"}],  # get_domain_owner
             namespaces,
             users
         ]
 
-        bundle_db.execute_query.side_effect = [
+        iam_db.execute_query.side_effect = [
             [{"id": "map-1"}],
             []
         ]
@@ -170,17 +168,17 @@ class TestNamespaceMigrationIntegration:
         bundle_conn = MagicMock()
         asset_conn = MagicMock()
 
-        bundle_db.get_transaction.return_value.__enter__ = Mock(return_value=bundle_conn)
-        bundle_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
+        iam_db.get_transaction.return_value.__enter__ = Mock(return_value=bundle_conn)
+        iam_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
 
-        asset_db.get_connection.return_value.__enter__ = Mock(return_value=asset_conn)
-        asset_db.get_connection.return_value.__exit__ = Mock(return_value=False)
+        core_db.get_connection.return_value.__enter__ = Mock(return_value=asset_conn)
+        core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
         cursor = MagicMock()
         bundle_conn.cursor.return_value.__enter__ = Mock(return_value=cursor)
         bundle_conn.cursor.return_value.__exit__ = Mock(return_value=False)
 
-        migration = NamespaceMigration(bundle_db, asset_db, domain_db, config)
+        migration = NamespaceMigration(iam_db, core_db, config)
         result = migration.migrate_domain("domain-123")
 
         assert result is True
@@ -188,10 +186,9 @@ class TestNamespaceMigrationIntegration:
 
     def test_migration_handles_partial_failures(self):
         """Test that migration continues when some operations fail."""
-        bundle_db = Mock()
-        asset_db = Mock()
-        domain_db = Mock()
-
+        iam_db = Mock()
+        core_db = Mock()
+        
         config = {
             "migration": {
                 "debug_mode": False,
@@ -221,7 +218,7 @@ class TestNamespaceMigrationIntegration:
         ]
 
         # One namespace has users, other fails
-        asset_db.execute_query.side_effect = [
+        core_db.execute_query.side_effect = [
             [{"created_by": "owner-123"}],  # get_domain_owner
             namespaces,
             [{"username": "user1"}],  # Users for first namespace
@@ -229,7 +226,7 @@ class TestNamespaceMigrationIntegration:
         ]
 
         # First namespace succeeds
-        bundle_db.execute_query.side_effect = [
+        iam_db.execute_query.side_effect = [
             [{"id": "map-1"}],
             [],
             [{"id": "map-2"}],
@@ -239,17 +236,17 @@ class TestNamespaceMigrationIntegration:
         bundle_conn = MagicMock()
         asset_conn = MagicMock()
 
-        bundle_db.get_transaction.return_value.__enter__ = Mock(return_value=bundle_conn)
-        bundle_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
+        iam_db.get_transaction.return_value.__enter__ = Mock(return_value=bundle_conn)
+        iam_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
 
-        asset_db.get_connection.return_value.__enter__ = Mock(return_value=asset_conn)
-        asset_db.get_connection.return_value.__exit__ = Mock(return_value=False)
+        core_db.get_connection.return_value.__enter__ = Mock(return_value=asset_conn)
+        core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
         cursor = MagicMock()
         bundle_conn.cursor.return_value.__enter__ = Mock(return_value=cursor)
         bundle_conn.cursor.return_value.__exit__ = Mock(return_value=False)
 
-        migration = NamespaceMigration(bundle_db, asset_db, domain_db, config)
+        migration = NamespaceMigration(iam_db, core_db, config)
         result = migration.migrate_domain("domain-123")
 
         # Migration continues despite one failure
@@ -261,8 +258,8 @@ class TestPermissionAssignmentIntegration:
 
     def test_user_deduplication_across_tables(self):
         """Test that users are deduplicated when found in multiple resource tables."""
-        bundle_db = Mock()
-        asset_db = Mock()
+        iam_db = Mock()
+        core_db = Mock()
 
         config = {
             "migration": {
@@ -283,12 +280,12 @@ class TestPermissionAssignmentIntegration:
             }
         }
 
-        asset_db.execute_query.side_effect = [
+        core_db.execute_query.side_effect = [
             [{"username": "user1"}, {"username": "user2"}],
             [{"username": "user2"}, {"username": "user3"}]
         ]
 
-        pa = PermissionAssignment(bundle_db, asset_db, config)
+        pa = PermissionAssignment(iam_db, core_db, config)
         connection = Mock()
 
         users = pa.get_users_for_namespace(connection, "default", "domain-123")
@@ -297,8 +294,8 @@ class TestPermissionAssignmentIntegration:
 
     def test_permission_assignment_handles_errors_gracefully(self):
         """Test that permission errors for individual users don't stop the process."""
-        bundle_db = Mock()
-        asset_db = Mock()
+        iam_db = Mock()
+        core_db = Mock()
 
         config = {
             "migration": {
@@ -309,7 +306,7 @@ class TestPermissionAssignmentIntegration:
         }
 
         # Simulate errors for some users
-        bundle_db.execute_insert.side_effect = [
+        iam_db.execute_insert.side_effect = [
             None,  # user1 succeeds
             Exception("Permission denied"),  # user2 fails
             None,  # user3 succeeds
@@ -317,9 +314,9 @@ class TestPermissionAssignmentIntegration:
             None   # user5 succeeds
         ]
 
-        pa = PermissionAssignment(bundle_db, asset_db, config)
+        pa = PermissionAssignment(iam_db, core_db, config)
         connection = Mock()
         users = {"user1", "user2", "user3", "user4", "user5"}
 
         pa.set_namespace_permissions(connection, "bundle-123", "ns-123", users)
-        assert bundle_db.execute_insert.call_count == 5
+        assert iam_db.execute_insert.call_count == 5

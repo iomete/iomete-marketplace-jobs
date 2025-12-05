@@ -12,9 +12,9 @@ logger = get_logger(__name__)
 class PermissionAssignment:
     """Handles permission assignment for namespace resources."""
 
-    def __init__(self, bundle_db: DatabaseManager, asset_db: DatabaseManager, config: Dict[str, Any]):
-        self.bundle_db = bundle_db
-        self.asset_db = asset_db
+    def __init__(self, iam_db: DatabaseManager, core_db: DatabaseManager, config: Dict[str, Any]):
+        self.iam_db = iam_db
+        self.core_db = core_db
         self.config = config
         self.migration_config = config["migration"]
         self.debug_mode = self.migration_config.get("debug_mode", False)
@@ -48,7 +48,7 @@ class PermissionAssignment:
                     logger.debug(f"User query for {table_name}: {combined_query}")
                     logger.debug(f"Parameters: ({namespace}, {domain_id})")
 
-                results = self.asset_db.execute_query(connection, combined_query,
+                results = self.core_db.execute_query(connection, combined_query,
                                                       (namespace, domain_id) * len(user_columns))
                 table_users = {r['username'] for r in results if r['username']}
                 all_users.update(table_users)
@@ -76,7 +76,7 @@ class PermissionAssignment:
                 if self.debug_mode:
                     logger.debug(f"Granting {permissions} to user {username} on namespace {namespace_id}")
 
-                self.bundle_db.execute_insert(connection, SET_NAMESPACE_PERMISSION,
+                self.iam_db.execute_insert(connection, SET_NAMESPACE_PERMISSION,
                                               (bundle_id, username, permissions))
                 success_count += 1
             except Exception as e:

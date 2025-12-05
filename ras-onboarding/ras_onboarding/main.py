@@ -15,22 +15,36 @@ def start_job(spark, config):
     logger.info(f"Starting RAS Onboarding Migration Job - Type: {migration_type}")
 
     try:
-        bundle_db_conf = config["databases"]["bundle_db"]
-        bundle_db = DatabaseManager(bundle_db_conf, debug_mode)
-        if not bundle_db.test_connection():
-            raise Exception("Failed to connect to bundle database")
-        logger.info("Bundle DB connection successful")
-
-        asset_db_conf = config["databases"]["asset_db"]
-        asset_db = DatabaseManager(asset_db_conf, debug_mode)
-        if not asset_db.test_connection():
-            raise Exception("Failed to connect to asset database")
-        logger.info("Asset DB connection successful")
-
         if migration_type == "namespace":
+            # Namespace migration uses iam_db and core_db
+            iam_db_conf = config["databases"]["iam_db"]
+            iam_db = DatabaseManager(iam_db_conf, debug_mode)
+            if not iam_db.test_connection():
+                raise Exception("Failed to connect to IAM database")
+            logger.info("IAM DB connection successful")
+
+            core_db_conf = config["databases"]["core_db"]
+            core_db = DatabaseManager(core_db_conf, debug_mode)
+            if not core_db.test_connection():
+                raise Exception("Failed to connect to core database")
+            logger.info("Core DB connection successful")
+
             logger.info("Running namespace migration (resource-based permissions)")
-            migration = NamespaceMigration(bundle_db, asset_db, bundle_db, config)
+            migration = NamespaceMigration(iam_db, core_db, config)
         else:
+            # Asset migration uses bundle_db and asset_db
+            bundle_db_conf = config["databases"]["bundle_db"]
+            bundle_db = DatabaseManager(bundle_db_conf, debug_mode)
+            if not bundle_db.test_connection():
+                raise Exception("Failed to connect to bundle database")
+            logger.info("Bundle DB connection successful")
+
+            asset_db_conf = config["databases"]["asset_db"]
+            asset_db = DatabaseManager(asset_db_conf, debug_mode)
+            if not asset_db.test_connection():
+                raise Exception("Failed to connect to asset database")
+            logger.info("Asset DB connection successful")
+
             logger.info("Running asset migration (role-based permissions)")
             migration = AssetOnboardingMigration(bundle_db, asset_db, config)
 

@@ -14,20 +14,18 @@ logger = get_logger(__name__)
 
 
 class NamespaceMigration:
-    def __init__(self, bundle_db: DatabaseManager, asset_db: DatabaseManager, domain_db: DatabaseManager,
-                 config: Dict[str, Any]):
-        self.bundle_db = bundle_db
-        self.asset_db = asset_db
-        self.domain_db = domain_db
+    def __init__(self, iam_db: DatabaseManager, core_db: DatabaseManager, config: Dict[str, Any]):
+        self.iam_db = iam_db
+        self.core_db = core_db
         self.config = config
         self.migration_config = config["migration"]
         self.namespace_config = config["namespace_config"]
         self.debug_mode = self.migration_config.get("debug_mode", False)
-        self.permission_assignment = PermissionAssignment(bundle_db, asset_db, config)
+        self.permission_assignment = PermissionAssignment(iam_db, core_db, config)
 
     def get_namespace_mapping_id(self, connection, domain_id: str, namespace: str) -> str:
         query = GET_NAMESPACE_MAPPING_ID
-        results = self.bundle_db.execute_query(connection, query, (domain_id, namespace))
+        results = self.iam_db.execute_query(connection, query, (domain_id, namespace))
 
         if results:
             mapping_id = results[0]['id']
@@ -39,7 +37,7 @@ class NamespaceMigration:
         raise ValueError(error_msg)
 
     def get_domain_owner(self, connection, domain_id: str) -> tuple[str, str]:
-        result = self.asset_db.execute_query(connection, GET_DOMAIN_MEMBERS, (domain_id,))
+        result = self.core_db.execute_query(connection, GET_DOMAIN_MEMBERS, (domain_id,))
         if result and len(result) > 0:
             return result[0]['created_by'], 'USER'
 
@@ -50,7 +48,7 @@ class NamespaceMigration:
         bundle_name = f"namespace-{domain_id}-{namespace}"
         check_query = GET_BUNDLE_FROM_DOMAIN_AND_NAME
 
-        results = self.bundle_db.execute_query(connection, check_query, (domain_id, bundle_name))
+        results = self.iam_db.execute_query(connection, check_query, (domain_id, bundle_name))
 
         if results:
             bundle_id = results[0]['id']
@@ -100,7 +98,7 @@ class NamespaceMigration:
         try:
             # Check if asset already exists in a different bundle when in UPDATE mode
             if validate_bundle_uniqueness:
-                existing = self.bundle_db.execute_query(
+                existing = self.iam_db.execute_query(
                     connection, CHECK_NAMESPACE_IN_ANY_BUNDLE, (namespace_mapping_id,)
                 )
                 if existing:
@@ -136,7 +134,7 @@ class NamespaceMigration:
             logger.debug(f"Namespace query: {query}")
             logger.debug(f"Parameters: ({domain_id},)")
 
-        results = self.asset_db.execute_query(connection, query, (domain_id,))
+        results = self.core_db.execute_query(connection, query, (domain_id,))
         logger.info(f"Found {len(results)} namespaces for domain {domain_id}")
         return results
 
@@ -147,8 +145,8 @@ class NamespaceMigration:
             logger.warning("DRY RUN MODE - No changes will be committed")
         try:
             # Use bundle_db transaction for bundle operations
-            with self.bundle_db.get_transaction() as bundle_conn:
-                with self.asset_db.get_connection() as asset_conn:
+            with self.iam_db.get_transaction() as bundle_conn:
+                with self.core_db.get_connection() as asset_conn:
                     domain_owner_id, domain_owner_type = self.get_domain_owner(bundle_conn, domain_id)
                     logger.info(f"Using domain owner {domain_owner_id} ({domain_owner_type}) for bundle creation")
 

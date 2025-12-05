@@ -94,7 +94,7 @@ Main Application File: local:///app/driver.py
 {
   # Database configuration - will be overridden by environment variables
   databases: {
-    bundle_db: {
+    iam_db: {
       host: "your-db-host"
       port: 5432
       name: "iomete_iam_db"
@@ -102,8 +102,8 @@ Main Application File: local:///app/driver.py
       password: ${?DB_PASSWORD}
     }
 
-    # asset database
-    asset_db: {
+    # core database
+    core_db: {
       host: "your-db-host"
       port: 5432
       name: "iomete_core_db"
@@ -120,7 +120,7 @@ Main Application File: local:///app/driver.py
             domain_id: "production"
             owner_id: "admin_user"
             owner_type: "USER"  # USER or GROUP
-            asset_types: ["COMPUTE", "SPARK_JOB"]  # Multiple asset types - all use same asset_db
+            asset_types: ["COMPUTE", "SPARK_JOB"]  # Multiple asset types - all use same core_db
         }
         {
             domain_id: "staging"
@@ -157,7 +157,7 @@ Main Application File: local:///app/driver.py
 
   # INTERNAL USE ONLY: Do not edit or change the below CONFIGS WITHOUT CHECKING WITH SUPPORT FIRST
   # Asset type mappings - defines how to query assets for each type
-  # All asset types use the same asset_db connection but different tables
+  # All asset types use the same core_db connection but different tables
   asset_mappings: {
       COMPUTE: {
           table: "lakehouse"
@@ -712,7 +712,7 @@ WARNING: All asset types configured with RESET - this will clear the entire bund
 
 ### Database Issues
 - **DB connection failures** → Check DB creds, test via `psql`
-- **Single asset DB connection** → Verify `asset_db` configuration (not per-asset databases)
+- **Single core DB connection** → Verify `core_db` configuration (not per-asset databases)
 - **Table not found errors** → Confirm table names in `asset_mappings` match actual database schema
 
 ### Configuration Issues
