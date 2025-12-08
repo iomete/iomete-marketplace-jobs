@@ -221,15 +221,18 @@ Main Application File: local:///app/driver.py
     migration_type: "asset"
     domains: [
         {
-            domain_id: "production"
-            owner_id: "admin_user"
-            owner_type: "USER"
-            asset_types: ["COMPUTE", "SPARK_JOB"]
+            domain_id: "development"
+            owner_id: "dev_team"
+            owner_type: "GROUP"
+            asset_types: ["SPARK_JOB"]  # Single asset type (also supported)
         }
+        # Add more domains as needed
     ]
+
+    # Transaction settings
     batch_size: 1000
     retry_attempts: 3
-    
+
     # Validation settings
     validate_before_migration: true
     dry_run: false
