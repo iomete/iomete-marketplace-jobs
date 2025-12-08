@@ -6,7 +6,7 @@ USER root
 RUN pip install poetry --break-system-packages
 
 RUN apt-get update && \
-    apt-get install -y git && \
+    apt-get install -y git build-essential && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR "/app"
