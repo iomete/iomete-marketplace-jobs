@@ -24,7 +24,7 @@ class NamespaceMigration:
 
     def get_namespace_mapping_id(self, connection, domain_id: str, namespace: str) -> str:
         query = GET_NAMESPACE_MAPPING_ID
-        results = self.iam_db.execute_query(connection, query, (domain_id, namespace))
+        results = self.core_db.execute_query(connection, query, (domain_id, namespace))
 
         if results:
             mapping_id = results[0]['id']
