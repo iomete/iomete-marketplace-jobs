@@ -17,6 +17,7 @@ class PermissionAssignment:
         self.core_db = core_db
         self.config = config
         self.migration_config = config["migration"]
+        self.asset_mappings = config.get("asset_mappings", {})
         self.debug_mode = self.migration_config.get("debug_mode", False)
 
     def get_users_for_namespace(self, connection, namespace: str, domain_id: str) -> Set[str]:
@@ -41,7 +42,8 @@ class PermissionAssignment:
             logger.info(f"No users to grant permissions for namespace {namespace_id}")
             return
 
-        permissions = self.migration_config["namespace_permissions"]
+        namespace_config = self.asset_mappings.get("NAMESPACE", {})
+        permissions = namespace_config.get("permissions", ["USE"])
         success_count = 0
         error_count = 0
 

@@ -85,7 +85,6 @@ def full_migration_config():
             "debug_mode": False,
             "dry_run": False,
             "duplicate_bundle_action": "FAIL",
-            "namespace_permissions": ["READ", "WRITE"],
             "domains": ["domain-123"],
             "resource_tables": [
                 {
@@ -104,6 +103,11 @@ def full_migration_config():
                     "user_columns": ["created_by", "updated_by"]
                 }
             ]
+        },
+        "asset_mappings": {
+            "NAMESPACE": {
+                "permissions": ["USE"]
+            }
         },
         "namespace_config": {
             "table": "lakehouse_namespace",

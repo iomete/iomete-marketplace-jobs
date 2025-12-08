@@ -33,7 +33,6 @@ def sample_config():
             "debug_mode": False,
             "dry_run": False,
             "duplicate_bundle_action": "FAIL",
-            "namespace_permissions": ["READ", "WRITE"],
             "domains": [{"domain_id": "domain-123", "owner_id": "user-123", "owner_type": "USER"}],
             "resource_tables": [
                 {
@@ -42,6 +41,11 @@ def sample_config():
                     "user_columns": ["created_by", "updated_by"]
                 }
             ]
+        },
+        "asset_mappings": {
+            "NAMESPACE": {
+                "permissions": ["USE"]
+            }
         },
         "namespace_config": {
             "table": "lakehouse_namespace",

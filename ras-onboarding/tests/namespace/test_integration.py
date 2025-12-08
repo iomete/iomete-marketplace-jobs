@@ -17,7 +17,6 @@ class TestNamespaceMigrationIntegration:
                 "debug_mode": True,
                 "dry_run": False,
                 "duplicate_bundle_action": "OVERWRITE",
-                "namespace_permissions": ["READ", "WRITE", "EXECUTE"],
                 "domains": [
                     {"domain_id": "domain-prod-123", "owner_id": "admin-user", "owner_type": "USER"},
                     {"domain_id": "domain-dev-456", "owner_id": "dev-user", "owner_type": "USER"}
@@ -34,6 +33,11 @@ class TestNamespaceMigrationIntegration:
                         "user_columns": ["created_by", "owner"]
                     }
                 ]
+            },
+            "asset_mappings": {
+                "NAMESPACE": {
+                    "permissions": ["USE"]
+                }
             },
             "namespace_config": {
                 "table": "lakehouse_namespace",
@@ -125,7 +129,6 @@ class TestNamespaceMigrationIntegration:
                 "debug_mode": False,
                 "dry_run": True,  # Dry run enabled
                 "duplicate_bundle_action": "FAIL",
-                "namespace_permissions": ["READ"],
                 "domains": [{"domain_id": "domain-123", "owner_id": "owner-123", "owner_type": "USER"}],
                 "resource_tables": [
                     {
@@ -134,6 +137,11 @@ class TestNamespaceMigrationIntegration:
                         "user_columns": ["owner"]
                     }
                 ]
+            },
+            "asset_mappings": {
+                "NAMESPACE": {
+                    "permissions": ["USE"]
+                }
             },
             "namespace_config": {
                 "table": "lakehouse_namespace",
@@ -189,8 +197,12 @@ class TestPermissionAssignmentIntegration:
         config = {
             "migration": {
                 "debug_mode": False,
-                "namespace_permissions": ["READ", "WRITE"],
                 "resource_tables": []
+            },
+            "asset_mappings": {
+                "NAMESPACE": {
+                    "permissions": ["USE"]
+                }
             }
         }
 
@@ -218,8 +230,12 @@ class TestPermissionAssignmentIntegration:
         config = {
             "migration": {
                 "debug_mode": False,
-                "resource_tables": [],
-                "namespace_permissions": ["READ"]
+                "resource_tables": []
+            },
+            "asset_mappings": {
+                "NAMESPACE": {
+                    "permissions": ["USE"]
+                }
             }
         }
 

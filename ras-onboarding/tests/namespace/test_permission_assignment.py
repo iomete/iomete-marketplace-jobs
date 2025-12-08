@@ -39,8 +39,12 @@ def sample_config():
                     "namespace_column": "namespace",
                     "user_columns": ["owner"]
                 }
-            ],
-            "namespace_permissions": ["READ", "WRITE"]
+            ]
+        },
+        "asset_mappings": {
+            "NAMESPACE": {
+                "permissions": ["USE"]
+            }
         }
     }
 
@@ -149,7 +153,7 @@ class TestSetNamespacePermissions:
         users = {"user1"}
         bundle_id = "bundle-123"
         namespace_id = "namespace-456"
-        permissions = ["READ", "WRITE"]
+        permissions = ["USE"]
 
         permission_assignment.set_namespace_permissions(
             mock_connection, bundle_id, namespace_id, users
