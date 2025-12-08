@@ -3,7 +3,7 @@ FROM iomete.azurecr.io/iomete/spark-py:3.5.5-v7
 USER root
 
 # Install poetry
-RUN pip install poetry
+RUN pip install poetry --break-system-packages
 
 WORKDIR /app
 

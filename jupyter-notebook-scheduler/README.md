@@ -9,7 +9,7 @@ A Spark job to schedule and execute Jupyter Notebooks using Papermill.
 - **Environment**: Runs as a Docker container (Spark base).
 
 ## Configuration
-The job is configured via `job_config.yaml`. See the file for details.
+The job is configured via `config.yaml`. See the file for details.
 
 ## Build
 ```bash
@@ -18,7 +18,7 @@ docker build -t jupyter-notebook-scheduler .
 
 ## Run
 ```bash
-docker run -v $(pwd)/job_config.yaml:/app/job_config.yaml \
+docker run -v $(pwd)/config.yaml:/app/config.yaml \
            -e AWS_ACCESS_KEY_ID=... \
            -e AWS_SECRET_ACCESS_KEY=... \
            jupyter-notebook-scheduler

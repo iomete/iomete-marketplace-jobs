@@ -4,9 +4,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class AppConfig:
     def __init__(self, config_path=None):
-        self.config_path = config_path or os.getenv("JOB_CONFIG_PATH", "job_config.yaml")
+        self.config_path = config_path or os.getenv("CONFIG_PATH", "/etc/config/config.yaml")
         self.config = self._load_config()
 
     def _load_config(self):
@@ -48,6 +49,7 @@ class AppConfig:
     @property
     def output_s3_path(self):
         return self.config.get("output", {}).get("s3_path")
+
 
 # Global instance
 config = AppConfig()

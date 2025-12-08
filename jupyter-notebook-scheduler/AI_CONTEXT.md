@@ -36,8 +36,8 @@ jupyter-notebook-scheduler/
 ```
 
 ## Configuration
-The job is configured via a YAML file (`job_config.yaml`) to avoid excessive environment variables.
-**Env Var**: `JOB_CONFIG_PATH` (defaults to `/app/job_config.yaml`).
+The job is configured via a YAML file (`config.yaml`) to avoid excessive environment variables.
+**Env Var**: `CONFIG_PATH` (defaults to `/etc/config/config.yaml`).
 
 **Structure**:
 ```yaml
@@ -79,6 +79,6 @@ output:
 ## History & Decisions
 - *2025-11-25*: Initial context creation.
 - *2025-11-25*: Clarified requirements: S3 output, Papermill for params, Spark environment provided.
-- *2025-11-25*: Decision to use `job_config.yaml` for configuration.
+- *2025-11-25*: Decision to use `config.yaml` for configuration.
 - *2025-11-25*: Switched to **Poetry** for dependency management.
 - *2025-11-26*: Merged implementation plan into AI Context.
