@@ -1,7 +1,5 @@
 import logging
-import os
 import tempfile
-import shutil
 import git
 import s3fs
 
