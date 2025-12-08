@@ -29,7 +29,6 @@ def get_config(config_path: str = None) -> Dict[str, Any]:
     logger.info(f"Loading configuration from: {config_path}")
     config = ConfigFactory.parse_file(config_path)
 
-    # Log configured domains and their asset types
     domains = config.get("migration", {}).get("domains", [])
     for domain in domains:
         domain_id = domain.get("domain_id", "unknown")
