@@ -1,0 +1,38 @@
+# Jupyter Notebook Scheduler Configuration
+
+# Input Configuration
+# Defines where the notebook and dependencies are located.
+input:
+  # Type of input source. Options: "git", "s3"
+  type: "git"
+  
+  # Path to the input source.
+  # For git: The repository URL (e.g., https://github.com/org/repo.git)
+  # For s3: The S3 URI (e.g., s3://my-bucket/my-project/)
+  # For manual: This can be ignored or set to the local mount path
+  path: "https://github.com/iomete/sample-notebooks.git"
+  
+  # (Optional) Git branch or tag to checkout. Default is "main" or "master".
+  branch: "main"
+  
+  # (Optional) Git token for private repositories.
+  # It is recommended to pass this via environment variable for security.
+  # token: "${GIT_TOKEN}"
+
+# Notebook Configuration
+notebook:
+  # The relative path to the main notebook file to execute.
+  main_file: "notebooks/etl_job.ipynb"
+  
+  # Parameters to inject into the notebook.
+  # These will override parameters in the notebook's "parameters" cell.
+  parameters:
+    env: "production"
+    start_date: "2023-10-27"
+    # complex_param: {"key": "value"}
+
+# Output Configuration
+output:
+  # The S3 base path where the executed notebook and artifacts will be saved.
+  # The final path will be constructed as: {s3_path}/{job_id}/{run_id}/
+  s3_path: "s3://storage/outputs/{jobId}/{runId}"

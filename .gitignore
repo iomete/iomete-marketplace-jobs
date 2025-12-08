@@ -26,3 +26,6 @@ nb-configuration.xml
 *.rej
 
 poetry.lock
+__pycache__
+.pytest_cache
+.venv
