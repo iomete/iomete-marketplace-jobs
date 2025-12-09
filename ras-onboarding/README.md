@@ -1,13 +1,19 @@
-# Asset RAS Onboarding Migration Job
+# RAS Onboarding Migration Job
 
 A dynamic PySpark job that automates migration from **domain-based access control** to the new **bundle-based Resource Access Security (RAS)** system in IOMETE.
 
+**Supports Multiple Asset Types:**
+- **NAMESPACE**: Grants namespace permissions to all domain users
+- **COMPUTE**: Lakehouse compute resources with role-based permissions
+- **SPARK_JOB**: Spark job definitions with role-based permissions
+- **JUPYTER_CONTAINER**: Jupyter containers with universal permissions
+
 **Key Features:**
-- **Dynamic Asset Type Support**: Handles multiple asset types (COMPUTE, SPARK_JOB etc.) through configuration
+- **Unified Configuration**: Single config file handles all asset types including namespaces
+- **All Domain Users**: NAMESPACE asset type grants permissions to all users in the domain
+- **Dynamic Asset Type Support**: Handles multiple asset types through configuration
 - **Multi-Asset Domain Migration**: Migrates multiple asset types per domain in a single execution
 - **Configuration-Driven Architecture**: Add new asset types without code changes
-- **Dynamic Query Generation**: Automatically builds queries based on asset type configuration
-- **Dynamic Permission Mapping**: Maps permissions based on service types and asset configurations
 
 This README will guide you through creating and running the job template in the IOMETE Console, following the same flow as the **Create Job Template** page.
 
@@ -15,37 +21,115 @@ This README will guide you through creating and running the job template in the 
 
 ## Table of Contents
 1. [Overview](#overview)
-2. [Prerequisites](#prerequisites)
-3. [Step 1 – Job Details](#step-1--job-details)
-4. [Step 2 – Docker Image Configuration](#step-2--docker-image-configuration)
-5. [Step 3 – Config Map](#step-3--config-map)
-6. [Step 4 – Instance Configuration](#step-4--instance-configuration)
-7. [Step 5 – Run Job](#step-5--run-job)
-8. [Step 6 – Monitor Execution](#step-6--monitor-execution)
-9. [Migration Logic Explained](#migration-logic-explained)
-10. [Duplicate Bundle Handling](#duplicate-bundle-handling)
-11. [Per-Asset-Type Duplicate Handling](#per-asset-type-duplicate-handling)
-12. [Universal Permission Grant with 'all' Key](#universal-permission-grant-with-all-key)
-13. [Troubleshooting](#troubleshooting)
-14. [Security Notes](#security-notes)
-15. [Monitoring and Logging](#monitoring-and-logging)
+2. [Supported Asset Types](#supported-asset-types)
+3. [Prerequisites](#prerequisites)
+4. [Step 1 – Job Details](#step-1--job-details)
+5. [Step 2 – Docker Image Configuration](#step-2--docker-image-configuration)
+6. [Step 3 – Config Map](#step-3--config-map)
+7. [Step 4 – Instance Configuration](#step-4--instance-configuration)
+8. [Step 5 – Run Job](#step-5--run-job)
+9. [Step 6 – Monitor Execution](#step-6--monitor-execution)
+10. [Migration Logic Explained](#migration-logic-explained)
+11. [Duplicate Bundle Handling](#duplicate-bundle-handling)
+12. [Per-Asset-Type Duplicate Handling](#per-asset-type-duplicate-handling)
+13. [Universal Permission Grant with 'all' Key](#universal-permission-grant-with-all-key)
+14. [Troubleshooting](#troubleshooting)
+15. [Security Notes](#security-notes)
+16. [Monitoring and Logging](#monitoring-and-logging)
 
 ---
 
 ## Overview
-This job helps IOMETE customers migrate assets (compute, spark jobs, pipelines, datasets, notebooks, etc.) into the new **RAS bundle model**.
+This job helps IOMETE customers migrate assets (compute, spark jobs, jupyter containers, namespaces, etc.) into the new **RAS bundle model**.
 
 ### Core Capabilities
 - **Creates default bundles per domain**
 - **Moves assets into bundles** with dynamic asset type support
 - **Migrates permissions** (user/group → bundle permissions)
 - **Supports multiple asset types per domain** in a single migration run
-
-### Supported Asset Types
-- **COMPUTE**: Lakehouse compute resources
-- **SPARK_JOB**: Spark job definitions
+- **Handles namespaces** as a special asset type with universal permissions
 
 *Additional asset types can be added through configuration without code changes.*
+
+---
+
+## Supported Asset Types
+
+All asset types are configured in the `asset_types` array per domain:
+
+### NAMESPACE
+Creates namespace bundles and grants permissions to **all users** in the domain.
+
+**How it works:**
+1. For each domain, fetches all namespaces from `domain_namespace_mapping`
+2. Creates a bundle for each namespace (e.g., `namespace-{domain}-{namespace}`)
+3. Queries all users from `domain_member` table (joined with `iam_user`)
+4. Grants configured permissions (default: `["USE"]`) to all domain users
+
+**Config in asset_mappings:**
+```hocon
+NAMESPACE: {
+    permissions: ["USE"]
+}
+```
+
+### COMPUTE
+Lakehouse compute resources with role-based permission migration.
+
+**Config in asset_mappings:**
+```hocon
+COMPUTE: {
+    table: "lakehouse"
+    id_column: "id"
+    domain_column: "domain"
+    filter_condition: "is_deleted = false"
+    service: "lakehouse"
+    permission_mappings: {
+        list: ["VIEW"]
+        view: ["VIEW"]
+        manage: ["UPDATE", "DELETE", "EXECUTE", "CONSUME"]
+    }
+    asset_action_on_duplicate: "UPDATE"
+}
+```
+
+### SPARK_JOB
+Spark job definitions with role-based permission migration.
+
+**Config in asset_mappings:**
+```hocon
+SPARK_JOB: {
+    table: "spark_job"
+    id_column: "id"
+    domain_column: "domain"
+    filter_condition: "is_deleted = false"
+    service: "spark_job"
+    permission_mappings: {
+        list: ["VIEW"]
+        view: ["VIEW"]
+        manage: ["UPDATE", "DELETE", "RUN", "CONSUME"]
+    }
+    asset_action_on_duplicate: "UPDATE"
+}
+```
+
+### JUPYTER_CONTAINER
+Jupyter containers with universal permissions (uses the `all` key).
+
+**Config in asset_mappings:**
+```hocon
+JUPYTER_CONTAINER: {
+    table: "jupyter_container"
+    id_column: "id"
+    domain_column: "domain"
+    filter_condition: "is_deleted = false"
+    service: "jupyter_container"
+    permission_mappings: {
+        all: ["VIEW", "UPDATE", "DELETE", "RUN"]
+    }
+    asset_action_on_duplicate: "UPDATE"
+}
+```
 
 ---
 
@@ -90,112 +174,120 @@ Main Application File: local:///app/driver.py
 2. Set the file path to: `/etc/configs/application.conf`
 3. Copy the below config map and edit DB hosts, credentials, and domain details
 
+### Example Configuration
+
 ```hocon
 {
-  # Database configuration - will be overridden by environment variables
-  databases: {
-    bundle_db: {
-      host: "your-db-host"
-      port: 5432
-      name: "iomete_iam_db"
-      user: ${?DB_USER}
-      password: ${?DB_PASSWORD}
+    # Database configuration - will be overridden by environment variables
+    databases: {
+      iam_db: {
+        host: "your-db-host"
+        port: 5432
+        name: "iomete_iam_db"
+        user: ${?DB_USER}
+        password: ${?DB_PASSWORD}
+      }
+
+      core_db: {
+        host: "your-db-host"
+        port: 5432
+        name: "iomete_core_db"
+        user: ${?ASSET_DB_USER}
+        password: ${?ASSET_DB_PASSWORD}
+      }
     }
 
-    # asset database
-    asset_db: {
-      host: "your-db-host"
-      port: 5432
-      name: "iomete_core_db"
-      user: ${?ASSET_DB_USER}
-      password: ${?ASSET_DB_PASSWORD}
+    # Migration configuration
+    migration: {
+        # List of domains to migrate with their configurations
+        # asset_types can include: JUPYTER_CONTAINER, SPARK_JOB, COMPUTE, NAMESPACE
+        # NAMESPACE uses different migration logic (all domain users get permissions)
+        # Other asset types use role-based permission migration
+        domains: [
+            {
+                domain_id: "production"
+                owner_id: "admin"
+                owner_type: "USER"  # USER or GROUP
+                asset_types: ["NAMESPACE"]  # Include NAMESPACE for namespace migration
+            }
+            {
+                domain_id: "development"
+                owner_id: "dev_team"
+                owner_type: "GROUP"
+                asset_types: ["COMPUTE", "SPARK_JOB", "JUPYTER_CONTAINER"]  # Multiple asset types
+            }
+            # Add more domains as needed
+        ]
+
+        # Transaction settings
+        batch_size: 1000
+        retry_attempts: 3
+
+        # Validation settings
+        validate_before_migration: true
+        dry_run: false
+
+        # Debug mode - enables detailed logging and query output
+        debug_mode: false
+
+        # Duplicate bundle behavior: FAIL, SKIP, UPDATE, or OVERWRITE (only for namespace migration)
+        # FAIL: Stop execution if default bundle already exists (default behavior)
+        # SKIP: Skip migration for domains where default bundle already exists
+        # UPDATE: Update existing bundle ownership and re-process assets/permissions
+        duplicate_bundle_action: "UPDATE"
     }
-  }
 
-  # Migration configuration
-  migration: {
-    # List of domains to migrate with their configurations
-    domains: [
-        {
-            domain_id: "production"
-            owner_id: "admin_user"
-            owner_type: "USER"  # USER or GROUP
-            asset_types: ["COMPUTE", "SPARK_JOB"]  # Multiple asset types - all use same asset_db
+    # INTERNAL USE ONLY: Do not edit or change the below CONFIGS WITHOUT CHECKING WITH SUPPORT FIRST
+    # Asset type mappings - defines how to query assets for each type
+    # All asset types use the same asset_db connection but different tables
+    asset_mappings: {
+        COMPUTE: {
+            table: "lakehouse"
+            id_column: "id"
+            domain_column: "domain"
+            filter_condition: "is_deleted = false"
+            service: "lakehouse"
+            permission_mappings: {
+                list: ["VIEW"]
+                view: ["VIEW"]
+                manage: ["UPDATE", "DELETE", "EXECUTE", "CONSUME"]
+            }
+            # Action when asset already exists in bundle: SKIP, UPDATE, ERROR, or RESET
+            # SKIP: Skip assets that already exist in the bundle
+            # UPDATE: Add new assets, merge permissions for existing ones
+            # ERROR: Raise error if any asset already exists
+            # RESET: Clear all assets and permissions for this asset type before migration
+            asset_action_on_duplicate: "UPDATE"
         }
-        {
-            domain_id: "staging"
-            owner_id: "data_engineering"
-            owner_type: "GROUP"
-            asset_types: ["COMPUTE"]  # Different combinations per domain
+        SPARK_JOB: {
+            table: "spark_job"
+            id_column: "id"
+            domain_column: "domain"
+            filter_condition: "is_deleted = false"
+            service: "spark_job"
+            permission_mappings: {
+                list: ["VIEW"]
+                view: ["VIEW"]
+                manage: ["UPDATE", "DELETE", "RUN", "CONSUME"]
+            }
+            asset_action_on_duplicate: "UPDATE"
+        },
+        JUPYTER_CONTAINER: {
+            table: "jupyter_container"
+            id_column: "id"
+            domain_column: "domain"
+            filter_condition: "is_deleted = false"
+            service: "jupyter_container"
+            permission_mappings: {
+                all : ["VIEW", "UPDATE", "DELETE", "RUN"]
+            }
+            asset_action_on_duplicate: "UPDATE"
         }
-        {
-            domain_id: "development"
-            owner_id: "dev_team"
-            owner_type: "GROUP"
-            asset_types: ["SPARK_JOB"]  # Single asset type (also supported)
+        NAMESPACE: {
+            # Permissions to grant to all domain users on namespaces
+            permissions: ["USE"]
         }
-        # Add more domains as needed
-    ]
-
-    # Transaction settings
-    batch_size: 1000
-    retry_attempts: 3
-
-    # Validation settings
-    validate_before_migration: true
-    dry_run: false
-
-    # Debug mode - enables detailed logging and query output
-    debug_mode: false
-
-    # Duplicate bundle behavior: FAIL, SKIP, or UPDATE
-    # FAIL: Stop execution if default bundle already exists (default behavior)
-    # SKIP: Skip migration for domains where default bundle already exists
-    # UPDATE: Update existing bundle ownership and re-process assets/permissions
-    duplicate_bundle_action: "UPDATE"
-  }
-
-  # INTERNAL USE ONLY: Do not edit or change the below CONFIGS WITHOUT CHECKING WITH SUPPORT FIRST
-  # Asset type mappings - defines how to query assets for each type
-  # All asset types use the same asset_db connection but different tables
-  asset_mappings: {
-      COMPUTE: {
-          table: "lakehouse"
-          id_column: "id"
-          domain_column: "domain"
-          filter_condition: "is_deleted = false"
-          service: "lakehouse"
-          permission_mappings: {
-              list: ["VIEW"]
-              view: ["VIEW"]
-              manage: ["UPDATE", "DELETE", "EXECUTE", "CONSUME"]
-          }
-          # Action when asset already exists in bundle: SKIP, UPDATE, ERROR, or RESET
-          # SKIP: Skip assets that already exist in the bundle
-          # UPDATE: Add new assets, merge permissions for existing ones
-          # ERROR: Raise error if any asset already exists
-          # RESET: Clear all assets and permissions for this asset type before migration
-          asset_action_on_duplicate: "UPDATE"
-      }
-      SPARK_JOB: {
-          table: "spark_job"
-          id_column: "id"
-          domain_column: "domain"
-          filter_condition: "is_deleted = false"
-          service: "spark_job"
-          permission_mappings: {
-              list: ["VIEW"]
-              view: ["VIEW"]
-              manage: ["UPDATE", "DELETE", "RUN", "CONSUME"]
-          }
-          # Action when asset already exists in bundle: SKIP, UPDATE, ERROR, or RESET
-          # SKIP: Skip assets that already exist in the bundle
-          # UPDATE: Add new assets, merge permissions for existing ones
-          # ERROR: Raise error if any asset already exists
-          # RESET: Clear all assets and permissions for this asset type before migration
-          asset_action_on_duplicate: "UPDATE"
-      }
-  }
+    }
 }
 ```
 ⚠️ **INTERNAL USE ONLY**: The `asset_mappings` section contains critical internal configurations. Do not modify without consulting IOMETE support team.
@@ -218,21 +310,32 @@ Choose the instance to run on:
 ## Step 6 – Monitor Execution
 - **Logs:** Check real-time logs in the IOMETE console
 - **Verification:**
-    - Ensure a default bundle is created per domain
-    - Confirm assets are reassigned
+    - Ensure bundles are created for each domain/namespace
+    - Confirm assets or namespaces are assigned
     - Validate bundle permissions
 
-Sample log output:
+### NAMESPACE Migration Log Output:
 ```
-INFO: Created default bundle abc-123-def for domain production
-INFO: Moved 25 compute assets to bundle abc-123-def
+INFO: Starting NAMESPACE migration for domain: production
+INFO: Found 5 namespaces for domain production
+INFO: Created namespace bundle abc-123 for namespace default in domain production
+INFO: Found 25 users in domain production for namespace default
+INFO: Granted permissions to 25 users on namespace default
+```
+
+### Asset Migration Log Output (COMPUTE, SPARK_JOB, JUPYTER_CONTAINER):
+```
+INFO: Created default bundle abc-123-def for domain development
+INFO: Moved 25 COMPUTE assets to bundle abc-123-def
+INFO: Moved 15 SPARK_JOB assets to bundle abc-123-def
+INFO: Moved 10 JUPYTER_CONTAINER assets to bundle abc-123-def
 INFO: Set permissions for 12 users, 3 groups
 ```
 
 ---
 
 
-### Adding New Asset Types (Reachout to IOMETE support team for this)
+### Adding New Asset Types (Reach out to IOMETE support team for this)
 
 To add a new asset type, simply add a new entry to `asset_mappings`:
 
@@ -255,6 +358,8 @@ asset_mappings: {
   }
 }
 ```
+
+**Note:** NAMESPACE is a special asset type that only requires a `permissions` array (no table, service, etc.) as it uses different migration logic.
 
 **No code changes required** - the job will automatically handle the new asset type.
 
@@ -387,15 +492,15 @@ For each domain with multiple asset types, the job will:
 INFO: Starting migration for domain: production
 INFO: Found 25 COMPUTE assets in domain production
 INFO: Found 15 SPARK_JOB assets in domain production
-INFO: Found 8 PIPELINE assets in domain production
+INFO: Found 8 JUPYTER_CONTAINER assets in domain production
 INFO: Created default bundle abc-123-def for domain production
 INFO: Processed 25 COMPUTE assets for bundle abc-123-def
 INFO: Set permissions for 12 users, 3 groups for COMPUTE assets
 INFO: Processed 15 SPARK_JOB assets for bundle abc-123-def
 INFO: Set permissions for 8 users, 2 groups for SPARK_JOB assets
-INFO: Processed 8 PIPELINE assets for bundle abc-123-def
-INFO: Set permissions for 5 users, 2 groups for PIPELINE assets
-INFO: Domain production migrated: 25 COMPUTE, 15 SPARK_JOB, 8 PIPELINE assets
+INFO: Processed 8 JUPYTER_CONTAINER assets for bundle abc-123-def
+INFO: Set permissions for all users in domain (all: ['VIEW', 'UPDATE', 'DELETE', 'RUN'])
+INFO: Domain production migrated: 25 COMPUTE, 15 SPARK_JOB, 8 JUPYTER_CONTAINER assets
 ```
 
 ---
@@ -462,6 +567,14 @@ duplicate_bundle_action: "UPDATE"
     - Updates bundle ownership (owner_id, owner_type)
     - Processes each asset type according to its `asset_action_on_duplicate` setting
     - Re-processes permissions based on asset-specific actions
+
+### OVERWRITE (Only for NAMESPACE migration)
+```hocon
+duplicate_bundle_action: "OVERWRITE"
+```
+- **Behavior**: Completely overwrites existing namespace bundle
+- **Use Case**: Full reset of namespace permissions
+- **Note**: Only applicable when migrating NAMESPACE asset type
 
 ---
 
@@ -573,7 +686,7 @@ migration: {
       domain_id: "production"
       owner_id: "admin_user"
       owner_type: "USER"
-      asset_types: ["COMPUTE", "SPARK_JOB"]
+      asset_types: ["COMPUTE", "SPARK_JOB", "JUPYTER_CONTAINER", "NAMESPACE"]
     }
   ]
   duplicate_bundle_action: "UPDATE"
@@ -585,6 +698,10 @@ asset_mappings: {
     asset_action_on_duplicate: "RESET"    # Full refresh
   }
   SPARK_JOB: {
+    # ... config ...
+    asset_action_on_duplicate: "UPDATE"   # Incremental merge
+  }
+  JUPYTER_CONTAINER: {
     # ... config ...
     asset_action_on_duplicate: "UPDATE"   # Incremental merge
   }
@@ -608,7 +725,11 @@ INFO: Set permissions for 12 users, 3 groups for COMPUTE (action: RESET)
 INFO: Moved 15 SPARK_JOB assets to bundle abc-123 (action: UPDATE)
 INFO: Set permissions for 8 users, 2 groups for SPARK_JOB (action: UPDATE)
 
-INFO: Domain production migrated: 25 COMPUTE (reset), 15 SPARK_JOB (merged)
+# JUPYTER_CONTAINER assets with UPDATE action (merge)
+INFO: Moved 10 JUPYTER_CONTAINER assets to bundle abc-123 (action: UPDATE)
+INFO: Set permissions for all users in domain production (action: UPDATE, all: ['VIEW', 'UPDATE', 'DELETE', 'RUN'])
+
+INFO: Domain production migrated: 25 COMPUTE (reset), 15 SPARK_JOB (merged), 10 JUPYTER_CONTAINER (merged)
 ```
 
 ### Decision Matrix
@@ -632,6 +753,7 @@ Choose the appropriate action based on your migration scenario:
 asset_mappings: {
   COMPUTE: { asset_action_on_duplicate: "SKIP" }
   SPARK_JOB: { asset_action_on_duplicate: "SKIP" }
+  JUPYTER_CONTAINER: { asset_action_on_duplicate: "SKIP" }
 }
 ```
 - Adds only new assets
@@ -643,6 +765,7 @@ asset_mappings: {
 asset_mappings: {
   COMPUTE: { asset_action_on_duplicate: "UPDATE" }
   SPARK_JOB: { asset_action_on_duplicate: "UPDATE" }
+  JUPYTER_CONTAINER: { asset_action_on_duplicate: "UPDATE" }
 }
 ```
 - Merges new permissions with existing ones
@@ -652,12 +775,13 @@ asset_mappings: {
 #### Pattern 3: Selective Refresh
 ```hocon
 asset_mappings: {
-  COMPUTE: { asset_action_on_duplicate: "RESET" }      # Full refresh
-  SPARK_JOB: { asset_action_on_duplicate: "UPDATE" }   # Incremental
+  COMPUTE: { asset_action_on_duplicate: "RESET" }               # Full refresh
+  SPARK_JOB: { asset_action_on_duplicate: "UPDATE" }            # Incremental
+  JUPYTER_CONTAINER: { asset_action_on_duplicate: "UPDATE" }    # Incremental
 }
 ```
 - Refreshes compute resources completely
-- Merges job permissions incrementally
+- Merges job and container permissions incrementally
 - Useful for cleaning up specific asset types
 
 #### Pattern 4: Strict Validation
@@ -665,6 +789,7 @@ asset_mappings: {
 asset_mappings: {
   COMPUTE: { asset_action_on_duplicate: "ERROR" }
   SPARK_JOB: { asset_action_on_duplicate: "ERROR" }
+  JUPYTER_CONTAINER: { asset_action_on_duplicate: "ERROR" }
 }
 ```
 - Fails if any duplicates exist
@@ -717,18 +842,19 @@ WARNING: All asset types configured with RESET - this will clear the entire bund
 
 ### Configuration Issues
 - **Asset type not found** → Verify asset type exists in `asset_mappings` configuration
-- **Invalid asset configuration** → Ensure all required fields (table, id_column, domain_column, service) are present
-- **Permission mapping errors** → Confirm all permission levels (list, view, manage) have valid permission arrays
+- **Invalid asset configuration** → Ensure all required fields (table, id_column, domain_column, service) are present (except NAMESPACE which only needs `permissions`)
+- **Permission mapping errors** → Confirm all permission levels (list, view, manage or all) have valid permission arrays
 
 ### Domain & Owner Issues
 - **Owner validation errors** → Ensure owner exists in IAM (`USER` or `GROUP`)
-- **Duplicate bundle errors** → Adjust `duplicate_bundle_action` (FAIL/SKIP/UPDATE)
+- **Duplicate bundle errors** → Adjust `duplicate_bundle_action` (FAIL/SKIP/UPDATE/OVERWRITE)
 - **Invalid owner_type** → Must be exactly "USER" or "GROUP" (case-sensitive)
 
 ### Multi-Asset Issues
-- **Asset types array parsing** → Ensure `asset_types` is a proper array: `["COMPUTE", "SPARK_JOB"]`
+- **Asset types array parsing** → Ensure `asset_types` is a proper array: `["COMPUTE", "SPARK_JOB", "JUPYTER_CONTAINER", "NAMESPACE"]`
 - **Mixed asset type failures** → Check logs for per-asset-type errors; some may succeed while others fail
 - **No assets found for asset type** → Confirm domain contains assets for each specified asset type
+- **NAMESPACE migration issues** → NAMESPACE uses different migration logic; ensure `domain_namespace_mapping` table has data
 
 ### Permission Issues
 - **Permission migration failures** → Verify IAM role mappings and service permissions
@@ -770,20 +896,21 @@ INFO: Asset DB connection successful
 
 **Configuration Validation:**
 ```
-INFO: Asset type configuration validated: 5 asset types configured
+INFO: Asset type configuration validated: 4 asset types configured
 DEBUG: Validated asset type COMPUTE: table=lakehouse, service=lakehouse
 DEBUG: Validated asset type SPARK_JOB: table=spark_job, service=spark_job
-DEBUG: Validated asset type PIPELINE: table=pipeline, service=pipeline
+DEBUG: Validated asset type JUPYTER_CONTAINER: table=jupyter_container, service=jupyter_container
+DEBUG: Validated asset type NAMESPACE: permissions=['USE']
 ```
 
 **Per Domain (Multi-Asset):**
 ```
 INFO: Starting migration for domain: production
 INFO: Owner validation successful: USER:admin_user
-INFO: Validating asset types for domain: ['COMPUTE', 'SPARK_JOB', 'PIPELINE']
+INFO: Validating asset types for domain: ['COMPUTE', 'SPARK_JOB', 'JUPYTER_CONTAINER']
 INFO: Found 25 COMPUTE assets in domain production
 INFO: Found 15 SPARK_JOB assets in domain production
-INFO: Found 8 PIPELINE assets in domain production
+INFO: Found 8 JUPYTER_CONTAINER assets in domain production
 INFO: Created default bundle abc-123-def for domain production
 
 # Per asset type processing
@@ -795,11 +922,11 @@ INFO: Processing SPARK_JOB assets for domain production
 INFO: Moved 15 SPARK_JOB assets to bundle abc-123-def
 INFO: Set permissions for 8 users, 2 groups for SPARK_JOB assets in domain production
 
-INFO: Processing PIPELINE assets for domain production
-INFO: Moved 8 PIPELINE assets to bundle abc-123-def
-INFO: Set permissions for 5 users, 2 groups for PIPELINE assets in domain production
+INFO: Processing JUPYTER_CONTAINER assets for domain production
+INFO: Moved 8 JUPYTER_CONTAINER assets to bundle abc-123-def
+INFO: Set permissions for all users in domain production (all: ['VIEW', 'UPDATE', 'DELETE', 'RUN'])
 
-INFO: Domain production migrated: 25 COMPUTE, 15 SPARK_JOB, 8 PIPELINE assets
+INFO: Domain production migrated: 25 COMPUTE, 15 SPARK_JOB, 8 JUPYTER_CONTAINER assets
 ```
 
 **Dynamic Query Generation (Debug Mode):**
@@ -808,19 +935,20 @@ DEBUG: Generated asset query for COMPUTE: SELECT id, domain FROM lakehouse WHERE
 DEBUG: Generated permission subquery for COMPUTE: service = 'lakehouse' AND permission IN ('UPDATE', 'DELETE', 'EXECUTE', 'CONSUME')
 DEBUG: Generated asset query for SPARK_JOB: SELECT id, domain FROM spark_job WHERE domain = ? AND is_deleted = false
 DEBUG: Generated permission subquery for SPARK_JOB: service = 'spark_job' AND permission IN ('UPDATE', 'DELETE', 'RUN', 'CONSUME')
+DEBUG: Generated asset query for JUPYTER_CONTAINER: SELECT id, domain FROM jupyter_container WHERE domain = ? AND is_deleted = false
+DEBUG: Generated permission subquery for JUPYTER_CONTAINER: all users get permissions ['VIEW', 'UPDATE', 'DELETE', 'RUN']
 ```
 
-**Single Asset Type Domain:**
+**Single Asset Type Domain (NAMESPACE):**
 ```
 INFO: Starting migration for domain: simple-domain
 INFO: Owner validation successful: GROUP:data_team
-INFO: Validating asset types for domain: ['NOTEBOOK']
-INFO: Found 12 NOTEBOOK assets in domain simple-domain
-INFO: Created default bundle def-456-ghi for domain simple-domain
-INFO: Processing NOTEBOOK assets for domain simple-domain
-INFO: Moved 12 NOTEBOOK assets to bundle def-456-ghi
-INFO: Set permissions for 6 users, 1 groups for NOTEBOOK assets in domain simple-domain
-INFO: Domain simple-domain migrated: 12 NOTEBOOK assets
+INFO: Validating asset types for domain: ['NAMESPACE']
+INFO: Found 5 namespaces in domain simple-domain
+INFO: Created namespace bundle def-456-ghi for namespace default in domain simple-domain
+INFO: Found 20 users in domain simple-domain for namespace default
+INFO: Granted permissions to 20 users on namespace default
+INFO: Domain simple-domain migrated: 5 NAMESPACE bundles created
 ```
 
 **Configuration Validation Errors:**

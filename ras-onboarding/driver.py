@@ -3,7 +3,7 @@ from pyspark.sql import SparkSession
 from ras_onboarding.common.config import get_config
 from ras_onboarding.main import start_job
 
-config = get_config("/etc/configs/application.conf")
+config = get_config()
 
 spark = SparkSession.builder.appName("Asset RAS Onboarding Migration").getOrCreate()
 

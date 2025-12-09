@@ -1,40 +1,54 @@
 """Main module for asset onboarding migration job."""
 from ras_onboarding.common.logger import init_logger, get_logger
-from ras_onboarding.common.database import DatabaseManager
 from ras_onboarding.asset.migration import AssetOnboardingMigration
+from ras_onboarding.common.utils import get_namespace_and_asset_configs, get_db_conn
+from ras_onboarding.namespace.migration import NamespaceMigration
 
 logger = get_logger(__name__)
 
 
 def start_job(spark, config):
     debug_mode = config.get("migration", {}).get("debug_mode", False)
+
     init_logger(debug_mode)
-    logger.info("Starting Asset Onboarding Migration Job")
+    logger.info("Starting RAS Onboarding Migration Job")
 
     try:
-        # Initialize migration DB
-        bundle_migration_db_conf = config["databases"]["bundle_db"]
-        bundle_migration_db = DatabaseManager(bundle_migration_db_conf, debug_mode)
-        if not bundle_migration_db.test_connection():
-            raise Exception("Failed to connect to migration database")
-        logger.info("Migration DB connection successful")
+        # Both migration types use iam_db and core_db
+        iam_db_conf = config["databases"]["iam_db"]
+        iam_db = get_db_conn(iam_db_conf, debug_mode)
 
-        # Initialize single asset DB
-        asset_db_conf = config["databases"]["asset_db"]
-        asset_db = DatabaseManager(asset_db_conf, debug_mode)
-        if not asset_db.test_connection():
-            raise Exception("Failed to connect to asset database")
-        logger.info("Asset DB connection successful")
+        core_db_conf = config["databases"]["core_db"]
+        core_db = get_db_conn(core_db_conf, debug_mode)
 
-        # Run migration
-        migration = AssetOnboardingMigration(bundle_migration_db, asset_db, config)
-        success = migration.run_migration()
+        # Build separate configs for namespace and asset migrations
+        namespace_config, asset_config = get_namespace_and_asset_configs(config)
 
-        if success:
+        namespace_domains = namespace_config["migration"]["domains"]
+        asset_domains = asset_config["migration"]["domains"]
+
+        overall_success = True
+
+        # Run namespace migration if there are domains with NAMESPACE
+        if namespace_domains:
+            logger.info("Running namespace migration")
+            namespace_migration = NamespaceMigration(iam_db, core_db, namespace_config)
+            if not namespace_migration.run_migration():
+                logger.error("Namespace migration failed")
+                overall_success = False
+
+        # Run asset migration if there are domains with other asset types
+        if asset_domains:
+            logger.info("Running asset migration")
+            asset_migration = AssetOnboardingMigration(iam_db, core_db, asset_config)
+            if not asset_migration.run_migration():
+                logger.error("Asset migration failed")
+                overall_success = False
+
+        if overall_success:
             logger.info("Migration completed successfully")
         else:
             raise Exception("Migration failed")
-
     except Exception as e:
-        logger.error(f"Job failed: {e}")
+        logger.error(f"Job failed: {e}", exc_info=True)
         raise
