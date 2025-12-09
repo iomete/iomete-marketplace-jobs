@@ -686,7 +686,7 @@ migration: {
       domain_id: "production"
       owner_id: "admin_user"
       owner_type: "USER"
-      asset_types: ["COMPUTE", "SPARK_JOB", "JUPYTER_CONTAINER"]
+      asset_types: ["COMPUTE", "SPARK_JOB", "JUPYTER_CONTAINER", "NAMESPACE"]
     }
   ]
   duplicate_bundle_action: "UPDATE"
