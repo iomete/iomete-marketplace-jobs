@@ -20,6 +20,43 @@ def _validate_database_config(config: dict) -> None:
         )
 
 
+def _validate_overwrite_action_config(config: dict) -> None:
+    """Validate that OVERWRITE action is only used with NAMESPACE asset type.
+
+    When duplicate_bundle_action is OVERWRITE, all domains must have only
+    NAMESPACE in their asset_types list.
+    """
+    migration_config = config.get("migration", {})
+    duplicate_action = migration_config.get("duplicate_bundle_action", "FAIL")
+
+    if duplicate_action != "OVERWRITE":
+        return
+
+    domains = migration_config.get("domains", [])
+    invalid_domains = []
+
+    for domain in domains:
+        domain_id = domain.get("domain_id", "unknown")
+        asset_types = domain.get("asset_types", [])
+
+        # Check if asset_types contains only NAMESPACE
+        if asset_types != ["NAMESPACE"]:
+            invalid_domains.append({
+                "domain_id": domain_id,
+                "asset_types": asset_types
+            })
+
+    if invalid_domains:
+        domain_details = ", ".join(
+            f"'{d['domain_id']}' has asset_types={d['asset_types']}"
+            for d in invalid_domains
+        )
+        raise ValueError(
+            f"When duplicate_bundle_action is 'OVERWRITE', all domains must have "
+            f"only ['NAMESPACE'] in asset_types. Invalid domains: {domain_details}"
+        )
+
+
 def get_config(config_path: str = None) -> Dict[str, Any]:
     if config_path is None:
         config_path = "/etc/configs/application.conf"
@@ -54,4 +91,5 @@ def get_config(config_path: str = None) -> Dict[str, Any]:
             )
 
     _validate_database_config(config)
+    _validate_overwrite_action_config(config)
     return config
