@@ -1,6 +1,3 @@
--- in case some ORC files are corrupted in s3 bucket
-SET spark.sql.files.ignoreCorruptFiles = true;
-
 CREATE OR REPLACE VIEW iomete_spark_audit_access_summary AS
 with audit as (
 	SELECT
