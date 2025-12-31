@@ -1,5 +1,5 @@
 image := iomete.azurecr.io/iomete/iom-catalog-sync
-tag   := 4.3.5
+tag   := latest
 
 spark_submit_cmd := /opt/spark/bin/spark-submit \
 			--properties-file=/opt/spark/conf/spark-defaults.conf \

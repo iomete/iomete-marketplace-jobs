@@ -1,8 +1,8 @@
 package com.iomete.catalogsync.extract.datasets
 
 import com.iomete.catalogsync.extract.*
-import com.iomete.catalogsync.extract.utils.ColumnTagExtractor
-import com.iomete.catalogsync.getOrNull
+import com.iomete.catalogsync.extract.getOrNull
+import com.iomete.catalogsync.presidio.PIIDetectionService
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
@@ -13,23 +13,22 @@ const val SPARK_CATALOG_PREFIX = "spark_catalog."
 
 class DatasourceV1LikeTableExtractor(
     spark: SparkSession,
-    private val columnTagExtractor: ColumnTagExtractor,
     private val schema: String,
-    private val tableName: String
-) : TableExtractor, SupportTableStatistics, SupportColumnStatistics, SupportColumnTags {
-
+    private val tableName: String,
+) : TableExtractor,
+    SupportTableStatistics,
+    SupportColumnStatistics,
+    SupportColumnTags {
     private val catalog = spark.sessionState().catalog()
     private val fullName = "`$schema`.`$tableName`"
-    private val catalogTable = catalog.getTempViewOrPermanentTableMetadata(
-        TableIdentifier(tableName, Option.apply(schema.removePrefix(SPARK_CATALOG_PREFIX)))
-    )
+    private val catalogTable =
+        catalog.getTempViewOrPermanentTableMetadata(
+            TableIdentifier(tableName, Option.apply(schema.removePrefix(SPARK_CATALOG_PREFIX))),
+        )
     private val table = spark.catalog().getTable(schema.removePrefix(SPARK_CATALOG_PREFIX), tableName)
 
     override val getTableType: String
         get() = table.tableType()
-
-    override fun extractColumnTags(columns: List<String>): Map<String, List<String>> =
-        columnTagExtractor.extract(fullName, columns)
 
     override fun extractColumnStatistics(columns: List<String>): Map<String, List<ColumnStat>> {
         logger.info("extract statistics for {}.{}", schema, tableName)
@@ -46,11 +45,14 @@ class DatasourceV1LikeTableExtractor(
             lastModified = catalogTable.createTime(),
             numFiles = null,
             sizeInBytes = catalogTableStats.sizeInBytes().toLong(),
-            totalRecords = catalogTableStats.rowCount().getOrNull()?.toLong()
+            totalRecords = catalogTableStats.rowCount().getOrNull()?.toLong(),
         )
     }
 
-    private fun columnStatistics(catalogTable: CatalogTable, columnName: String): List<ColumnStat> {
+    private fun columnStatistics(
+        catalogTable: CatalogTable,
+        columnName: String,
+    ): List<ColumnStat> {
         val resultStats = mutableListOf<ColumnStat>()
 
         val catalogColumnStatMap = catalogTable.stats().getOrNull()?.colStats() ?: return listOf()

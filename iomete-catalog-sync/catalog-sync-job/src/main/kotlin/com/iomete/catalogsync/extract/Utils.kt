@@ -1,8 +1,7 @@
-package com.iomete.catalogsync
+package com.iomete.catalogsync.extract
 
 import org.apache.spark.sql.Row
 import scala.Option
-
 
 fun <T> Option<T>.getOrNull(): T? = if (this.isDefined) this.get() else null
 
@@ -16,11 +15,4 @@ fun Row.getLong(indexName: String): Long? {
     return this.getLong(this.schema().fieldIndex(indexName))
 }
 
-fun Row.getString(indexName: String): String? {
-    return this.getString(this.schema().fieldIndex(indexName))
-}
-
-fun Row.get(indexName: String): Any? {
-    return this.get(this.schema().fieldIndex(indexName))
-}
-
+fun Row.get(indexName: String): Any? = this.get(this.schema().fieldIndex(indexName))
