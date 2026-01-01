@@ -2,7 +2,6 @@ package com.iomete.catalogsync.extract.datasets
 
 import com.iomete.catalogsync.extract.*
 import com.iomete.catalogsync.extract.getOrNull
-import com.iomete.catalogsync.presidio.PIIDetectionService
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.CatalogTable

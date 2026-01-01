@@ -7,7 +7,6 @@ import org.apache.spark.sql.SparkSession
 import org.eclipse.microprofile.config.ConfigProvider
 import org.eclipse.microprofile.rest.client.inject.RestClient
 import org.slf4j.LoggerFactory
-import javax.inject.Singleton
 
 @ApplicationScoped
 class PIIDetectionService(
