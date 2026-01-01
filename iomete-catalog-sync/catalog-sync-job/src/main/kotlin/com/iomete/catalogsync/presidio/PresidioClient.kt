@@ -1,12 +1,12 @@
-package com.iomete.catalogsync
+package com.iomete.catalogsync.presidio
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.databind.PropertyNamingStrategies
 import com.fasterxml.jackson.databind.annotation.JsonNaming
-import org.eclipse.microprofile.rest.client.inject.RegisterRestClient
 import jakarta.inject.Singleton
 import jakarta.ws.rs.POST
 import jakarta.ws.rs.Path
+import org.eclipse.microprofile.rest.client.inject.RegisterRestClient
 
 @Singleton
 @RegisterRestClient(configKey = "presidio")
@@ -21,7 +21,7 @@ interface PresidioClient {
 data class PresidioRequest(
     val text: String = "",
     val language: String = "en",
-    val scoreThreshold: Float = 0.6f
+    val scoreThreshold: Float = 0.6f,
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -34,25 +34,26 @@ data class PresidioResponse(
     val end: Int = 0,
 )
 
-val PCI_ENTITY_TYPES = setOf(
-    EntityType.IBAN_CODE,
-    EntityType.CREDIT_CARD,
-    EntityType.US_BANK_NUMBER
-)
+val PCI_ENTITY_TYPES =
+    setOf(
+        EntityType.IBAN_CODE,
+        EntityType.CREDIT_CARD,
+        EntityType.US_BANK_NUMBER,
+    )
 
-val PII_ENTITY_TYPES = setOf(
-    EntityType.PERSON,
-    EntityType.PHONE_NUMBER,
-    EntityType.US_DRIVER_LICENSE,
-    EntityType.EMAIL_ADDRESS,
-    EntityType.US_SSN,
-    EntityType.US_PASSPORT,
-    EntityType.LOCATION,
-    EntityType.UK_NHS,
-    EntityType.US_ITIN,
-    EntityType.SG_NRIC_FIN,
-)
-
+val PII_ENTITY_TYPES =
+    setOf(
+        EntityType.PERSON,
+        EntityType.PHONE_NUMBER,
+        EntityType.US_DRIVER_LICENSE,
+        EntityType.EMAIL_ADDRESS,
+        EntityType.US_SSN,
+        EntityType.US_PASSPORT,
+        EntityType.LOCATION,
+        EntityType.UK_NHS,
+        EntityType.US_ITIN,
+        EntityType.SG_NRIC_FIN,
+    )
 
 enum class EntityType {
     PHONE_NUMBER,
@@ -72,5 +73,5 @@ enum class EntityType {
     UK_NHS,
     US_BANK_NUMBER,
     CRYPTO,
-    US_PASSPORT
+    US_PASSPORT,
 }

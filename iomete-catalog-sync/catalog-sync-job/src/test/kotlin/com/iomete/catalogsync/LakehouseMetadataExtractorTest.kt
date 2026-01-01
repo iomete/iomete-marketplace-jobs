@@ -1,49 +1,56 @@
 package com.iomete.catalogsync
 
+import com.iomete.catalogsync.config.ApplicationConfig
 import com.iomete.catalogsync.extract.TableExtractorFactory
+import com.iomete.catalogsync.presidio.PIIDetectionService
 import io.micrometer.core.instrument.MeterRegistry
-import io.mockk.*
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
+import io.smallrye.common.constraint.Assert.assertTrue
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.SparkSession
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.Assertions.*
 
 class LakehouseMetadataExtractorTest {
-
     private lateinit var mockSparkSession: SparkSession
     private lateinit var mockDataset: Dataset<Row>
     private lateinit var mockTableExtractorFactory: TableExtractorFactory
-    private lateinit var mockDataSync: DataSync
+    private lateinit var mockCatalogServiceClient: CatalogClient
     private lateinit var mockSparkSessionProvider: SparkSessionProvider
     private lateinit var mockApplicationConfig: ApplicationConfig
     private lateinit var mockMeterRegistry: MeterRegistry
-    private lateinit var mockCoreServiceClient: CoreServiceClient
-    private lateinit var extractor: LakehouseMetadataExtractor
+    private lateinit var mockCoreServiceClient: CoreClient
+    private lateinit var mockPiiDetectionService: PIIDetectionService
+    private lateinit var extractor: MetadataScraper
 
     @BeforeEach
     fun setup() {
         mockSparkSession = mockk()
         mockDataset = mockk()
         mockTableExtractorFactory = mockk()
-        mockDataSync = mockk()
+        mockCatalogServiceClient = mockk()
         mockSparkSessionProvider = mockk()
         mockApplicationConfig = mockk()
         mockMeterRegistry = mockk()
         mockCoreServiceClient = mockk()
+        mockPiiDetectionService = mockk()
 
         every { mockSparkSessionProvider.sparkSession } returns mockSparkSession
-        every { mockApplicationConfig.excludeSchemas() } returns java.util.Optional.of(setOf())
 
-        extractor = LakehouseMetadataExtractor(
-            mockTableExtractorFactory,
-            mockDataSync,
-            mockSparkSessionProvider,
-            mockApplicationConfig,
-            mockMeterRegistry,
-            mockCoreServiceClient
-        )
+        extractor =
+            MetadataScraper(
+                mockSparkSessionProvider,
+                mockApplicationConfig,
+                mockTableExtractorFactory,
+                mockMeterRegistry,
+                mockPiiDetectionService,
+                mockCoreServiceClient,
+                mockCatalogServiceClient,
+            )
     }
 
     @Test
@@ -117,7 +124,7 @@ class LakehouseMetadataExtractorTest {
 
         assertEquals(emptyList<Row>(), result)
     }
-    
+
     @Test
     fun `should skip view fetching for unsupported catalog types`() {
         val mockTableRow = mockk<Row>()
@@ -131,10 +138,10 @@ class LakehouseMetadataExtractorTest {
 
         assertEquals(1, result.size)
         assertTrue(result.contains(mockTableRow))
-        
+
         verify(exactly = 0) { mockSparkSession.sql("show views from `catalog1`.`schema1`") }
     }
-    
+
     @Test
     fun `should check for combined supported and non-supported catalog types`() {
         val mockTableRow = mockk<Row>()
@@ -147,10 +154,10 @@ class LakehouseMetadataExtractorTest {
 
         val result1 = extractor.getTables("catalog1", "schema1", listOf("jdbc"))
         assertEquals(1, result1.size)
-        
+
         val result2 = extractor.getTables("catalog1", "schema2", listOf("jdbc"))
         assertEquals(1, result2.size)
-        
+
         every { mockSparkSession.sql("show tables from `catalog2`.`schema1`") } returns tablesDataset
         val result3 = extractor.getTables("catalog2", "schema1", listOf("iceberg"))
         assertEquals(1, result3.size)

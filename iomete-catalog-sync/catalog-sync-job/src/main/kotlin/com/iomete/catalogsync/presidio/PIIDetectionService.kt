@@ -1,18 +1,24 @@
-package com.iomete.catalogsync.extract.utils
+package com.iomete.catalogsync.presidio
 
-import com.iomete.catalogsync.*
+import com.iomete.catalogsync.SparkSessionProvider
+import com.iomete.catalogsync.extract.get
+import jakarta.enterprise.context.ApplicationScoped
 import org.apache.spark.sql.SparkSession
 import org.eclipse.microprofile.config.ConfigProvider
+import org.eclipse.microprofile.rest.client.inject.RestClient
 import org.slf4j.LoggerFactory
+import javax.inject.Singleton
 
-
-class ColumnTagExtractor(
-    private val spark: SparkSession,
-    private val presidioClient: PresidioClient
+@ApplicationScoped
+class PIIDetectionService(
+    sparkSessionProvider: SparkSessionProvider,
+    @param:RestClient private val presidioClient: PresidioClient,
 ) {
+    private val spark: SparkSession = sparkSessionProvider.sparkSession
+
     fun extract(
         fullTableName: String,
-        columns: List<String>
+        columns: List<String>,
     ): Map<String, List<String>> {
         if (isPiiDetectionEnabled().not()) {
             return emptyMap()
@@ -23,19 +29,27 @@ class ColumnTagExtractor(
         val result = mutableMapOf<String, List<String>>()
 
         try {
-            val sampleData = spark.sql("SELECT * FROM $fullTableName TABLESAMPLE (5 ROWS)")
-                .collectAsList().orEmpty()
+            val sampleData =
+                spark
+                    .sql("SELECT * FROM $fullTableName TABLESAMPLE (5 ROWS)")
+                    .collectAsList()
+                    .orEmpty()
 
             columns.forEach { columnName ->
                 val columnSampleData =
-                    sampleData.map { it.get(columnName).toString() }
+                    sampleData
+                        .map { it.get(columnName).toString() }
                         .filter { it.isNotEmpty() }
-                        .distinct().firstOrNull()
+                        .distinct()
+                        .firstOrNull()
 
                 val detectedTags = detectedTags(columnSampleData)
                 logger.info(
                     "table={} column={} detected-tags={} for sample data: {}",
-                    fullTableName, columnName, detectedTags, columnSampleData
+                    fullTableName,
+                    columnName,
+                    detectedTags,
+                    columnSampleData,
                 )
                 result[columnName] = detectedTags
             }
@@ -69,7 +83,7 @@ class ColumnTagExtractor(
     }
 
     companion object {
-        private val logger = LoggerFactory.getLogger(ColumnTagExtractor::class.java)
+        private val logger = LoggerFactory.getLogger(PIIDetectionService::class.java)
     }
 
     private fun isPiiDetectionEnabled(): Boolean {
