@@ -7,11 +7,11 @@ import io.micrometer.core.instrument.MeterRegistry
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
-import io.smallrye.common.constraint.Assert.assertTrue
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.SparkSession
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 

@@ -5,10 +5,7 @@ import com.iomete.catalogsync.extract.datasets.DatasourceV1LikeTableExtractor
 import com.iomete.catalogsync.extract.datasets.GenericTableExtractor
 import com.iomete.catalogsync.extract.datasets.IcebergTableExtractor
 import com.iomete.catalogsync.extract.datasets.ViewExtractor
-import com.iomete.catalogsync.presidio.PIIDetectionService
-import com.iomete.catalogsync.presidio.PresidioClient
 import jakarta.inject.Singleton
-import org.eclipse.microprofile.rest.client.inject.RestClient
 
 @Singleton
 class TableExtractorFactory(

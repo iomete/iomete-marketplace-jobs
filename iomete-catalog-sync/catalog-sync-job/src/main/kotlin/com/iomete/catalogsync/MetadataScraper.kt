@@ -279,7 +279,7 @@ class MetadataScraper(
             val columnTags =
                 record(extractTagsMetric) {
                     piiDetectionService.extract(
-                        fullTableName = "`$catalog`.`$schema`.`$table`",
+                        fullTableName = "`$catalog`.`$schema`.`$tableName`",
                         columns = columnMetadataList.map { it.name },
                     )
                 }
