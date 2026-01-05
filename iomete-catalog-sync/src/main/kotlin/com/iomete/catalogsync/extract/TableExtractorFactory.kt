@@ -6,14 +6,12 @@ import com.iomete.catalogsync.extract.datasets.GenericTableExtractor
 import com.iomete.catalogsync.extract.datasets.IcebergTableExtractor
 import com.iomete.catalogsync.extract.datasets.ViewExtractor
 import jakarta.inject.Singleton
+import org.apache.spark.sql.SparkSession
 
 @Singleton
-class TableExtractorFactory(
-    sparkSessionProvider: SparkSessionProvider,
-) {
-    private val spark = sparkSessionProvider.sparkSession
-
+class TableExtractorFactory {
     fun extractorFor(
+        spark: SparkSession,
         provider: String,
         isView: Boolean = false,
         catalog: String,

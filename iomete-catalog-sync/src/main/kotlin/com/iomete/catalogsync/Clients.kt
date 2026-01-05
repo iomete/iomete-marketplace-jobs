@@ -1,9 +1,11 @@
 package com.iomete.catalogsync
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import jakarta.inject.Singleton
 import jakarta.ws.rs.GET
 import jakarta.ws.rs.POST
 import jakarta.ws.rs.Path
+import jakarta.ws.rs.PathParam
 import jakarta.ws.rs.core.Response
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient
 
@@ -14,12 +16,13 @@ interface CoreClient {
     @Path("/internal/v1/spark-settings/catalogs")
     fun catalogs(): List<CatalogDetails>
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     data class CatalogDetails(
         val name: String,
         val type: List<String>,
-        val location: String?,
-        val storageEndpoint: String?,
-        val domainsAllowed: List<String>,
+        val location: String? = null,
+        val storageEndpoint: String? = null,
+        val sparkProperties: Map<String, Any?> = emptyMap(),
     )
 }
 

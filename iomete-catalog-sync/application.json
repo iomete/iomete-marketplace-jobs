@@ -1,6 +1,0 @@
-{
-    "catalog": {
-        "include": ["iceberg_catalog", "test_catalog_1"],
-        "exclude": []
-    }
-}

@@ -10,12 +10,11 @@ import org.slf4j.LoggerFactory
 
 @ApplicationScoped
 class PIIDetectionService(
-    sparkSessionProvider: SparkSessionProvider,
     @param:RestClient private val presidioClient: PresidioClient,
 ) {
-    private val spark: SparkSession = sparkSessionProvider.sparkSession
-
     fun extract(
+        spark: SparkSession,
+        catalog: String,
         fullTableName: String,
         columns: List<String>,
     ): Map<String, List<String>> {
@@ -78,7 +77,7 @@ class PIIDetectionService(
             detectedTags.add("PCI")
         }
 
-        return detectedTags.map { "DETECTED_${it.uppercase()}" }
+        return detectedTags.map { "DETECTED:${it.uppercase()}" }
     }
 
     companion object {

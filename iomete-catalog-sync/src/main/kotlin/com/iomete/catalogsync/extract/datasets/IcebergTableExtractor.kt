@@ -38,7 +38,7 @@ class IcebergTableExtractor(
                 ).collectAsList()
                 .firstOrNull() ?: return null
 
-        val all_data_files =
+        val allDataFiles =
             spark
                 .sql(
                     """
@@ -53,9 +53,9 @@ class IcebergTableExtractor(
         return TableStatistics(
             lastModified = lastSnapshot.getTimestamp("committed_at"),
             numFiles = lastSnapshot.getLong("total_data_files"),
-            totalTableNumFiles = all_data_files.getLong("total_table_num_files"),
+            totalTableNumFiles = allDataFiles.getLong("total_table_num_files"),
             sizeInBytes = lastSnapshot.getLong("total_files_sizes"),
-            totalTableSizeInBytes = all_data_files.getLong("total_table_size_in_bytes"),
+            totalTableSizeInBytes = allDataFiles.getLong("total_table_size_in_bytes"),
             totalRecords = lastSnapshot.getLong("total_records"),
         )
     }
