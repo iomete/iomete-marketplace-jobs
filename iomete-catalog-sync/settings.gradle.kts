@@ -11,6 +11,3 @@ pluginManagement {
 }
 
 rootProject.name = "iomete-catalog-sync"
-include(
-    "catalog-sync-job",
-)

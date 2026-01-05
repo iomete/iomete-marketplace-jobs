@@ -1,5 +1,14 @@
 # Running Locally
 
+```bash
+# 1, Build code
+../gradlew clean quarkusBuild
+
+# 2. Update docker tag version in Makefile
+# 3. Build image and push
+make docker-push
+```
+
 ### 1. Setup IOMETE Spark Folder
 ```shell
 make download-spark
