@@ -58,8 +58,8 @@ class MetadataScraper(
                             catalogServiceClient.indexSchema(it)
                         }.toList()
 
-                CatalogMetadata.Companion
-                    .build(catalog, processedSchemas)
+                CatalogMetadata
+                    .build(catalog, processedSchemas, sparkApplicationId = spark.sparkContext().applicationId())
                     .also { it.log() }
                     .also { catalogServiceClient.indexCatalog(it) }
             }
@@ -99,11 +99,12 @@ class MetadataScraper(
                 }.toList()
                 .mapNotNull { it }
 
-        return SchemaMetadata.Companion.build(
+        return SchemaMetadata.build(
             catalog = catalog.name,
             schema = schema,
             tables = tables,
             failuresSize = failures.get(),
+            sparkApplicationId = spark.sparkContext().applicationId(),
         )
     }
 }

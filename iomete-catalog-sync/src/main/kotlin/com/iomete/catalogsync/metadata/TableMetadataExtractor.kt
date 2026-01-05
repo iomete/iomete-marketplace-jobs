@@ -140,6 +140,7 @@ class TableMetadataExtractor(
             columns = columnMetadataList,
             tags = tableTags,
             syncTime = Instant.now().toEpochMilli(),
+            sparkApplicationId = spark.sparkContext().applicationId(),
         )
     }
 

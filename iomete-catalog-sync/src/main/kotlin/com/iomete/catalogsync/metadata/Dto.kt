@@ -15,11 +15,13 @@ data class CatalogMetadata(
     val totalTableCount: Int,
     val totalSizeInBytes: Long,
     val totalFiles: Long,
+    val sparkApplicationId: String,
 ) {
     companion object {
         fun build(
             catalog: CatalogDetails,
             schemas: List<SchemaMetadata>,
+            sparkApplicationId: String,
         ) = CatalogMetadata(
             catalog = catalog.name,
             type = catalog.type.toSet(),
@@ -29,6 +31,7 @@ data class CatalogMetadata(
             totalTableCount = schemas.sumOf { it.totalTableCount },
             totalSizeInBytes = schemas.sumOf { it.totalSizeInBytes },
             totalFiles = schemas.sumOf { it.totalFiles },
+            sparkApplicationId = sparkApplicationId,
         )
     }
 }
@@ -42,6 +45,7 @@ data class SchemaMetadata(
     val totalDbSizeInBytes: Long,
     val totalFiles: Long,
     val failedTableCount: Int,
+    val sparkApplicationId: String,
 ) {
     companion object {
         fun build(
@@ -49,6 +53,7 @@ data class SchemaMetadata(
             schema: String,
             tables: List<TableMetadata>,
             failuresSize: Int,
+            sparkApplicationId: String,
         ) = SchemaMetadata(
             catalog = catalog,
             schema = schema,
@@ -58,6 +63,7 @@ data class SchemaMetadata(
             totalDbSizeInBytes = tables.sumOf { it.totalTableSizeInBytes ?: 0L },
             totalFiles = tables.sumOf { it.numFiles ?: 0L },
             failedTableCount = failuresSize,
+            sparkApplicationId = sparkApplicationId,
         )
     }
 }
@@ -85,6 +91,7 @@ data class TableMetadata(
     val columns: List<ColumnMetadata>,
     var tags: List<String> = listOf(),
     val syncTime: Long,
+    val sparkApplicationId: String,
 )
 
 fun CatalogMetadata.log() {
