@@ -61,7 +61,12 @@ class SparkSessionProvider {
                 .config(extensionsConfig)
                 .orCreate
 
-        session.catalog().setCurrentCatalog(catalog.name)
+        try {
+            session.catalog().setCurrentCatalog(catalog.name)
+        } catch (e: Exception) {
+            logger.error("Failed to set current catalog to ${catalog.name}", e)
+            return sparkSession
+        }
         return session
     }
 
