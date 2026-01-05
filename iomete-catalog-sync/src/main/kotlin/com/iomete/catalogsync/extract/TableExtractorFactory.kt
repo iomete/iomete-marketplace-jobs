@@ -1,6 +1,5 @@
 package com.iomete.catalogsync.extract
 
-import com.iomete.catalogsync.SparkSessionProvider
 import com.iomete.catalogsync.extract.datasets.DatasourceV1LikeTableExtractor
 import com.iomete.catalogsync.extract.datasets.GenericTableExtractor
 import com.iomete.catalogsync.extract.datasets.IcebergTableExtractor

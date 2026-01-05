@@ -1,8 +1,7 @@
-package com.iomete.catalogsync.utils
+package com.iomete.catalogsync.config
 
 import com.iomete.catalogsync.CoreClient.CatalogDetails
-import com.iomete.catalogsync.MetadataScraper
-import com.iomete.catalogsync.config.ExclusionRules
+import com.iomete.catalogsync.metadata.MetadataScraper
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 

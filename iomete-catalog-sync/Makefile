@@ -3,7 +3,7 @@ tag   := 5.0.0
 
 .PHONY: build
 build:
-	../gradlew clean quarkusBuild
+	./gradlew clean quarkusBuild
 
 .PHONY: docker-push
 docker-push: build
