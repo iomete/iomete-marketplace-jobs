@@ -42,10 +42,15 @@ class SparkSessionProvider {
             .config(extensionsConfig)
             .orCreate
 
-    fun getSession(catalog: CoreClient.CatalogDetails): SparkSession =
-        sessions.getOrPut(catalog.name) {
-            createSparkSession(catalog)
-        }
+    fun getSession(catalog: CoreClient.CatalogDetails): SparkSession {
+        val session =
+            sessions.getOrPut(catalog.name) {
+                createSparkSession(catalog)
+            }
+
+        logger.info("Initialized Spark Session with ID={}", session.sparkContext().applicationId())
+        return session
+    }
 
     private fun createSparkSession(catalog: CoreClient.CatalogDetails): SparkSession {
         if (sparkSession.conf().contains("spark.sql.catalog.${catalog.name}")) {
