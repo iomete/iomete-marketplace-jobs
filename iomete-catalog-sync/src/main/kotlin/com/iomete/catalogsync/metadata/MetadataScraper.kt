@@ -14,6 +14,7 @@ import org.apache.spark.sql.SparkSession
 import org.eclipse.microprofile.rest.client.inject.RestClient
 import org.slf4j.LoggerFactory
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.log
 
 private val logger = LoggerFactory.getLogger(MetadataScraper::class.java)
 
@@ -88,7 +89,16 @@ class MetadataScraper(
                         tableMetadataExtractor
                             .scrapeTable(spark, catalog.name, schema, t.name, t.isTemp)
                             .also { it.log() }
-                            .also { catalogServiceClient.indexTable(it) }
+                            .also {
+                                logger.info(
+                                    "Indexing table {}.{}.{} with spark session ID={}",
+                                    it.catalog,
+                                    schema,
+                                    t.name,
+                                    it.sparkApplicationId,
+                                )
+                                catalogServiceClient.indexTable(it)
+                            }
                     } catch (_: ExcludedItemException) {
                         null // skipped
                     } catch (th: Throwable) {
