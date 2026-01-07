@@ -36,10 +36,10 @@ install-build-deps:
 	python -m pip install -U pip wheel setuptools
 
 # Run formatting on the package
-format: isort blue
+format: isort black
 
 # Run formatting checks on the package
-format-check: isort-check blue-check
+format-check: isort-check black-check
 
 # Run isort formatting on the package
 isort:
@@ -49,13 +49,13 @@ isort:
 isort-check:
 	poetry run isort --check ./
 
-# Run blue formatting on the package
-blue:
-	poetry run blue ./
+# Run black formatting on the package
+black:
+	poetry run black ./
 
-# Run blue formatting check on the package
-blue-check:
-	poetry run blue --check ./
+# Run black formatting check on the package
+black-check:
+	poetry run black --check ./
 
 # Run package test suit using pytest
 test:
