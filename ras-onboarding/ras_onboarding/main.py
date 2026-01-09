@@ -1,8 +1,9 @@
 """Main module for asset onboarding migration job."""
 from ras_onboarding.common.logger import init_logger, get_logger
 from ras_onboarding.asset.migration import AssetOnboardingMigration
-from ras_onboarding.common.utils import get_namespace_and_asset_configs, get_db_conn
+from ras_onboarding.common.utils import get_namespace_domain_and_asset_configs, get_db_conn
 from ras_onboarding.namespace.migration import NamespaceMigration
+from ras_onboarding.domain.migration import DomainMigration
 
 logger = get_logger(__name__)
 
@@ -21,10 +22,11 @@ def start_job(spark, config):
         core_db_conf = config["databases"]["core_db"]
         core_db = get_db_conn(core_db_conf, debug_mode)
 
-        # Build separate configs for namespace and asset migrations
-        namespace_config, asset_config = get_namespace_and_asset_configs(config)
+        # Build separate configs for namespace, domain, and asset migrations
+        namespace_config, domain_config, asset_config = get_namespace_domain_and_asset_configs(config)
 
         namespace_domains = namespace_config["migration"]["domains"]
+        domain_domains = domain_config["migration"]["domains"]
         asset_domains = asset_config["migration"]["domains"]
 
         overall_success = True
@@ -35,6 +37,14 @@ def start_job(spark, config):
             namespace_migration = NamespaceMigration(iam_db, core_db, namespace_config)
             if not namespace_migration.run_migration():
                 logger.error("Namespace migration failed")
+                overall_success = False
+
+        # Run domain migration if there are domains with DOMAIN
+        if domain_domains:
+            logger.info("Running domain migration")
+            domain_migration = DomainMigration(iam_db, core_db, domain_config)
+            if not domain_migration.run_migration():
+                logger.error("Domain migration failed")
                 overall_success = False
 
         # Run asset migration if there are domains with other asset types
