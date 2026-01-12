@@ -126,7 +126,7 @@ UPDATE_RESOURCE_BUNDLES_PARENT = """
 CHECK_RESOURCE_BUNDLES_EXIST = """
     SELECT COUNT(*) as count
     FROM bundle
-    WHERE domain = %s AND bundle_type = 'RESOURCE' AND is_archived = false
+    WHERE domain = %s AND bundle_type = 'RESOURCE'
 """
 
 # Delete operations for OVERWRITE mode
