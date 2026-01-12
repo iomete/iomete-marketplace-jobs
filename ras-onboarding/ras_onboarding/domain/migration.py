@@ -105,7 +105,7 @@ class DomainMigration:
         """
         try:
             with connection.cursor() as cursor:
-                cursor.execute(ADD_DOMAIN_ASSET_TO_BUNDLE, (bundle_id, domain_id + "domain-bundle-asset"))
+                cursor.execute(ADD_DOMAIN_ASSET_TO_BUNDLE, (bundle_id, domain_id))
             logger.info(f"Added DOMAIN asset {domain_id} to bundle {bundle_id}")
         except Exception as e:
             logger.error(f"Error adding DOMAIN asset {domain_id} to bundle: {e}")
