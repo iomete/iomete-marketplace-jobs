@@ -54,7 +54,7 @@ class DomainMigration:
             - bundle_id: Bundle UUID or None if skipped
             - bundle_existed: True if bundle already existed
         """
-        bundle_name = domain_id  # NOT {domain_id}_default!
+        bundle_name = domain_id + "-domain-bundle"
         check_query = GET_DOMAIN_BUNDLE_BY_DOMAIN_ID
 
         results = self.iam_db.execute_query(connection, check_query, (bundle_name,))
@@ -105,7 +105,7 @@ class DomainMigration:
         """
         try:
             with connection.cursor() as cursor:
-                cursor.execute(ADD_DOMAIN_ASSET_TO_BUNDLE, (bundle_id, domain_id))
+                cursor.execute(ADD_DOMAIN_ASSET_TO_BUNDLE, (bundle_id, domain_id + "domain-bundle-asset"))
             logger.info(f"Added DOMAIN asset {domain_id} to bundle {bundle_id}")
         except Exception as e:
             logger.error(f"Error adding DOMAIN asset {domain_id} to bundle: {e}")

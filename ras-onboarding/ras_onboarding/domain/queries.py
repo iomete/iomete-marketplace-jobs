@@ -119,7 +119,6 @@ UPDATE_RESOURCE_BUNDLES_PARENT = """
     SET parent_bundle_id = %s, updated_at = current_timestamp, updated_by = 'system'
     WHERE domain = %s
       AND bundle_type = 'RESOURCE'
-      AND is_archived = false
 """
 
 # Check if RESOURCE bundles exist in domain
