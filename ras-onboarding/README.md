@@ -3,6 +3,7 @@
 A dynamic PySpark job that automates migration from **domain-based access control** to the new **bundle-based Resource Access Security (RAS)** system in IOMETE.
 
 **Supports Multiple Asset Types:**
+- **DOMAIN**: Creates domain-level bundles with role-based permissions and establishes parent-child bundle hierarchy
 - **NAMESPACE**: Grants namespace permissions to all domain users
 - **COMPUTE**: Lakehouse compute resources with role-based permissions
 - **SPARK_JOB**: Spark job definitions with role-based permissions
@@ -56,6 +57,12 @@ This job helps IOMETE customers migrate assets (compute, spark jobs, jupyter con
 ## Supported Asset Types
 
 All asset types are configured in the `asset_types` array per domain:
+
+### DOMAIN
+Creates domain-level bundles with complex role-based permissions and establishes parent-child bundle hierarchy for resource bundles.
+
+
+**Execution order:** DOMAIN migration runs after NAMESPACE but before asset (RESOURCE) migrations to ensure bundle hierarchy is established correctly.
 
 ### NAMESPACE
 Creates namespace bundles and grants permissions to **all users** in the domain.
@@ -200,21 +207,22 @@ Main Application File: local:///app/driver.py
     # Migration configuration
     migration: {
         # List of domains to migrate with their configurations
-        # asset_types can include: JUPYTER_CONTAINER, SPARK_JOB, COMPUTE, NAMESPACE
-        # NAMESPACE uses different migration logic (all domain users get permissions)
-        # Other asset types use role-based permission migration
+        # asset_types can include: DOMAIN, NAMESPACE, JUPYTER_CONTAINER, SPARK_JOB, COMPUTE
+        # DOMAIN: Creates domain-level bundles with role-based permissions (special migration)
+        # NAMESPACE: Grants namespace permissions to all domain users (special migration)
+        # Other asset types: Use role-based permission migration
         domains: [
             {
                 domain_id: "production"
                 owner_id: "admin"
                 owner_type: "USER"  # USER or GROUP
-                asset_types: ["NAMESPACE"]  # Include NAMESPACE for namespace migration
+                asset_types: ["DOMAIN", "NAMESPACE", "COMPUTE"]  # Full migration with hierarchy
             }
             {
                 domain_id: "development"
                 owner_id: "dev_team"
                 owner_type: "GROUP"
-                asset_types: ["COMPUTE", "SPARK_JOB", "JUPYTER_CONTAINER"]  # Multiple asset types
+                asset_types: ["COMPUTE", "SPARK_JOB", "JUPYTER_CONTAINER"]  # Resource assets only
             }
             # Add more domains as needed
         ]
@@ -230,10 +238,11 @@ Main Application File: local:///app/driver.py
         # Debug mode - enables detailed logging and query output
         debug_mode: false
 
-        # Duplicate bundle behavior: FAIL, SKIP, UPDATE, or OVERWRITE (only for namespace migration)
-        # FAIL: Stop execution if default bundle already exists (default behavior)
-        # SKIP: Skip migration for domains where default bundle already exists
+        # Duplicate bundle behavior: FAIL, SKIP, UPDATE, or OVERWRITE (Applies to DOMAIN and NAMESPACE bundles)
+        # FAIL: Stop execution if bundle already exists (default behavior)
+        # SKIP: Skip migration for domains where bundle already exists
         # UPDATE: Update existing bundle ownership and re-process assets/permissions
+        # OVERWRITE: Delete existing bundle and recreate (use with caution)
         duplicate_bundle_action: "UPDATE"
     }
 
@@ -287,6 +296,8 @@ Main Application File: local:///app/driver.py
             # Permissions to grant to all domain users on namespaces
             permissions: ["USE"]
         }
+        # Note: DOMAIN asset type does not appear in asset_mappings
+        # DOMAIN is special-cased like NAMESPACE and uses complex role-based permission SQL
     }
 }
 ```
@@ -313,6 +324,16 @@ Choose the instance to run on:
     - Ensure bundles are created for each domain/namespace
     - Confirm assets or namespaces are assigned
     - Validate bundle permissions
+
+### DOMAIN Migration Log Output:
+```
+INFO: Starting DOMAIN migration for domain: production
+INFO: Created DOMAIN bundle abc-def-123 for domain production
+INFO: Added DOMAIN asset production to bundle abc-def-123
+INFO: Set DOMAIN permissions for 45 actors in domain production
+INFO: Updated parent_bundle_id for 3 RESOURCE bundles in domain production
+INFO: Successfully migrated DOMAIN for domain production
+```
 
 ### NAMESPACE Migration Log Output:
 ```
@@ -359,9 +380,11 @@ asset_mappings: {
 }
 ```
 
-**Note:** NAMESPACE is a special asset type that only requires a `permissions` array (no table, service, etc.) as it uses different migration logic.
+**Note:**
+- **NAMESPACE** is a special asset type that only requires a `permissions` array (no table, service, etc.)
+- **DOMAIN** is also special-cased and does not appear in `asset_mappings` - it uses complex role-based SQL
 
-**No code changes required** - the job will automatically handle the new asset type.
+**No code changes required** - the job will automatically handle the new asset type (except for DOMAIN and NAMESPACE which require special handling).
 
 ---
 
@@ -509,7 +532,7 @@ INFO: Domain production migrated: 25 COMPUTE, 15 SPARK_JOB, 8 JUPYTER_CONTAINER 
 
 ### Enhanced Migration Flow
 
-The job performs a **multi-phase migration process** with dynamic asset type support:
+The job performs a **multi-phase migration process** with dynamic asset type support and three distinct migration paths:
 
 #### Phase 1: Validation & Preparation
 - **Configuration Validation**: Validates all asset type configurations in `asset_mappings`
@@ -519,10 +542,11 @@ The job performs a **multi-phase migration process** with dynamic asset type sup
 - **Dry Run Support**: Can validate without making changes when `dry_run: true`
 
 #### Phase 2: Bundle Management (Per Domain)
-- **Bundle Detection**: Checks if default bundle already exists for domain
-- **Duplicate Handling**: Applies configured `duplicate_bundle_action` (FAIL/SKIP/UPDATE)
-- **Bundle Creation/Update**: Creates new bundle or updates existing bundle ownership
+- **Bundle Detection**: Checks if bundles already exist for domain
+- **Duplicate Handling**: Applies configured `duplicate_bundle_action` (FAIL/SKIP/UPDATE/OVERWRITE)
+- **Bundle Creation/Update**: Creates new bundles or updates existing bundle ownership
 - **Transaction Safety**: Uses database transactions for atomicity
+- **Hierarchy Establishment**: DOMAIN bundles update parent_bundle_id on RESOURCE bundles
 
 #### Phase 3: Multi-Asset Migration (Per Domain, Per Asset Type)
 For each domain with multiple asset types, the job processes **sequentially**
@@ -539,7 +563,7 @@ For each domain with multiple asset types, the job processes **sequentially**
 
 ## Duplicate Bundle Handling
 
-When a default bundle already exists for a domain, behavior is controlled by `duplicate_bundle_action`:
+When a bundle already exists for a domain (applies to DOMAIN and NAMESPACE bundles), behavior is controlled by `duplicate_bundle_action`:
 
 ### FAIL (Recommended for strict checks if necessary)
 ```hocon
@@ -568,13 +592,14 @@ duplicate_bundle_action: "UPDATE"
     - Processes each asset type according to its `asset_action_on_duplicate` setting
     - Re-processes permissions based on asset-specific actions
 
-### OVERWRITE (Only for NAMESPACE migration)
+### OVERWRITE (Caution: Destructive, can be used only for NAMESPACE/DOMAIN migration)
 ```hocon
 duplicate_bundle_action: "OVERWRITE"
 ```
-- **Behavior**: Completely overwrites existing namespace bundle
-- **Use Case**: Full reset of namespace permissions
-- **Note**: Only applicable when migrating NAMESPACE asset type
+- **Behavior**: Completely deletes and recreates the bundle
+- **Use Case**: Full reset of bundle permissions and assets
+- **Applies to**: Both NAMESPACE and DOMAIN bundles
+- **Warning**: Permanently deletes existing bundle, assets, and permissions before recreating
 
 ---
 
@@ -851,10 +876,12 @@ WARNING: All asset types configured with RESET - this will clear the entire bund
 - **Invalid owner_type** → Must be exactly "USER" or "GROUP" (case-sensitive)
 
 ### Multi-Asset Issues
-- **Asset types array parsing** → Ensure `asset_types` is a proper array: `["COMPUTE", "SPARK_JOB", "JUPYTER_CONTAINER", "NAMESPACE"]`
+- **Asset types array parsing** → Ensure `asset_types` is a proper array: `["DOMAIN", "NAMESPACE", "COMPUTE", "SPARK_JOB"]`
 - **Mixed asset type failures** → Check logs for per-asset-type errors; some may succeed while others fail
 - **No assets found for asset type** → Confirm domain contains assets for each specified asset type
+- **DOMAIN migration issues** → DOMAIN creates hierarchical bundles; ensure roles and domain members exist
 - **NAMESPACE migration issues** → NAMESPACE uses different migration logic; ensure `domain_namespace_mapping` table has data
+- **Bundle hierarchy errors** → If RESOURCE bundles fail to link to DOMAIN bundles, verify bundle_type field exists
 
 ### Permission Issues
 - **Permission migration failures** → Verify IAM role mappings and service permissions

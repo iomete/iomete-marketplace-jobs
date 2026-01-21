@@ -49,7 +49,6 @@ INSERT_DOMAIN_PERMISSIONS = """
             ('secrets', 'manage', 'MANAGE_SECRETS'),
             ('shared_worksheet', 'list', 'LIST_SHARED_WORKSHEET'),
             ('shared_worksheet', 'manage', 'MANAGE_SHARED_WORKSHEET'),
-            ('git_repository', 'list', 'LIST_GIT_REPO'),
             ('git_repository', 'manage', 'MANAGE_GIT_REPO'),
             ('sql_editor', 'export', 'EXPORT_SQL_EDITOR'),
             ('access_token', 'manage', 'MANAGE_ACCESS_TOKEN')
