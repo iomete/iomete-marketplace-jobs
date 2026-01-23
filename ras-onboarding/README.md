@@ -162,7 +162,7 @@ In the IOMETE Console:
 ## Step 2 – Docker Image Configuration
 Under **Image settings**:
 ```yaml
-Image: iomete.azurecr.io/iomete/ras-onboarding:1.0.2
+Image: iomete.azurecr.io/iomete/ras-onboarding:1.0.3
 Main Application File: local:///app/driver.py
 ```
 ℹ️ **Note:** If you are using a self-hosted registry or a mirror, point to the `ras-onboarding` image in your registry/mirror.
