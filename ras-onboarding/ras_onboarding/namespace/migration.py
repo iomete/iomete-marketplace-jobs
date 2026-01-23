@@ -166,12 +166,20 @@ class NamespaceMigration:
                             validate_bundle_uniqueness=bundle_existed
                         )
 
+                        # Grant permissions to direct users
                         users = self.permission_assignment.get_users_for_namespace(
                             iam_conn, namespace_name, domain_id
                         )
-
-                        self.permission_assignment.set_namespace_permissions(
+                        self.permission_assignment.set_namespace_permissions_for_users(
                             iam_conn, bundle_id, namespace_mapping_id, users
+                        )
+
+                        # Grant permissions to groups
+                        groups = self.permission_assignment.get_groups_for_namespace(
+                            iam_conn, namespace_name, domain_id
+                        )
+                        self.permission_assignment.set_namespace_permissions_for_groups(
+                            iam_conn, bundle_id, namespace_mapping_id, groups
                         )
 
                 if self.migration_config.get("dry_run", False):

@@ -68,25 +68,35 @@ class TestNamespaceMigrationIntegration:
             {"username": "eve"}
         ]
 
+        # Groups in domain
+        domain_groups = [
+            {"groupname": "developers"},
+            {"groupname": "analysts"}
+        ]
+
         # Setup core_db (asset) responses
+        # For each namespace: get_namespaces_for_domain, get_namespace_mapping_id
         core_db.execute_query.side_effect = [
             namespaces,  # get_namespaces_for_domain
+            [{"id": "map-default"}],  # mapping for default
+            [{"id": "map-analytics"}],  # mapping for analytics
+            [{"id": "map-ml"}],  # mapping for ml
         ]
 
         # Setup iam_db (bundle) responses
-        # For each namespace: get_namespace_mapping_id, check if bundle exists, get_users_for_namespace
-        namespace_mappings_and_bundles = [
-            [{"id": "map-default"}],  # mapping for default
+        # For each namespace: check if bundle exists, get_users_for_namespace, get_groups_for_namespace
+        namespace_bundles_users_groups = [
             [],  # no existing bundle for default
             domain_users,  # users for default
-            [{"id": "map-analytics"}],  # mapping for analytics
+            domain_groups,  # groups for default
             [],  # no existing bundle for analytics
             domain_users,  # users for analytics
-            [{"id": "map-ml"}],  # mapping for ml
+            domain_groups,  # groups for analytics
             [],  # no existing bundle for ml
             domain_users,  # users for ml
+            domain_groups,  # groups for ml
         ]
-        iam_db.execute_query.side_effect = namespace_mappings_and_bundles
+        iam_db.execute_query.side_effect = namespace_bundles_users_groups
 
         return iam_db, core_db, integration_config
 
@@ -114,8 +124,8 @@ class TestNamespaceMigrationIntegration:
         assert result is True
         # 3 namespaces × (create bundle + add asset) = 6 cursor executions
         assert cursor.execute.call_count == 6
-        # 3 namespaces × 5 users = 15 permission inserts
-        assert iam_db.execute_insert.call_count == 15
+        # 3 namespaces × (5 users + 2 groups) = 21 permission inserts
+        assert iam_db.execute_insert.call_count == 21
 
         bundle_conn.rollback.assert_not_called()
 
@@ -153,15 +163,19 @@ class TestNamespaceMigrationIntegration:
 
         namespaces = [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}]
         users = [{"username": "user1"}]
+        groups = [{"groupname": "developers"}]
 
+        # core_db queries: get_namespaces_for_domain, get_namespace_mapping_id
         core_db.execute_query.side_effect = [
-            namespaces,
+            namespaces,  # get_namespaces_for_domain
+            [{"id": "map-1"}],  # get_namespace_mapping_id
         ]
 
+        # iam_db queries: check bundle exists, get_users_for_namespace, get_groups_for_namespace
         iam_db.execute_query.side_effect = [
-            [{"id": "map-1"}],  # get_namespace_mapping_id
             [],  # bundle doesn't exist
             users,  # get_users_for_namespace
+            groups,  # get_groups_for_namespace
         ]
 
         bundle_conn = MagicMock()
@@ -219,7 +233,7 @@ class TestPermissionAssignmentIntegration:
         connection = Mock()
         users = {"user1", "user2", "user3", "user4", "user5"}
 
-        pa.set_namespace_permissions(connection, "bundle-123", "ns-123", users)
+        pa.set_namespace_permissions_for_users(connection, "bundle-123", "ns-123", users)
         assert iam_db.execute_insert.call_count == 5
 
     def test_get_users_for_namespace(self):
