@@ -14,7 +14,7 @@ SET_NAMESPACE_PERMISSION = """
                            INSERT INTO bundle_permission
                            (bundle_id, asset_type, actor_type, actor_id, permissions, created_at, created_by,
                             updated_at, updated_by)
-                           VALUES (%s, 'NAMESPACE', 'USER', %s, %s, current_timestamp, 'system', current_timestamp,
+                           VALUES (%s, 'NAMESPACE', %s, %s, %s, current_timestamp, 'system', current_timestamp,
                                    'system') ON CONFLICT (bundle_id, asset_type, actor_type, actor_id)
             DO
                            UPDATE SET
@@ -43,6 +43,15 @@ GET_ALL_DOMAIN_USERS = """
             WHERE dm.domain_id = %s
               AND dm.identity_type = 'USER'
               AND u.is_deleted = false
+        """
+
+GET_ALL_DOMAIN_GROUPS = """
+            SELECT DISTINCT dm.identity_id as groupname
+            FROM domain_member dm
+            JOIN iam_group g ON g.name = dm.identity_id
+            WHERE dm.domain_id = %s
+              AND dm.identity_type = 'GROUP'
+              AND g.is_deleted = false
         """
 
 CHECK_NAMESPACE_IN_ANY_BUNDLE = """

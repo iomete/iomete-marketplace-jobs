@@ -65,20 +65,20 @@ def migration(mock_iam_db, mock_core_db, sample_config):
 class TestGetNamespaceMappingId:
     """Test get_namespace_mapping_id method."""
 
-    def test_get_existing_namespace_mapping(self, migration, mock_iam_db):
+    def test_get_existing_namespace_mapping(self, migration, mock_core_db):
         """Test getting an existing namespace mapping ID."""
         mock_connection = Mock()
-        mock_iam_db.execute_query.return_value = [{"id": "mapping-123"}]
+        mock_core_db.execute_query.return_value = [{"id": "mapping-123"}]
 
         result = migration.get_namespace_mapping_id(mock_connection, "domain-123", "default")
 
         assert result == "mapping-123"
-        mock_iam_db.execute_query.assert_called_once()
+        mock_core_db.execute_query.assert_called_once()
 
-    def test_get_namespace_mapping_not_found(self, migration, mock_iam_db):
+    def test_get_namespace_mapping_not_found(self, migration, mock_core_db):
         """Test error when namespace mapping doesn't exist."""
         mock_connection = Mock()
-        mock_iam_db.execute_query.return_value = []
+        mock_core_db.execute_query.return_value = []
 
         with pytest.raises(ValueError) as exc_info:
             migration.get_namespace_mapping_id(mock_connection, "domain-123", "default")
@@ -276,7 +276,7 @@ class TestMigrateDomain:
     """Test migrate_domain method."""
 
     def test_migrate_domain_success(self, migration, mock_iam_db, mock_core_db):
-        """Test successful domain migration."""
+        """Test successful domain migration with users and groups."""
 
         mock_bundle_conn = MagicMock()
         mock_asset_conn = MagicMock()
@@ -287,14 +287,17 @@ class TestMigrateDomain:
         mock_core_db.get_connection.return_value.__enter__ = Mock(return_value=mock_asset_conn)
         mock_core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
+        # core_db queries: get_namespaces_for_domain, get_namespace_mapping_id
         mock_core_db.execute_query.side_effect = [
-            [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],
+            [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],  # get_namespaces
+            [{"id": "mapping-123"}],  # get_namespace_mapping_id
         ]
 
+        # iam_db queries: check bundle exists, get users, get groups
         mock_iam_db.execute_query.side_effect = [
-            [{"id": "mapping-123"}],  # get_namespace_mapping_id
             [],  # check if bundle exists
             [{"username": "user1"}],  # get_users_for_namespace
+            [{"groupname": "developers"}],  # get_groups_for_namespace
         ]
 
         domain_config = {"domain_id": "domain-123", "owner_id": "user-123", "owner_type": "USER"}
@@ -354,12 +357,14 @@ class TestMigrateDomain:
         mock_core_db.get_connection.return_value.__enter__ = Mock(return_value=mock_asset_conn)
         mock_core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
 
+        # core_db queries
         mock_core_db.execute_query.side_effect = [
-            [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}]  # get_namespaces
+            [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],  # get_namespaces
+            [{"id": "mapping-123"}],  # get_namespace_mapping_id
         ]
 
+        # iam_db queries
         mock_iam_db.execute_query.side_effect = [
-            [{"id": "mapping-123"}],  # get_namespace_mapping_id
             [{"id": "bundle-123"}]  # bundle exists
         ]
 
@@ -367,6 +372,254 @@ class TestMigrateDomain:
         result = migration.migrate_domain(domain_config)
 
         assert result is True
+
+    def test_migrate_domain_with_users_and_groups(self, migration, mock_iam_db, mock_core_db):
+        """Test migration with both users and groups in domain."""
+        mock_bundle_conn = MagicMock()
+        mock_asset_conn = MagicMock()
+
+        mock_iam_db.get_transaction.return_value.__enter__ = Mock(return_value=mock_bundle_conn)
+        mock_iam_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
+
+        mock_core_db.get_connection.return_value.__enter__ = Mock(return_value=mock_asset_conn)
+        mock_core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
+
+        # core_db queries
+        mock_core_db.execute_query.side_effect = [
+            [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],  # get_namespaces
+            [{"id": "mapping-123"}],  # get_namespace_mapping_id
+        ]
+
+        # iam_db queries
+        mock_iam_db.execute_query.side_effect = [
+            [],  # check if bundle exists
+            [{"username": "user1"}, {"username": "user2"}],  # get_users_for_namespace
+            [{"groupname": "developers"}, {"groupname": "analysts"}],  # get_groups_for_namespace
+        ]
+
+        domain_config = {"domain_id": "domain-123", "owner_id": "user-123", "owner_type": "USER"}
+        result = migration.migrate_domain(domain_config)
+
+        assert result is True
+        # Should insert permissions for 2 users + 2 groups = 4 total
+        assert mock_iam_db.execute_insert.call_count == 4
+
+    def test_migrate_domain_groups_only(self, migration, mock_iam_db, mock_core_db):
+        """Test migration with only groups (no direct users) in domain."""
+        mock_bundle_conn = MagicMock()
+        mock_asset_conn = MagicMock()
+
+        mock_iam_db.get_transaction.return_value.__enter__ = Mock(return_value=mock_bundle_conn)
+        mock_iam_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
+
+        mock_core_db.get_connection.return_value.__enter__ = Mock(return_value=mock_asset_conn)
+        mock_core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
+
+        # core_db queries
+        mock_core_db.execute_query.side_effect = [
+            [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],  # get_namespaces
+            [{"id": "mapping-123"}],  # get_namespace_mapping_id
+        ]
+
+        # iam_db queries
+        mock_iam_db.execute_query.side_effect = [
+            [],  # check if bundle exists
+            [],  # get_users_for_namespace - no users
+            [{"groupname": "developers"}],  # get_groups_for_namespace
+        ]
+
+        domain_config = {"domain_id": "domain-123", "owner_id": "user-123", "owner_type": "USER"}
+        result = migration.migrate_domain(domain_config)
+
+        assert result is True
+        # Should insert permissions for 1 group only
+        assert mock_iam_db.execute_insert.call_count == 1
+
+    def test_migrate_domain_users_only(self, migration, mock_iam_db, mock_core_db):
+        """Test migration with only users (no groups) in domain."""
+        mock_bundle_conn = MagicMock()
+        mock_asset_conn = MagicMock()
+
+        mock_iam_db.get_transaction.return_value.__enter__ = Mock(return_value=mock_bundle_conn)
+        mock_iam_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
+
+        mock_core_db.get_connection.return_value.__enter__ = Mock(return_value=mock_asset_conn)
+        mock_core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
+
+        # core_db queries
+        mock_core_db.execute_query.side_effect = [
+            [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],  # get_namespaces
+            [{"id": "mapping-123"}],  # get_namespace_mapping_id
+        ]
+
+        # iam_db queries
+        mock_iam_db.execute_query.side_effect = [
+            [],  # check if bundle exists
+            [{"username": "user1"}],  # get_users_for_namespace
+            [],  # get_groups_for_namespace - no groups
+        ]
+
+        domain_config = {"domain_id": "domain-123", "owner_id": "user-123", "owner_type": "USER"}
+        result = migration.migrate_domain(domain_config)
+
+        assert result is True
+        # Should insert permissions for 1 user only
+        assert mock_iam_db.execute_insert.call_count == 1
+
+    def test_migrate_domain_no_users_no_groups(self, migration, mock_iam_db, mock_core_db):
+        """Test migration when domain has no users or groups."""
+        mock_bundle_conn = MagicMock()
+        mock_asset_conn = MagicMock()
+
+        mock_iam_db.get_transaction.return_value.__enter__ = Mock(return_value=mock_bundle_conn)
+        mock_iam_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
+
+        mock_core_db.get_connection.return_value.__enter__ = Mock(return_value=mock_asset_conn)
+        mock_core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
+
+        # core_db queries
+        mock_core_db.execute_query.side_effect = [
+            [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],  # get_namespaces
+            [{"id": "mapping-123"}],  # get_namespace_mapping_id
+        ]
+
+        # iam_db queries
+        mock_iam_db.execute_query.side_effect = [
+            [],  # check if bundle exists
+            [],  # get_users_for_namespace - no users
+            [],  # get_groups_for_namespace - no groups
+        ]
+
+        domain_config = {"domain_id": "domain-123", "owner_id": "user-123", "owner_type": "USER"}
+        result = migration.migrate_domain(domain_config)
+
+        assert result is True
+        # No permissions should be inserted
+        assert mock_iam_db.execute_insert.call_count == 0
+
+
+class TestActorTypePermissions:
+    """Test that actor_type is correctly set for users and groups."""
+
+    def test_user_permission_has_user_actor_type(self, migration, mock_iam_db, mock_core_db):
+        """Verify that user permissions are created with actor_type='USER'."""
+        mock_bundle_conn = MagicMock()
+        mock_asset_conn = MagicMock()
+
+        mock_iam_db.get_transaction.return_value.__enter__ = Mock(return_value=mock_bundle_conn)
+        mock_iam_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
+
+        mock_core_db.get_connection.return_value.__enter__ = Mock(return_value=mock_asset_conn)
+        mock_core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
+
+        # core_db queries
+        mock_core_db.execute_query.side_effect = [
+            [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],  # get_namespaces
+            [{"id": "mapping-123"}],  # get_namespace_mapping_id
+        ]
+
+        # iam_db queries
+        mock_iam_db.execute_query.side_effect = [
+            [],  # check if bundle exists
+            [{"username": "alice"}],  # get_users_for_namespace
+            [],  # get_groups_for_namespace
+        ]
+
+        # Track insert calls
+        insert_calls = []
+        mock_iam_db.execute_insert.side_effect = lambda conn, query, params: insert_calls.append(params)
+
+        domain_config = {"domain_id": "domain-123", "owner_id": "user-123", "owner_type": "USER"}
+        migration.migrate_domain(domain_config)
+
+        # Verify user permission has correct actor_type
+        assert len(insert_calls) == 1
+        user_permission = insert_calls[0]
+        assert user_permission[1] == 'USER'  # actor_type
+        assert user_permission[2] == 'alice'  # actor_id
+
+    def test_group_permission_has_group_actor_type(self, migration, mock_iam_db, mock_core_db):
+        """Verify that group permissions are created with actor_type='GROUP'."""
+        mock_bundle_conn = MagicMock()
+        mock_asset_conn = MagicMock()
+
+        mock_iam_db.get_transaction.return_value.__enter__ = Mock(return_value=mock_bundle_conn)
+        mock_iam_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
+
+        mock_core_db.get_connection.return_value.__enter__ = Mock(return_value=mock_asset_conn)
+        mock_core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
+
+        # core_db queries
+        mock_core_db.execute_query.side_effect = [
+            [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],  # get_namespaces
+            [{"id": "mapping-123"}],  # get_namespace_mapping_id
+        ]
+
+        # iam_db queries
+        mock_iam_db.execute_query.side_effect = [
+            [],  # check if bundle exists
+            [],  # get_users_for_namespace
+            [{"groupname": "developers"}],  # get_groups_for_namespace
+        ]
+
+        # Track insert calls
+        insert_calls = []
+        mock_iam_db.execute_insert.side_effect = lambda conn, query, params: insert_calls.append(params)
+
+        domain_config = {"domain_id": "domain-123", "owner_id": "user-123", "owner_type": "USER"}
+        migration.migrate_domain(domain_config)
+
+        # Verify group permission has correct actor_type
+        assert len(insert_calls) == 1
+        group_permission = insert_calls[0]
+        assert group_permission[1] == 'GROUP'  # actor_type
+        assert group_permission[2] == 'developers'  # actor_id
+
+    def test_mixed_permissions_have_correct_actor_types(self, migration, mock_iam_db, mock_core_db):
+        """Verify that both user and group permissions have correct actor_types."""
+        mock_bundle_conn = MagicMock()
+        mock_asset_conn = MagicMock()
+
+        mock_iam_db.get_transaction.return_value.__enter__ = Mock(return_value=mock_bundle_conn)
+        mock_iam_db.get_transaction.return_value.__exit__ = Mock(return_value=False)
+
+        mock_core_db.get_connection.return_value.__enter__ = Mock(return_value=mock_asset_conn)
+        mock_core_db.get_connection.return_value.__exit__ = Mock(return_value=False)
+
+        # core_db queries
+        mock_core_db.execute_query.side_effect = [
+            [{"id": "ns-1", "namespace": "default", "domain_id": "domain-123"}],  # get_namespaces
+            [{"id": "mapping-123"}],  # get_namespace_mapping_id
+        ]
+
+        # iam_db queries
+        mock_iam_db.execute_query.side_effect = [
+            [],  # check if bundle exists
+            [{"username": "alice"}, {"username": "bob"}],  # get_users_for_namespace
+            [{"groupname": "developers"}, {"groupname": "analysts"}],  # get_groups_for_namespace
+        ]
+
+        # Track insert calls
+        insert_calls = []
+        mock_iam_db.execute_insert.side_effect = lambda conn, query, params: insert_calls.append(params)
+
+        domain_config = {"domain_id": "domain-123", "owner_id": "user-123", "owner_type": "USER"}
+        migration.migrate_domain(domain_config)
+
+        # Should have 4 inserts: 2 users + 2 groups
+        assert len(insert_calls) == 4
+
+        # First two should be users
+        user_permissions = [call for call in insert_calls if call[1] == 'USER']
+        assert len(user_permissions) == 2
+        assert user_permissions[0][2] in ['alice', 'bob']
+        assert user_permissions[1][2] in ['alice', 'bob']
+
+        # Last two should be groups
+        group_permissions = [call for call in insert_calls if call[1] == 'GROUP']
+        assert len(group_permissions) == 2
+        assert group_permissions[0][2] in ['developers', 'analysts']
+        assert group_permissions[1][2] in ['developers', 'analysts']
 
 
 class TestRunMigration:
