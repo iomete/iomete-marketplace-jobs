@@ -72,6 +72,11 @@ class TestGetOrCreateDomainBundle:
         assert bundle_existed is False
         mock_cursor.execute.assert_called_once()
 
+        # Verify domain_id is passed as 6th parameter
+        call_args = mock_cursor.execute.call_args[0]
+        params = call_args[1]
+        assert params[5] == "test-domain"  # domain_id should be the 6th parameter (index 5)
+
     def test_existing_bundle_fail_mode(self, migration, mock_iam_db):
         """Test FAIL mode when bundle already exists."""
         mock_connection = Mock()
@@ -155,6 +160,33 @@ class TestGetOrCreateDomainBundle:
         # Check that query was called with domain_id (not my-domain_default)
         query_call_args = mock_iam_db.execute_query.call_args[0]
         assert "my-domain" in query_call_args[2]  # Should be in parameters
+
+    def test_domain_bundle_parameters_order(self, migration, mock_iam_db):
+        """Test that CREATE_DOMAIN_BUNDLE receives parameters in correct order."""
+        mock_connection = Mock()
+        mock_connection.cursor = Mock()
+        mock_cursor = MagicMock()
+        mock_connection.cursor.return_value.__enter__ = Mock(return_value=mock_cursor)
+        mock_connection.cursor.return_value.__exit__ = Mock(return_value=False)
+
+        mock_iam_db.execute_query.return_value = []
+
+        bundle_id, _ = migration.get_or_create_domain_bundle(
+            mock_connection, "test-domain", "admin-user", "USER"
+        )
+
+        # Verify parameters order: bundle_id, bundle_name, description, owner_id, owner_type, domain_id, created_by, updated_by
+        call_args = mock_cursor.execute.call_args[0]
+        params = call_args[1]
+
+        assert params[0] == bundle_id  # bundle_id
+        assert params[1] == "test-domain-domain-bundle"  # bundle_name
+        assert "test-domain" in params[2]  # description
+        assert params[3] == "admin-user"  # owner_id
+        assert params[4] == "USER"  # owner_type
+        assert params[5] == "test-domain"  # domain_id (CRITICAL - must be set, not NULL)
+        assert params[6] == "admin-user"  # created_by
+        assert params[7] == "admin-user"  # updated_by
 
 
 class TestAddDomainAsset:

@@ -15,7 +15,7 @@ CREATE_DOMAIN_BUNDLE = """
         created_at, created_by, updated_at, updated_by, is_archived
     )
     VALUES (
-        %s, %s, %s, %s, %s, NULL,
+        %s, %s, %s, %s, %s, %s,
         'DOMAIN', NULL,
         current_timestamp, %s, current_timestamp, %s, false
     )

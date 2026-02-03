@@ -88,7 +88,7 @@ class DomainMigration:
         with connection.cursor() as cursor:
             cursor.execute(
                 CREATE_DOMAIN_BUNDLE,
-                (bundle_id, bundle_name, description, owner_id, owner_type, owner_id, owner_id)
+                (bundle_id, bundle_name, description, owner_id, owner_type, domain_id, owner_id, owner_id)
             )
 
         logger.info(f"Created DOMAIN bundle {bundle_id} for domain {domain_id}")
