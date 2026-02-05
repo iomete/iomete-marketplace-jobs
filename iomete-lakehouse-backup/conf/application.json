@@ -1,0 +1,30 @@
+{
+  "source": {
+    "type": "s3",
+    "bucket": "source-bucket",
+    "prefix": "data/warehouse/",
+    "endpoint": "https://s3-source.example.com",
+    "pathStyleAccess": true,
+    "accessKey": "${SOURCE_ACCESS_KEY}",
+    "secretKey": "${SOURCE_SECRET_KEY}"
+  },
+  "target": {
+    "type": "s3",
+    "bucket": "backup-bucket",
+    "prefix": "backups/warehouse/",
+    "endpoint": "https://s3-target.example.com",
+    "pathStyleAccess": true,
+    "accessKey": "${TARGET_ACCESS_KEY}",
+    "secretKey": "${TARGET_SECRET_KEY}"
+  },
+  "copy": {
+    "mode": "full",
+    "options": {
+      "skipCrcCheck": true,
+      "ignoreFailures": false,
+      "maxMaps": 150,
+      "bandwidthMb": 1024,
+      "numListStatusThreads": 30
+    }
+  }
+}
