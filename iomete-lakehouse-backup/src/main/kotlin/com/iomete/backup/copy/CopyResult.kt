@@ -16,7 +16,8 @@ data class CopyResult(
     val targetPath: String,
     val success: Boolean,
     val bytesCopied: Long = 0,
-    val error: String? = null
+    val error: String? = null,
+    val attemptsUsed: Int = 1
 ) : Serializable
 
 /**
@@ -34,4 +35,15 @@ data class CopyJobSummary(
     val failureCount: Int,
     val totalBytesCopied: Long,
     val errors: List<String>
+)
+
+/**
+ * Full output of a distributed copy execution.
+ *
+ * @property summary Aggregated counts and bytes.
+ * @property fileResults Per-file success/failure state with reason and attempts used.
+ */
+data class CopyJobResult(
+    val summary: CopyJobSummary,
+    val fileResults: List<CopyResult>
 )

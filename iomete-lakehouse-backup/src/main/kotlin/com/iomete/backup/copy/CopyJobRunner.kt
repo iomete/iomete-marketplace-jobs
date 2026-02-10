@@ -11,7 +11,7 @@ import org.slf4j.LoggerFactory
  *
  * Converts the enumerated file list into a Spark RDD, maps each entry
  * through [FileCopier.copySingleFile], collects results, and produces
- * a [CopyJobSummary].
+ * a [CopyJobResult].
  */
 object CopyJobRunner {
 
@@ -29,9 +29,9 @@ object CopyJobRunner {
      * @param spark  The active SparkSession.
      * @param config The application configuration.
      * @param files  List of files enumerated from the source.
-     * @return [CopyJobSummary] with counts and error details.
+     * @return [CopyJobResult] with summary and per-file results.
      */
-    fun run(spark: SparkSession, config: ApplicationConfig, files: List<FileEntry>): CopyJobSummary {
+    fun run(spark: SparkSession, config: ApplicationConfig, files: List<FileEntry>): CopyJobResult {
         val jsc = JavaSparkContext(spark.sparkContext())
 
         // Build serializable config maps
@@ -79,6 +79,9 @@ object CopyJobRunner {
         logger.info("Copy job completed: {} succeeded, {} failed, {} bytes copied",
             summary.successCount, summary.failureCount, summary.totalBytesCopied)
 
-        return summary
+        return CopyJobResult(
+            summary = summary,
+            fileResults = results
+        )
     }
 }

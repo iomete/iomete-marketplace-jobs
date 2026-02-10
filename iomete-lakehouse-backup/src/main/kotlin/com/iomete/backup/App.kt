@@ -14,6 +14,7 @@ import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
 import org.slf4j.LoggerFactory
 import java.net.URI
+import java.time.Instant
 import kotlin.system.exitProcess
 
 /**
@@ -121,7 +122,9 @@ object App {
             // Execute distributed copy
             logger.info("-".repeat(60))
             logger.info("Starting distributed copy...")
-            val summary = CopyJobRunner.run(spark, config, files)
+            val copyStartTime = Instant.now()
+            val copyJobResult = CopyJobRunner.run(spark, config, files)
+            val summary = copyJobResult.summary
 
             // Log summary
             logger.info("-".repeat(60))
@@ -133,13 +136,44 @@ object App {
                 summary.totalBytesCopied / (1024 * 1024))
             logger.info("-".repeat(60))
 
-            // Log individual errors if any
-            if (summary.errors.isNotEmpty()) {
-                logger.warn("Failed file details ({} errors):", summary.errors.size)
-                summary.errors.forEach { error ->
-                    logger.warn("  - {}", error)
+            logger.info("File-level copy results:")
+            copyJobResult.fileResults.forEach { result ->
+                if (result.success) {
+                    logger.info(
+                        "  [SUCCESS] source={} target={} bytesCopied={} attemptsUsed={}",
+                        result.sourcePath, result.targetPath, result.bytesCopied, result.attemptsUsed
+                    )
+                } else {
+                    logger.warn(
+                        "  [FAILED] source={} target={} attemptsUsed={} reason={}",
+                        result.sourcePath, result.targetPath, result.attemptsUsed, result.error
+                    )
                 }
             }
+
+            val copyEndTime = Instant.now()
+            val finalStatus = when {
+                summary.failureCount == 0 -> "completed"
+                config.copy.options.ignoreFailures -> "partial"
+                else -> "failed"
+            }
+            val targetConfMap = HadoopConfigBuilder.buildConfigMap(config.target)
+            val targetRoot = PathResolver.resolveRootUri(config.target)
+            val metrics = BackupMetrics(
+                status = finalStatus,
+                filesTotal = summary.totalFiles,
+                filesCopied = summary.successCount,
+                filesSkipped = 0,
+                filesFailed = summary.failureCount,
+                bytesTotal = totalBytes,
+                bytesCopied = summary.totalBytesCopied,
+                startTime = copyStartTime.toString(),
+                endTime = copyEndTime.toString(),
+                errors = summary.errors,
+                fileResults = BackupMetricsWriter.toFileMetrics(copyJobResult.fileResults)
+            )
+            val metricsPath = BackupMetricsWriter.write(targetRoot, targetConfMap, metrics)
+            logger.info("Metrics JSON written to: {}", metricsPath)
 
             // Fail the job if there were failures and ignoreFailures is off
             if (summary.failureCount > 0 && !config.copy.options.ignoreFailures) {

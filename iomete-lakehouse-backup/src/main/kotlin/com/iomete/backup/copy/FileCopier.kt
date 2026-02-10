@@ -26,6 +26,10 @@ class FileCopier(
     private val sourceRoot: String,
     private val targetRoot: String
 ) : Serializable {
+    companion object {
+        private const val MAX_ATTEMPTS = 3
+        private const val RETRY_DELAY_MS = 1000L
+    }
 
     @Transient
     private var logger = LoggerFactory.getLogger(FileCopier::class.java)
@@ -52,53 +56,69 @@ class FileCopier(
      */
     fun copySingleFile(sourceFilePath: String): CopyResult {
         val targetFilePath = PathResolver.resolveTargetPath(sourceFilePath, sourceRoot, targetRoot)
+        var lastError: String? = null
 
-        return try {
-            val sourceConf = HadoopConfigBuilder.toHadoopConf(sourceConfMap)
-            val targetConf = HadoopConfigBuilder.toHadoopConf(targetConfMap)
+        for (attempt in 1..MAX_ATTEMPTS) {
+            try {
+                val sourceConf = HadoopConfigBuilder.toHadoopConf(sourceConfMap)
+                val targetConf = HadoopConfigBuilder.toHadoopConf(targetConfMap)
 
-            val sourcePath = Path(sourceFilePath)
-            val targetPath = Path(targetFilePath)
+                val sourcePath = Path(sourceFilePath)
+                val targetPath = Path(targetFilePath)
 
-            val sourceFs = FileSystem.get(URI(sourceFilePath), sourceConf)
-            val targetFs = FileSystem.get(URI(targetFilePath), targetConf)
+                val sourceFs = FileSystem.get(URI(sourceFilePath), sourceConf)
+                val targetFs = FileSystem.get(URI(targetFilePath), targetConf)
 
-            // Ensure parent directory exists on target
-            val parentDir = targetPath.parent
-            if (parentDir != null && !targetFs.exists(parentDir)) {
-                targetFs.mkdirs(parentDir)
+                // Ensure parent directory exists on target
+                val parentDir = targetPath.parent
+                if (parentDir != null && !targetFs.exists(parentDir)) {
+                    targetFs.mkdirs(parentDir)
+                }
+
+                // Get source file size before copy
+                val fileStatus = sourceFs.getFileStatus(sourcePath)
+                val fileSize = fileStatus.len
+
+                // Copy the file
+                FileUtil.copy(
+                    sourceFs, sourcePath,
+                    targetFs, targetPath,
+                    false,  // deleteSource
+                    true,   // overwrite
+                    targetConf
+                )
+
+                log().debug(
+                    "Copied on attempt {}/{}: {} -> {} ({} bytes)",
+                    attempt, MAX_ATTEMPTS, sourceFilePath, targetFilePath, fileSize
+                )
+
+                return CopyResult(
+                    sourcePath = sourceFilePath,
+                    targetPath = targetFilePath,
+                    success = true,
+                    bytesCopied = fileSize,
+                    attemptsUsed = attempt
+                )
+            } catch (e: Exception) {
+                lastError = "${e.javaClass.simpleName}: ${e.message}"
+                log().warn(
+                    "Attempt {}/{} failed for {} -> {}: {}",
+                    attempt, MAX_ATTEMPTS, sourceFilePath, targetFilePath, lastError
+                )
+
+                if (attempt < MAX_ATTEMPTS) {
+                    Thread.sleep(RETRY_DELAY_MS)
+                }
             }
-
-            // Get source file size before copy
-            val fileStatus = sourceFs.getFileStatus(sourcePath)
-            val fileSize = fileStatus.len
-
-            // Copy the file
-            FileUtil.copy(
-                sourceFs, sourcePath,
-                targetFs, targetPath,
-                false,  // deleteSource
-                true,   // overwrite
-                targetConf
-            )
-
-            log().debug("Copied: {} -> {} ({} bytes)", sourceFilePath, targetFilePath, fileSize)
-
-            CopyResult(
-                sourcePath = sourceFilePath,
-                targetPath = targetFilePath,
-                success = true,
-                bytesCopied = fileSize
-            )
-        } catch (e: Exception) {
-            log().warn("Failed to copy {} -> {}: {}", sourceFilePath, targetFilePath, e.message)
-
-            CopyResult(
-                sourcePath = sourceFilePath,
-                targetPath = targetFilePath,
-                success = false,
-                error = "${e.javaClass.simpleName}: ${e.message}"
-            )
         }
+
+        return CopyResult(
+            sourcePath = sourceFilePath,
+            targetPath = targetFilePath,
+            success = false,
+            error = lastError ?: "Unknown copy failure",
+            attemptsUsed = MAX_ATTEMPTS
+        )
     }
 }

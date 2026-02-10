@@ -57,6 +57,7 @@ class FileCopierTest {
         assertEquals(sourceFilePath, result.sourcePath)
         assertEquals(11L, result.bytesCopied) // "hello world" = 11 bytes
         assertNull(result.error)
+        assertEquals(1, result.attemptsUsed)
 
         // Verify the file was actually written to target
         val expectedTargetFile = File(targetDir, "data/file.txt")
@@ -84,6 +85,7 @@ class FileCopierTest {
         val result = copier.copySingleFile(sourceFile.toURI().toString())
 
         assertTrue(result.success)
+        assertEquals(1, result.attemptsUsed)
         val targetFile = File(targetDir, "a/b/c/deep.txt")
         assertTrue(targetFile.exists())
         assertEquals("deep content", targetFile.readText())
@@ -108,6 +110,7 @@ class FileCopierTest {
         assertEquals(nonExistentPath, result.sourcePath)
         assertEquals(0L, result.bytesCopied)
         assertTrue(result.error!!.contains("FileNotFoundException") || result.error!!.contains("No such file"))
+        assertEquals(3, result.attemptsUsed)
     }
 
     @Test
@@ -140,6 +143,7 @@ class FileCopierTest {
         }
 
         assertTrue(results.all { it.success })
+        assertTrue(results.all { it.attemptsUsed == 1 })
 
         // Verify all files exist at target
         files.forEach { (relativePath, content) ->
@@ -168,6 +172,7 @@ class FileCopierTest {
         val result = copier.copySingleFile(sourceFile.toURI().toString())
 
         assertTrue(result.success)
+        assertEquals(1, result.attemptsUsed)
         assertTrue(result.targetPath.contains("target/file.txt"))
     }
 
