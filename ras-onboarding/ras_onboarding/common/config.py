@@ -21,10 +21,10 @@ def _validate_database_config(config: dict) -> None:
 
 
 def _validate_overwrite_action_config(config: dict) -> None:
-    """Validate that OVERWRITE action is only used with NAMESPACE asset type.
+    """Validate that OVERWRITE action is only used with NAMESPACE or DOMAIN asset types.
 
     When duplicate_bundle_action is OVERWRITE, all domains must have only
-    NAMESPACE in their asset_types list.
+    ['NAMESPACE'] or ['DOMAIN'] in their asset_types list.
     """
     migration_config = config.get("migration", {})
     duplicate_action = migration_config.get("duplicate_bundle_action", "FAIL")
@@ -39,8 +39,8 @@ def _validate_overwrite_action_config(config: dict) -> None:
         domain_id = domain.get("domain_id", "unknown")
         asset_types = domain.get("asset_types", [])
 
-        # Check if asset_types contains only NAMESPACE
-        if asset_types != ["NAMESPACE"]:
+        # Check if asset_types contains only NAMESPACE or only DOMAIN
+        if asset_types not in (["NAMESPACE"], ["DOMAIN"]):
             invalid_domains.append({
                 "domain_id": domain_id,
                 "asset_types": asset_types
@@ -53,7 +53,7 @@ def _validate_overwrite_action_config(config: dict) -> None:
         )
         raise ValueError(
             f"When duplicate_bundle_action is 'OVERWRITE', all domains must have "
-            f"only ['NAMESPACE'] in asset_types. Invalid domains: {domain_details}"
+            f"only ['NAMESPACE'] or ['DOMAIN'] in asset_types. Invalid domains: {domain_details}"
         )
 
 
