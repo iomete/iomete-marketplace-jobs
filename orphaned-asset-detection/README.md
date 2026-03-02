@@ -48,7 +48,7 @@ Only the credentials typically change between environments; everything else can 
 | `BUNDLE` | `owner_id` belongs to a deleted user or group |
 | `DATA_ACCESS_POLICY` | Policy `identity` points at a deleted user or group |
 
-For every match the job writes a row containing `asset_id`, `asset_name`, `domain_id` (when available), `asset_type`, `owner_type`, `owner_id`, and the original archive date of that deleted user. Idempotency is handled by excluding rows that already exist in `orphaned_asset`.
+For every match the job writes a row containing `asset_id`, `asset_name`, `domain_id` (when available), `asset_type`, `owner_type`, `owner_id`, and the original archive date. Each run truncates and repopulates the `orphaned_asset` table to reflect the current snapshot of orphaned relationships.
 
 ---
 

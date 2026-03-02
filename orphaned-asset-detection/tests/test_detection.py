@@ -91,24 +91,3 @@ def test_detect_orphaned_policies_supports_identity_types(spark):
     assert ("policy2", "Policy Two", None, "GROUP", "deleted_group1") in rows
     assert ("policy3", "Policy Three", None, "USER", "active_user") not in rows
 
-
-def test_exclude_existing_removes_duplicates(spark):
-    schema = detection.RESULT_SCHEMA
-    candidates = spark.createDataFrame(
-        [
-            ("DOMAIN", "domain1", "Domain One", "domain1", "USER", "deleted_user1", datetime(2024, 1, 1)),
-            ("BUNDLE", "bundle1", "Bundle One", "domain2", "GROUP", "deleted_group1", datetime(2024, 1, 2)),
-        ],
-        schema,
-    )
-    existing = spark.createDataFrame(
-        [
-            ("DOMAIN", "domain1", "USER", "deleted_user1"),
-        ],
-        "asset_type string, asset_id string, owner_type string, owner_id string",
-    )
-
-    result = detection._exclude_existing(candidates, existing)
-    remaining = {(row.asset_type, row.asset_id, row.asset_name, row.domain_id) for row in result.collect()}
-
-    assert remaining == {("BUNDLE", "bundle1", "Bundle One", "domain2")}

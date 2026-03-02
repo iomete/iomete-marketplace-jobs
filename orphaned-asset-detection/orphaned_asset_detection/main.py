@@ -74,26 +74,43 @@ def _read_table(spark: SparkSession, db_config: DatabaseConfig, table: str) -> D
     return spark.read.format("jdbc").options(**options).load()
 
 
-def _write_table(df: DataFrame, db_config: DatabaseConfig, table: str):
+def _write_table(
+    df: DataFrame,
+    db_config: DatabaseConfig,
+    table: str,
+    mode: str = "append",
+    extra_options: Optional[Dict[str, Any]] = None,
+):
     options = _jdbc_base_options(db_config)
     options["dbtable"] = table
-    df.write.format("jdbc").options(**options).mode("append").save()
+    if extra_options:
+        options.update(extra_options)
+    df.write.format("jdbc").options(**options).mode(mode).save()
+
+
+def _clear_table(spark: SparkSession, db_config: DatabaseConfig, table: str, schema: T.StructType):
+    # Trigger a JDBC truncate to keep orphaned_asset as a fresh snapshot each run.
+    # The empty DataFrame is only a vehicle; the actual truncate happens on the
+    # database side when mode="overwrite" and truncate=true.
+    empty_df = spark.createDataFrame(spark.sparkContext.emptyRDD(), schema)
+    _write_table(
+        empty_df,
+        db_config,
+        table,
+        mode="overwrite",
+        extra_options={"truncate": "true"},
+    )
 
 
 def _load_deleted_users(
     spark: SparkSession,
     global_db: DatabaseConfig,
-    last_archive_date: Optional[str] = None,
 ) -> DataFrame:
-    base_query = """
+    query = """
         SELECT username AS owner_id, updated_at AS archive_date
         FROM iam_user
         WHERE is_deleted = true
     """
-    if last_archive_date:
-        query = base_query + f" AND updated_at > '{last_archive_date}'"
-    else:
-        query = base_query
     return _read_query(spark, global_db, query).select(
         F.col("owner_id").cast(T.StringType()).alias("owner_id"),
         F.col("archive_date"),
@@ -103,34 +120,16 @@ def _load_deleted_users(
 def _load_deleted_groups(
     spark: SparkSession,
     global_db: DatabaseConfig,
-    last_archive_date: Optional[str] = None,
 ) -> DataFrame:
-    base_query = """
+    query = """
         SELECT name AS owner_id, updated_at AS archive_date
         FROM iam_group
         WHERE is_deleted = true
     """
-    if last_archive_date:
-        query = base_query + f" AND updated_at > '{last_archive_date}'"
-    else:
-        query = base_query
     return _read_query(spark, global_db, query).select(
         F.col("owner_id").cast(T.StringType()).alias("owner_id"),
         F.col("archive_date"),
     )
-
-
-def _get_last_archive_date(spark: SparkSession, global_db: DatabaseConfig) -> Optional[str]:
-    df = _read_query(
-        spark,
-        global_db,
-        "SELECT MAX(archive_date) AS max_date FROM orphaned_asset",
-    )
-    row = df.collect()[0]
-    max_date = row["max_date"]
-    if max_date is None:
-        return None
-    return max_date.isoformat()
 
 
 def _chunk_ids(values: Sequence[str], size: int = MAX_IDS_PER_QUERY) -> Iterable[List[str]]:
@@ -266,19 +265,6 @@ def _union_all(dfs: Iterable[DataFrame], spark: SparkSession) -> DataFrame:
     return reduce(lambda acc, df: acc.unionByName(df, allowMissingColumns=False), dfs[1:], dfs[0])
 
 
-def _exclude_existing(candidates_df: DataFrame, existing_df: DataFrame) -> DataFrame:
-    return candidates_df.alias("c").join(
-        existing_df.alias("e"),
-        on=[
-            F.col("c.asset_type") == F.col("e.asset_type"),
-            F.col("c.asset_id") == F.col("e.asset_id"),
-            F.col("c.owner_type") == F.col("e.owner_type"),
-            F.col("c.owner_id") == F.col("e.owner_id"),
-        ],
-        how="left_anti",
-    )
-
-
 def _append_new_orphans(new_records_df: DataFrame, global_db: DatabaseConfig) -> int:
     count = new_records_df.count()
     if count == 0:
@@ -306,12 +292,12 @@ def _load_domains_for_deleted_users(
         spark,
         global_db,
         """
-        SELECT id, name, owners, is_deleted
+        SELECT id, name, owners
         FROM domain
+        WHERE is_deleted = false
         """,
     )
-    filtered = domains_raw.where(F.col("is_deleted") == F.lit(False))
-    return filtered.select(
+    return domains_raw.select(
         F.col("id").cast(T.StringType()).alias("asset_id"),
         F.col("name").alias("asset_name"),
         F.col("id").cast(T.StringType()).alias("domain_id"),
@@ -486,10 +472,11 @@ def start_job(spark: SparkSession, config: ApplicationConfig):
     logger.info("Starting Orphaned Asset Detection job")
 
     global_db = config.global_db
+    _clear_table(spark, global_db, "orphaned_asset", RESULT_SCHEMA)
+    logger.info("Cleared orphaned_asset table before rebuilding snapshot")
 
-    last_archive_date = _get_last_archive_date(spark, global_db)
-    deleted_users_df = _load_deleted_users(spark, global_db, last_archive_date).cache()
-    deleted_groups_df = _load_deleted_groups(spark, global_db, last_archive_date).cache()
+    deleted_users_df = _load_deleted_users(spark, global_db).cache()
+    deleted_groups_df = _load_deleted_groups(spark, global_db).cache()
 
     deleted_users = {row.owner_id: row.archive_date for row in deleted_users_df.collect()}
     deleted_groups = {row.owner_id: row.archive_date for row in deleted_groups_df.collect()}
@@ -541,20 +528,9 @@ def start_job(spark: SparkSession, config: ApplicationConfig):
     total_candidates = candidates_df.count()
     logger.info("Detected %s orphaned asset candidates", total_candidates)
 
-    existing_df = _read_table(
-        spark,
-        global_db,
-        "orphaned_asset",
-    ).select("asset_type", "asset_id", "owner_type", "owner_id")
-
-    new_records_df = _exclude_existing(candidates_df, existing_df).cache()
-    new_count = new_records_df.count()
-    logger.info("%s orphaned assets are new", new_count)
-
-    inserted = _append_new_orphans(new_records_df, global_db)
+    inserted = _append_new_orphans(candidates_df, global_db)
     logger.info("Inserted %s orphaned asset rows", inserted)
 
     deleted_users_df.unpersist(False)
     deleted_groups_df.unpersist(False)
     candidates_df.unpersist(False)
-    new_records_df.unpersist(False)
