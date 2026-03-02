@@ -1,5 +1,5 @@
 docker_image := iomete.azurecr.io/iomete/ras-onboarding
-docker_tag := 1.0.5
+docker_tag := 1.0.6
 
 test:
 	pytest --capture=no --log-cli-level=DEBUG
