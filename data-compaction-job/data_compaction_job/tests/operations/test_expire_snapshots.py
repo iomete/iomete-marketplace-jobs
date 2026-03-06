@@ -27,7 +27,7 @@ def assert_expire_snapshots_query(
 ):
     """Helper function to assert expire_snapshots query format."""
     expected_query = (
-        f"CALL {catalog}.system.expire_snapshots("
+        f"CALL `{catalog}`.system.expire_snapshots("
         f"table => '`{catalog}`.`{database}`.`{table}`', "
         f"retain_last => {retain_last}, "
         f"older_than => TIMESTAMP '{timestamp}')"

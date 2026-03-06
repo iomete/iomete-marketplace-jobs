@@ -31,7 +31,7 @@ class TestRewriteDataFilesQueryGeneration:
 
     def test_no_strategy_no_options(self):
         query = run_rewrite(RewriteDataFilesConfig())
-        assert query == f"CALL {TEST_CATALOG}.system.rewrite_data_files(table => {TABLE_REF})"
+        assert query == f"CALL `{TEST_CATALOG}`.system.rewrite_data_files(table => {TABLE_REF})"
 
     def test_sort_strategy_with_sort_order(self):
         """Reproduces the original bug: strategy and sort_order must be quoted."""
@@ -55,6 +55,14 @@ class TestRewriteDataFilesQueryGeneration:
         assert "options => map(" in query
         assert "'min-input-files', '1'" in query
         assert "'target-file-size-bytes', '10485760'" in query
+
+    def test_boolean_options_are_lowercased(self):
+        """Python bool True/False from HOCON must become 'true'/'false', not 'True'/'False'."""
+        query = run_rewrite(RewriteDataFilesConfig(options={"rewrite-all": True, "delete-file-threshold": False}))
+        assert "'rewrite-all', 'true'" in query
+        assert "'delete-file-threshold', 'false'" in query
+        assert "'True'" not in query
+        assert "'False'" not in query
 
     def test_sort_strategy_with_options(self):
         """Reproduces the exact failing config from the bug report."""

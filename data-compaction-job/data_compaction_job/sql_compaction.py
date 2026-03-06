@@ -71,7 +71,7 @@ class SqlCompaction:
         catalog, db_name, table = table_metadata.catalog, table_metadata.database, table_metadata.table
 
         try:
-            table_meta = self.spark.sql(f"describe extended {catalog}.{db_name}.{table}").collect()
+            table_meta = self.spark.sql(f"describe extended `{catalog}`.`{db_name}`.`{table}`").collect()
 
             # Skip, if not an `iceberg` table
             if not any(row.col_name == "Provider" and row.data_type == "iceberg" for row in table_meta):
@@ -136,7 +136,7 @@ class SqlCompaction:
     def __check_gc_enabled(self, catalog, database, table_name):
         try:
             # Get the table properties
-            result = self.spark.sql(f"SHOW TBLPROPERTIES {catalog}.{database}.{table_name}").collect()
+            result = self.spark.sql(f"SHOW TBLPROPERTIES `{catalog}`.`{database}`.`{table_name}`").collect()
 
             # Look for the G.C. enabled property (might be named differently depending on implementation)
             for row in result:
@@ -155,7 +155,7 @@ class SqlCompaction:
             value = str(enabled).lower()
             # Set the property
             self.spark.sql(
-                f"ALTER TABLE {catalog}.{database}.{table_name} SET TBLPROPERTIES ('gc.enabled' = '{value}')").collect()
+                f"ALTER TABLE `{catalog}`.`{database}`.`{table_name}` SET TBLPROPERTIES ('gc.enabled' = '{value}')").collect()
             logger.info(f"[{database}.{table_name}] Set G.C. enabled to {value}")
         except Exception as e:
             logger.error(f"[{database}.{table_name}] Failed to set G.C. enabled to {enabled}: {e}")
@@ -179,7 +179,7 @@ class SqlCompaction:
                    or self.config.remove_orphan_files.older_than_days)
         timestamp = datetime.now(timezone.utc) - timedelta(days=days)
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`', older_than => TIMESTAMP '{timestamp}'"
-        query = f"CALL {catalog}.system.remove_orphan_files({options})"
+        query = f"CALL `{catalog}`.system.remove_orphan_files({options})"
         result = self.spark.sql(query).collect()
         return result, query
 
@@ -196,7 +196,7 @@ class SqlCompaction:
         if use_caching:
             use_caching = str(use_caching).lower()
             options += f", use_caching => {use_caching}"
-        query = f"CALL {catalog}.system.rewrite_manifests({options})"
+        query = f"CALL `{catalog}`.system.rewrite_manifests({options})"
         result = self.spark.sql(query).collect()
         return result, query
 
@@ -229,12 +229,12 @@ class SqlCompaction:
             if strategy == "sort" and sort_order:
                 options += f", sort_order => '{sort_order}'"
         if rewrite_options:
-            option_map = ', '.join(', '.join((f"'{k}'", f"'{v}'")) for (k, v) in rewrite_options.items())
+            option_map = ', '.join(', '.join((f"'{k}'", f"'{str(v).lower() if isinstance(v, bool) else v}'")) for (k, v) in rewrite_options.items())
             options += f", options => map({option_map})"
         if where:
             options += f", where => \"{where}\""
 
-        query = f"CALL {catalog}.system.rewrite_data_files({options})"
+        query = f"CALL `{catalog}`.system.rewrite_data_files({options})"
         result = self.spark.sql(query).collect()
         return result, query
 
@@ -249,7 +249,7 @@ class SqlCompaction:
 
     def __get_databases(self, catalog):
         available_databases = [database.namespace for database
-                               in self.spark.sql(f"show databases from {catalog}").collect()]
+                               in self.spark.sql(f"show databases from `{catalog}`").collect()]
         if self.config.include_exclude.databases:
             return [database for database in self.config.include_exclude.databases if database in available_databases]
         else:
@@ -257,7 +257,7 @@ class SqlCompaction:
 
     def __get_tables(self, catalog, database):
         available_tables = [table.tableName for table
-                            in self.spark.sql(f"show tables from {catalog}.{database}").collect()]
+                            in self.spark.sql(f"show tables from `{catalog}`.`{database}`").collect()]
         if database in self.__get_table_includes():
             tables = [table for table
                       in self.__get_table_includes()[database]
