@@ -2,7 +2,7 @@
 
 """Unit tests for rewrite_data_files query generation in SqlCompaction."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from config import TableMetadata
 from data_compaction_job.config import ApplicationConfig, RewriteDataFilesConfig
@@ -18,11 +18,14 @@ def run_rewrite(rewrite_data_files: RewriteDataFilesConfig) -> str:
     """Run __rewrite_data_files and return the generated SQL query string."""
     config = ApplicationConfig(catalog=TEST_CATALOG, rewrite_data_files=rewrite_data_files)
     sql_calls = []
+    mock_row = MagicMock()
+    mock_row.asDict.return_value = {}
     spark = MagicMock()
-    spark.sql.side_effect = lambda q: sql_calls.append(q) or MagicMock(collect=lambda: [])
+    spark.sql.side_effect = lambda q: sql_calls.append(q) or MagicMock(collect=lambda: [mock_row])
     compaction = SqlCompaction(spark, config)
     table_metadata = TableMetadata(catalog=TEST_CATALOG, database=TEST_DATABASE, table=TEST_TABLE)
-    compaction._SqlCompaction__rewrite_data_files(table_metadata)
+    with patch("data_compaction_job.stats_emitter._stats_batcher", MagicMock(spark_app_id="test")):
+        compaction._SqlCompaction__rewrite_data_files(table_metadata)
     assert len(sql_calls) == 1, f"Expected 1 SQL call, got {len(sql_calls)}"
     return sql_calls[0]
 
