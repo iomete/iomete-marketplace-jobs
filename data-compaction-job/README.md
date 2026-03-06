@@ -197,6 +197,59 @@ You can specify additional configurations
 }
 ```
 
+## Table Include / Exclude
+
+Use `table_include` as a whitelist or `table_exclude` as a blacklist to control which tables are compacted. `table_exclude` is ignored when `table_include` is non-empty.
+
+Both fields support two formats:
+- `<database>.<table>` — targets a specific table in a specific database
+- `<table>` — targets a table across all configured databases
+
+### Example: Compact only specific tables (whitelist)
+
+```HOCON
+{
+    catalog: "spark_catalog",
+    databases: ["analytics", "production"],
+
+    // Only compact these two tables; all others are skipped
+    table_include: [
+        "analytics.user_events",   // specific database.table
+        "orders"                   // matches 'orders' in both 'analytics' and 'production'
+    ]
+}
+```
+
+### Example: Exclude specific tables (blacklist)
+
+```HOCON
+{
+    catalog: "spark_catalog",
+    databases: ["analytics", "production"],
+
+    // Compact all tables except these
+    table_exclude: [
+        "production.raw_ingest",   // skip raw_ingest only in production
+        "tmp_staging"              // skip tmp_staging in all databases
+    ]
+}
+```
+
+### Example: Compact all tables in selected databases (no filter)
+
+```HOCON
+{
+    catalog: "spark_catalog",
+
+    // Run compaction on every table in these two databases
+    databases: ["analytics", "production"],
+
+    // table_include and table_exclude both empty → all tables processed
+    table_include: [],
+    table_exclude: []
+}
+```
+
 ### Concurrency Control via Table Property Lock
 
 - When `lock.enabled=true`, the job attempts to acquire a lock per table by setting the Iceberg table property `iomete.compaction.lock`.
