@@ -15,7 +15,7 @@ def get_expire_snapshots_query(config: ExpireSnapshotConfig, table_metadata: Tab
                f" retain_last => {retain_last},"
                f" older_than => TIMESTAMP '{timestamp}'")
 
-    return f"CALL {catalog}.system.expire_snapshots({options})"
+    return f"CALL `{catalog}`.system.expire_snapshots({options})"
 
 
 def _get_timestamp(config: ExpireSnapshotConfig, table_metadata: TableMetadata) -> datetime:

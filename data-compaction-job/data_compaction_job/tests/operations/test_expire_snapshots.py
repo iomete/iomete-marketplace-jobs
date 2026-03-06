@@ -27,7 +27,7 @@ def assert_expire_snapshots_query(
 ):
     """Helper function to assert expire_snapshots query format."""
     expected_query = (
-        f"CALL {catalog}.system.expire_snapshots("
+        f"CALL `{catalog}`.system.expire_snapshots("
         f"table => '`{catalog}`.`{database}`.`{table}`', "
         f"retain_last => {retain_last}, "
         f"older_than => TIMESTAMP '{timestamp}')"
@@ -410,7 +410,7 @@ class TestExpireSnapshotsIntegration:
         query = get_expire_snapshots_query(config, table_metadata)
 
         # Should use default retain_last = 1 and older_than_days = None (5 minutes)
-        assert "catalog1.system.expire_snapshots" in query
+        assert "`catalog1`.system.expire_snapshots" in query
         assert "catalog1`.`db1`.`table1" in query
         assert "retain_last => 1" in query
         assert "older_than => TIMESTAMP" in query
