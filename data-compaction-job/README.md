@@ -108,6 +108,16 @@ You can specify additional configurations
         // Set to false to skip this operation entirely
         // enabled: true,
 
+        // Compaction strategy (DEFAULT: binpack)
+        // - "binpack": packs small files together without sorting (faster, less CPU)
+        // - "sort": rewrites files in a sorted order for better query performance
+        // strategy: "binpack",
+
+        // Sort order for the sort strategy (only used when strategy = "sort")
+        // Specify one or more columns with ASC/DESC direction
+        // sort_order: "column_name ASC",
+        // sort_order: "col1 ASC, col2 DESC",
+
         // Filter to compact only specific rows (DEFAULT: None - compact all rows)
         // Uses SQL WHERE clause syntax to specify which data to compact
         // where: "date <= CURRENT_DATE - 1",
@@ -127,6 +137,9 @@ You can specify additional configurations
             // This helps with breaking down the rewriting of very large partitions which may not be rewritable otherwise due to the resource constraints of the cluster.
             // Defaults to 100GB (1024L * 1024L * 1024L * 100L)
             // "max-file-group-size-bytes": 107374182400
+
+            // Force rewrite all files regardless of size (useful with sort strategy to enforce order)
+            // rewrite-all: true
         }
     },
     
@@ -323,6 +336,83 @@ Use the `where` parameter to compact only specific rows based on SQL WHERE condi
     }
 }
 ```
+
+## Sort-Order Compaction
+
+Use `strategy: sort` with `sort_order` to rewrite files in a defined column order. This is useful when queries frequently filter or sort on specific columns — sorted files allow Iceberg to skip entire files via min/max statistics.
+
+**When to use sort compaction:**
+- Queries frequently filter on a non-partition column (e.g. `user_id`, `event_type`)
+- You want to improve range-scan performance after bulk loads
+- A table has accumulated many small, unsorted files
+
+**Trade-off:** Sort compaction is more CPU-intensive than the default `binpack` strategy. Use `rewrite-all: true` to enforce order across all existing files (not just newly written ones).
+
+### Examples
+
+**Sort by a single column:**
+
+```HOCON
+{
+    catalog: "spark_catalog",
+    rewrite_data_files: {
+        strategy: "sort",
+        sort_order: "user_id ASC",
+        options: {
+            "min-input-files": 1,
+            "rewrite-all": true
+        }
+    }
+}
+```
+
+**Sort by multiple columns:**
+
+```HOCON
+{
+    catalog: "spark_catalog",
+    rewrite_data_files: {
+        strategy: "sort",
+        sort_order: "event_date DESC, user_id ASC",
+        options: {
+            "min-input-files": 1,
+            "rewrite-all": true,
+            "target-file-size-bytes": 134217728
+        }
+    }
+}
+```
+
+**Sort only specific tables, use binpack for everything else:**
+
+```HOCON
+{
+    catalog: "spark_catalog",
+
+    // Default: binpack for most tables
+    rewrite_data_files: {
+        options: {
+            "min-input-files": 2
+        }
+    },
+
+    table_overrides: {
+        analytics.user_events: {
+            rewrite_data_files: {
+                strategy: "sort",
+                sort_order: "user_id ASC, event_time ASC",
+                options: {
+                    "min-input-files": 1,
+                    "rewrite-all": true,
+                    "max-file-group-size-bytes": 10737418240
+                }
+            }
+        }
+    }
+}
+```
+
+> **Note:** `sort_order` is ignored when `strategy` is not `"sort"`.
 
 ## Expire Snapshots Configuration
 
