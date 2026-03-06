@@ -224,8 +224,10 @@ class SqlCompaction:
 
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`'"
 
-        if strategy and strategy == "sort":
-            options += f", strategy => {strategy}, sort_order => {sort_order}"
+        if strategy:
+            options += f", strategy => '{strategy}'"
+            if strategy == "sort" and sort_order:
+                options += f", sort_order => '{sort_order}'"
         if rewrite_options:
             option_map = ', '.join(', '.join((f"'{k}'", f"'{v}'")) for (k, v) in rewrite_options.items())
             options += f", options => map({option_map})"
