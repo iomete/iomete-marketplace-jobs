@@ -60,3 +60,12 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependabot"
+
+  - package-ecosystem: "pip"
+    directory: "/bundle-asset-typesense-sync"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependabot"
+    commit-message:
+      prefix: "bundle-asset-typesense-sync"
