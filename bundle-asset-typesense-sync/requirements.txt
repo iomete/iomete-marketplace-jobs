@@ -1,0 +1,4 @@
+psycopg[binary]>=3.1
+pydantic>=2.7
+pyhocon>=0.3.60
+requests>=2.32
