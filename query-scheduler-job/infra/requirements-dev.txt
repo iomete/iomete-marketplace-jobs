@@ -1,5 +1,5 @@
 pyspark-iomete==0.0.2
-pyhocon~=0.3.59
+pyhocon~=0.3.63
 
 # dev dependencies
 pyspark==3.3.2
