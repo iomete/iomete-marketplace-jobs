@@ -1,9 +1,22 @@
 package com.iomete.backup.copy
 
+import io.mockk.every
+import io.mockk.just
+import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.runs
+import io.mockk.unmockkStatic
+import io.mockk.verify
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.FileStatus
+import org.apache.hadoop.fs.FileSystem
+import org.apache.hadoop.fs.FileUtil
+import org.apache.hadoop.fs.Path
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.io.File
+import java.net.URI
 import java.nio.file.Files
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -198,5 +211,56 @@ class FileCopierTest {
         // We can't easily test copy on a deserialized instance without real S3,
         // but at least verify it deserializes without error
         assertTrue(bytes.isNotEmpty())
+    }
+
+    @Test
+    fun `uses isolated filesystem instances for same bucket source and target`() {
+        val sourcePathString = "s3a://shared-bucket/warehouse/in/file.txt"
+        val targetPathString = "s3a://shared-bucket/warehouse/out/file.txt"
+        val sourcePath = Path(sourcePathString)
+        val targetPath = Path(targetPathString)
+        val targetParent = Path("s3a://shared-bucket/warehouse/out")
+        val sourceFs = mockk<FileSystem>()
+        val targetFs = mockk<FileSystem>()
+
+        mockkStatic(FileSystem::class)
+        mockkStatic(FileUtil::class)
+
+        try {
+            every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
+            every { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) } returns targetFs
+            every { targetFs.exists(targetParent) } returns true
+            every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(19L, false, 1, 1024L, 0L, sourcePath)
+            every { FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, any()) } returns true
+            every { sourceFs.close() } just runs
+            every { targetFs.close() } just runs
+
+            val copier = FileCopier(
+                sourceConfMap = mapOf(
+                    "fs.s3a.access.key" to "source-key",
+                    "fs.s3a.secret.key" to "source-secret"
+                ),
+                targetConfMap = mapOf(
+                    "fs.s3a.access.key" to "target-key",
+                    "fs.s3a.secret.key" to "target-secret"
+                ),
+                sourceRoot = "s3a://shared-bucket/warehouse/in",
+                targetRoot = "s3a://shared-bucket/warehouse/out"
+            )
+
+            val result = copier.copySingleFile(sourcePathString)
+
+            assertTrue(result.success)
+            assertEquals(targetPathString, result.targetPath)
+            assertEquals(19L, result.bytesCopied)
+            verify(exactly = 1) { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) }
+            verify(exactly = 1) { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) }
+            verify(exactly = 0) { FileSystem.get(any<URI>(), any<Configuration>()) }
+            verify(exactly = 1) { targetFs.close() }
+            verify(exactly = 1) { sourceFs.close() }
+        } finally {
+            unmockkStatic(FileUtil::class)
+            unmockkStatic(FileSystem::class)
+        }
     }
 }

@@ -65,21 +65,21 @@ object BackupMetricsWriter {
 
     fun write(targetRoot: String, targetConfMap: Map<String, String>, metrics: BackupMetrics): String {
         val conf = HadoopConfigBuilder.toHadoopConf(targetConfMap)
-        val fs = FileSystem.get(URI(targetRoot), conf)
+        return FileSystem.newInstance(URI(targetRoot), conf).use { fs ->
+            val metricsDir = Path("${targetRoot.trimEnd('/')}/_backup_metrics")
+            if (!fs.exists(metricsDir)) {
+                fs.mkdirs(metricsDir)
+            }
 
-        val metricsDir = Path("${targetRoot.trimEnd('/')}/_backup_metrics")
-        if (!fs.exists(metricsDir)) {
-            fs.mkdirs(metricsDir)
+            val timestamp = fileTimeFormatter.format(Instant.now())
+            val outputPath = Path(metricsDir, "metrics-$timestamp.json")
+            val json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(metrics)
+
+            fs.create(outputPath, true).use { output ->
+                output.write(json.toByteArray(StandardCharsets.UTF_8))
+            }
+
+            outputPath.toString()
         }
-
-        val timestamp = fileTimeFormatter.format(Instant.now())
-        val outputPath = Path(metricsDir, "metrics-$timestamp.json")
-        val json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(metrics)
-
-        fs.create(outputPath, true).use { output ->
-            output.write(json.toByteArray(StandardCharsets.UTF_8))
-        }
-
-        return outputPath.toString()
     }
 }

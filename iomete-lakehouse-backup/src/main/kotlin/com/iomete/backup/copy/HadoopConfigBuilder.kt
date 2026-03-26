@@ -42,6 +42,7 @@ object HadoopConfigBuilder {
 
         // Use S3A filesystem implementation
         props["fs.s3a.impl"] = "org.apache.hadoop.fs.s3a.S3AFileSystem"
+        props["fs.s3a.impl.disable.cache"] = "true"
 
         config.endpoint?.let { endpoint ->
             props["fs.s3a.endpoint"] = endpoint

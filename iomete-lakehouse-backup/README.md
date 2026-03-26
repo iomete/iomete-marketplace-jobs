@@ -69,6 +69,35 @@ The job accepts a JSON configuration. Examples below show the V1 structure.
 }
 ```
 
+### Same Bucket Name on Different ECS Clusters
+
+Source and target may use the **same bucket name** while pointing at different ECS/S3-compatible endpoints with different credentials. This is common in on-prem ECS deployments where each site exposes its own `lakehouse` bucket.
+
+```json
+{
+  "source": {
+    "type": "s3",
+    "bucket": "lakehouse",
+    "prefix": "warehouse/current/",
+    "endpoint": "https://ecs-source.example.com",
+    "pathStyleAccess": true,
+    "accessKey": "${SOURCE_ACCESS_KEY}",
+    "secretKey": "${SOURCE_SECRET_KEY}"
+  },
+  "target": {
+    "type": "s3",
+    "bucket": "lakehouse",
+    "prefix": "warehouse/backup/",
+    "endpoint": "https://ecs-target.example.com",
+    "pathStyleAccess": true,
+    "accessKey": "${TARGET_ACCESS_KEY}",
+    "secretKey": "${TARGET_SECRET_KEY}"
+  }
+}
+```
+
+The job keeps source and target in separate Hadoop `Configuration` objects and opens isolated S3A filesystem instances for each side, so identical bucket names do not cause source credentials or endpoints to leak into the target side.
+
 ### S3 → HDFS/Isilon (Incremental Copy)
 
 ```json
@@ -243,6 +272,12 @@ Status values: `completed`, `failed`, `partial`
    - **Main class:** `com.iomete.backup.App`
 3. Click **Add Config**, set path to `/etc/configs/application.conf`, paste HOCON config
 4. Add environment variables for secrets (referenced as `${?SOURCE_ACCESS_KEY}` in config)
+
+## Testing
+
+- Run `./gradlew test` for unit tests.
+- Run `./gradlew integrationTest --tests "com.iomete.backup.copy.SameBucketDualMinioIntegrationTest"` for the Docker-backed same-bucket S3/ECS integration test.
+- The integration test requires Docker to be running and reachable by Testcontainers.
 
 ## Hadoop DistCP Flag Mapping (Supported Subset)
 

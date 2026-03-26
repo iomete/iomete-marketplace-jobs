@@ -62,44 +62,41 @@ class FileCopier(
             try {
                 val sourceConf = HadoopConfigBuilder.toHadoopConf(sourceConfMap)
                 val targetConf = HadoopConfigBuilder.toHadoopConf(targetConfMap)
+                return FileSystem.newInstance(URI(sourceFilePath), sourceConf).use { sourceFs ->
+                    FileSystem.newInstance(URI(targetFilePath), targetConf).use { targetFs ->
+                        val sourcePath = Path(sourceFilePath)
+                        val targetPath = Path(targetFilePath)
 
-                val sourcePath = Path(sourceFilePath)
-                val targetPath = Path(targetFilePath)
+                        val parentDir = targetPath.parent
+                        if (parentDir != null && !targetFs.exists(parentDir)) {
+                            targetFs.mkdirs(parentDir)
+                        }
 
-                val sourceFs = FileSystem.get(URI(sourceFilePath), sourceConf)
-                val targetFs = FileSystem.get(URI(targetFilePath), targetConf)
+                        val fileStatus = sourceFs.getFileStatus(sourcePath)
+                        val fileSize = fileStatus.len
 
-                // Ensure parent directory exists on target
-                val parentDir = targetPath.parent
-                if (parentDir != null && !targetFs.exists(parentDir)) {
-                    targetFs.mkdirs(parentDir)
+                        FileUtil.copy(
+                            sourceFs, sourcePath,
+                            targetFs, targetPath,
+                            false,  // deleteSource
+                            true,   // overwrite
+                            targetConf
+                        )
+
+                        log().debug(
+                            "Copied on attempt {}/{}: {} -> {} ({} bytes)",
+                            attempt, MAX_ATTEMPTS, sourceFilePath, targetFilePath, fileSize
+                        )
+
+                        CopyResult(
+                            sourcePath = sourceFilePath,
+                            targetPath = targetFilePath,
+                            success = true,
+                            bytesCopied = fileSize,
+                            attemptsUsed = attempt
+                        )
+                    }
                 }
-
-                // Get source file size before copy
-                val fileStatus = sourceFs.getFileStatus(sourcePath)
-                val fileSize = fileStatus.len
-
-                // Copy the file
-                FileUtil.copy(
-                    sourceFs, sourcePath,
-                    targetFs, targetPath,
-                    false,  // deleteSource
-                    true,   // overwrite
-                    targetConf
-                )
-
-                log().debug(
-                    "Copied on attempt {}/{}: {} -> {} ({} bytes)",
-                    attempt, MAX_ATTEMPTS, sourceFilePath, targetFilePath, fileSize
-                )
-
-                return CopyResult(
-                    sourcePath = sourceFilePath,
-                    targetPath = targetFilePath,
-                    success = true,
-                    bytesCopied = fileSize,
-                    attemptsUsed = attempt
-                )
             } catch (e: Exception) {
                 lastError = "${e.javaClass.simpleName}: ${e.message}"
                 log().warn(

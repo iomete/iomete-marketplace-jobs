@@ -106,9 +106,10 @@ object App {
             val sourceConf = HadoopConfigBuilder.toHadoopConf(sourceConfMap)
             val sourceRoot = PathResolver.resolveRootUri(config.source)
 
-            val sourceFs = FileSystem.get(URI(sourceRoot), sourceConf)
-            val fileLister = FileLister(sourceFs)
-            val files = fileLister.listRecursively(Path(sourceRoot)).toList()
+            val files = FileSystem.newInstance(URI(sourceRoot), sourceConf).use { sourceFs ->
+                val fileLister = FileLister(sourceFs)
+                fileLister.listRecursively(Path(sourceRoot)).toList()
+            }
 
             logger.info("Found {} files to copy", files.size)
             val totalBytes = files.sumOf { it.size }

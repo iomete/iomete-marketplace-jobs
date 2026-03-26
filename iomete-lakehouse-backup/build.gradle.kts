@@ -1,3 +1,4 @@
+import org.gradle.api.tasks.testing.Test
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
@@ -32,6 +33,10 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testImplementation("io.mockk:mockk:1.13.12")
     testImplementation("org.apache.spark:spark-sql_2.12:3.5.3")
+    testImplementation("org.apache.hadoop:hadoop-aws:3.3.4")
+    testImplementation("org.testcontainers:junit-jupiter:1.21.4")
+    testImplementation("org.testcontainers:minio:1.21.4")
+    testImplementation("software.amazon.awssdk:s3:2.42.18")
     testImplementation(kotlin("test"))
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
@@ -54,6 +59,23 @@ java {
 
 tasks.test {
     useJUnitPlatform()
+    useJUnitPlatform {
+        excludeTags("integration")
+    }
+    testLogging {
+        events("passed", "skipped", "failed")
+    }
+}
+
+tasks.register<Test>("integrationTest") {
+    description = "Runs Docker-backed integration tests."
+    group = "verification"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    shouldRunAfter(tasks.test)
+    useJUnitPlatform {
+        includeTags("integration")
+    }
     testLogging {
         events("passed", "skipped", "failed")
     }

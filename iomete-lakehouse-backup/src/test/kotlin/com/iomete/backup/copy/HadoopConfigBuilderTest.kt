@@ -82,6 +82,18 @@ class HadoopConfigBuilderTest {
         }
 
         @Test
+        fun `S3 config disables filesystem cache`() {
+            val config = S3Config(
+                bucket = "my-bucket",
+                accessKey = "key",
+                secretKey = "secret"
+            )
+            val props = HadoopConfigBuilder.buildConfigMap(config)
+
+            assertEquals("true", props["fs.s3a.impl.disable.cache"])
+        }
+
+        @Test
         fun `S3 config enables SSL for https endpoint`() {
             val config = S3Config(
                 bucket = "my-bucket",
@@ -105,6 +117,33 @@ class HadoopConfigBuilderTest {
             val props = HadoopConfigBuilder.buildConfigMap(config)
 
             assertEquals("false", props["fs.s3a.connection.ssl.enabled"])
+        }
+
+        @Test
+        fun `same bucket S3 configs keep credentials isolated in separate maps`() {
+            val sourceProps = HadoopConfigBuilder.buildConfigMap(
+                S3Config(
+                    bucket = "shared-bucket",
+                    endpoint = "https://source.example.com",
+                    accessKey = "source-key",
+                    secretKey = "source-secret"
+                )
+            )
+            val targetProps = HadoopConfigBuilder.buildConfigMap(
+                S3Config(
+                    bucket = "shared-bucket",
+                    endpoint = "https://target.example.com",
+                    accessKey = "target-key",
+                    secretKey = "target-secret"
+                )
+            )
+
+            assertEquals("source-key", sourceProps["fs.s3a.access.key"])
+            assertEquals("source-secret", sourceProps["fs.s3a.secret.key"])
+            assertEquals("https://source.example.com", sourceProps["fs.s3a.endpoint"])
+            assertEquals("target-key", targetProps["fs.s3a.access.key"])
+            assertEquals("target-secret", targetProps["fs.s3a.secret.key"])
+            assertEquals("https://target.example.com", targetProps["fs.s3a.endpoint"])
         }
     }
 
