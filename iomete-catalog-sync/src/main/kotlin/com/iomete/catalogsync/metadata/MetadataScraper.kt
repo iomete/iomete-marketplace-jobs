@@ -13,8 +13,8 @@ import jakarta.inject.Singleton
 import org.apache.spark.sql.SparkSession
 import org.eclipse.microprofile.rest.client.inject.RestClient
 import org.slf4j.LoggerFactory
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.log
 
 private val logger = LoggerFactory.getLogger(MetadataScraper::class.java)
 
@@ -32,38 +32,58 @@ class MetadataScraper(
     fun run() {
         logger.info("Running process with application config: {}", applicationConfig)
 
-        coreServiceClient
-            .catalogs()
-            .mapNotNull { catalog ->
-                ignoreExcluded {
-                    exclusionRules.enforceCatalogExclusionRules(catalog)
-                    catalog // keep it if not excluded
+        val catalogs =
+            coreServiceClient
+                .catalogs()
+                .mapNotNull { catalog ->
+                    ignoreExcluded {
+                        exclusionRules.enforceCatalogExclusionRules(catalog)
+                        catalog
+                    }
                 }
-            }.onEach { catalog ->
-                val spark = sparkSessionProvider.getSession(catalog)
 
-                val processedSchemas: List<SchemaMetadata> =
-                    sparkMetadataReader
-                        .getSchemas(spark, catalog.name)
-                        .asSequence()
-                        .mapNotNull {
-                            ignoreExcluded {
-                                processSchema(
-                                    spark = spark,
-                                    catalog = catalog,
-                                    schema = it,
-                                )
-                            }
-                        }.onEach {
-                            it.log()
-                            catalogServiceClient.indexSchema(it)
-                        }.toList()
+        val catalogExecutor = Executors.newFixedThreadPool(catalogs.size.coerceIn(1, 8))
+        try {
+            val futures =
+                catalogs.map { catalog ->
+                    catalogExecutor.submit {
+                        processCatalog(catalog)
+                    }
+                }
+            futures.forEach { it.get() }
+        } finally {
+            catalogExecutor.shutdown()
+        }
+    }
 
-                CatalogMetadata
-                    .build(catalog, processedSchemas, sparkApplicationId = spark.sparkContext().applicationId())
-                    .also { it.log() }
-                    .also { catalogServiceClient.indexCatalog(it) }
-            }
+    private fun processCatalog(catalog: CatalogDetails) {
+        val spark = sparkSessionProvider.getSession(catalog)
+        val schemas = sparkMetadataReader.getSchemas(spark, catalog.name)
+
+        val schemaExecutor = Executors.newFixedThreadPool(schemas.size.coerceIn(1, 8))
+        try {
+            val futures =
+                schemas.map { schema ->
+                    schemaExecutor.submit<SchemaMetadata?> {
+                        ignoreExcluded {
+                            processSchema(spark = spark, catalog = catalog, schema = schema)
+                        }
+                    }
+                }
+
+            val processedSchemas =
+                futures.mapNotNull { it.get() }.onEach {
+                    it.log()
+                    catalogServiceClient.indexSchema(it)
+                }
+
+            CatalogMetadata
+                .build(catalog, processedSchemas, sparkApplicationId = spark.sparkContext().applicationId())
+                .also { it.log() }
+                .also { catalogServiceClient.indexCatalog(it) }
+        } finally {
+            schemaExecutor.shutdown()
+        }
     }
 
     private fun processSchema(

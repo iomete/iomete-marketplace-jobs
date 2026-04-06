@@ -7,6 +7,7 @@ import org.apache.spark.sql.SparkSession
 import org.eclipse.microprofile.config.ConfigProvider
 import org.eclipse.microprofile.rest.client.inject.RestClient
 import org.slf4j.LoggerFactory
+import java.util.concurrent.Executors
 
 @ApplicationScoped
 class PIIDetectionService(
@@ -33,23 +34,35 @@ class PIIDetectionService(
                     .collectAsList()
                     .orEmpty()
 
-            columns.forEach { columnName ->
-                val columnSampleData =
-                    sampleData
-                        .map { it.get(columnName).toString() }
-                        .filter { it.isNotEmpty() }
-                        .distinct()
-                        .firstOrNull()
+            val executor = Executors.newFixedThreadPool(columns.size.coerceIn(1, 16))
+            try {
+                val futures =
+                    columns.map { columnName ->
+                        executor.submit<Pair<String, List<String>>> {
+                            val columnSampleData =
+                                sampleData
+                                    .map { it.get(columnName).toString() }
+                                    .filter { it.isNotEmpty() }
+                                    .distinct()
+                                    .firstOrNull()
 
-                val detectedTags = detectedTags(columnSampleData)
-                logger.info(
-                    "table={} column={} detected-tags={} for sample data: {}",
-                    fullTableName,
-                    columnName,
-                    detectedTags,
-                    columnSampleData,
-                )
-                result[columnName] = detectedTags
+                            val detectedTags = detectedTags(columnSampleData)
+                            logger.info(
+                                "table={} column={} detected-tags={} for sample data: {}",
+                                fullTableName,
+                                columnName,
+                                detectedTags,
+                                columnSampleData,
+                            )
+                            columnName to detectedTags
+                        }
+                    }
+                futures.forEach { future ->
+                    val (columnName, tags) = future.get()
+                    result[columnName] = tags
+                }
+            } finally {
+                executor.shutdown()
             }
         } catch (ex: Exception) {
             logger.error("Error on detectColumnTags. Table: {}. Message: {}", fullTableName, ex.message)
