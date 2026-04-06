@@ -1,11 +1,10 @@
-FROM python:3.12-slim
+FROM iomete.azurecr.io/iomete/spark-py:3.5.5-v11
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirements.txt
 
 COPY restart_computes.py .
-COPY README.md .
 COPY .env.example .
 
-CMD ["python", "restart_computes.py"]
+CMD ["python3", "restart_computes.py"]
