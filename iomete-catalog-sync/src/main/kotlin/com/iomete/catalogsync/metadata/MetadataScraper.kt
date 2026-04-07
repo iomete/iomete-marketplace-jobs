@@ -13,6 +13,7 @@ import jakarta.inject.Singleton
 import org.apache.spark.sql.SparkSession
 import org.eclipse.microprofile.rest.client.inject.RestClient
 import org.slf4j.LoggerFactory
+import java.util.concurrent.ForkJoinPool
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.log
 
@@ -28,6 +29,8 @@ class MetadataScraper(
     @param:RestClient val catalogServiceClient: CatalogClient,
 ) {
     private val exclusionRules = applicationConfig.exclusionRules
+    private val schemaParallelism = System.getenv("SCHEMA_PARALLELISM")?.toIntOrNull()
+        ?: Runtime.getRuntime().availableProcessors()
 
     fun run() {
         logger.info("Running process with application config: {}", applicationConfig)
@@ -42,22 +45,30 @@ class MetadataScraper(
             }.onEach { catalog ->
                 val spark = sparkSessionProvider.getSession(catalog)
 
-                val processedSchemas: List<SchemaMetadata> =
-                    sparkMetadataReader
-                        .getSchemas(spark, catalog.name)
-                        .asSequence()
-                        .mapNotNull {
-                            ignoreExcluded {
-                                processSchema(
-                                    spark = spark,
-                                    catalog = catalog,
-                                    schema = it,
-                                )
+                val schemas = sparkMetadataReader.getSchemas(spark, catalog.name)
+                logger.info("Processing {} schemas with parallelism={}", schemas.size, schemaParallelism)
+                val pool = ForkJoinPool(schemaParallelism)
+                val processedSchemas: List<SchemaMetadata> = try {
+                    pool.submit<List<SchemaMetadata>> {
+                        schemas.parallelStream()
+                            .map { schema ->
+                                ignoreExcluded {
+                                    processSchema(
+                                        spark = spark,
+                                        catalog = catalog,
+                                        schema = schema,
+                                    )?.also {
+                                        it.log()
+                                        catalogServiceClient.indexSchema(it)
+                                    }
+                                }
                             }
-                        }.onEach {
-                            it.log()
-                            catalogServiceClient.indexSchema(it)
-                        }.toList()
+                            .toList()
+                            .filterNotNull()
+                    }.get()
+                } finally {
+                    pool.shutdown()
+                }
 
                 CatalogMetadata
                     .build(catalog, processedSchemas, sparkApplicationId = spark.sparkContext().applicationId())

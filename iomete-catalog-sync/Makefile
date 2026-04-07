@@ -1,5 +1,5 @@
 image := iomete.azurecr.io/iomete/iom-catalog-sync
-tag   := 5.0.1-dev15
+tag   := 5.0.1-dev16
 
 .PHONY: build
 build:
