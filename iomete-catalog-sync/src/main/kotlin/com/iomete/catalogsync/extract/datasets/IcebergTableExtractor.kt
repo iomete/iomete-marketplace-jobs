@@ -13,6 +13,7 @@ class IcebergTableExtractor(
     catalog: String,
     schema: String,
     table: String,
+    private val currentSnapshotId: String? = null,
 ) : TableExtractor,
     SupportTableStatistics,
     SupportColumnTags {
@@ -21,61 +22,52 @@ class IcebergTableExtractor(
     override val getTableType: String
         get() = "MANAGED"
 
-    override fun extractTableStatistics(): TableStatistics? {
-        // spark.sql("REFRESH TABLE $fullName")
-        val lastSnapshot =
-            spark
-                .sql(
-                    """
-                    select 
-                       committed_at, 
-                       cast(summary['total-files-size'] as long) as total_files_sizes, 
-                       cast(summary['total-records'] as long) as total_records,
-                       cast(summary['total-data-files'] as long) as total_data_files
-                    from $fullName.snapshots
-                    order by committed_at desc limit 1
-                    """.trimIndent(),
-                ).collectAsList()
-                .firstOrNull() ?: return null
+    /**
+     * Returns true if the table metadata indicates no snapshots exist,
+     * allowing us to skip the Spark SQL query entirely.
+     */
+    private fun hasNoSnapshots(): Boolean {
+        return currentSnapshotId != null && currentSnapshotId == "none"
+    }
 
-        val firstSnapshot =
+    override fun extractTableStatistics(): TableStatistics? {
+        if (hasNoSnapshots()) return null
+
+        val allSnapshots =
             spark
                 .sql(
                     """
                     select
                         snapshot_id,
-                        CAST(summary['total-data-files'] AS LONG) as num_files,
-                        CAST(summary['total-files-size'] AS LONG) as size_in_bytes
+                        committed_at,
+                        cast(summary['total-files-size'] as long) as total_files_size,
+                        cast(summary['total-records'] as long) as total_records,
+                        cast(summary['total-data-files'] as long) as total_data_files,
+                        cast(summary['added-data-files'] as long) as added_data_files,
+                        cast(summary['added-files-size'] as long) as added_files_size
                     from $fullName.snapshots
-                    order by committed_at asc limit 1
+                    order by committed_at asc
                     """.trimIndent(),
                 ).collectAsList()
-                .firstOrNull() ?: return null
 
-        val firstSnapshotId = firstSnapshot.getLong("snapshot_id")
+        if (allSnapshots.isEmpty()) return null
 
-        val restSnapshots =
-            spark
-                .sql(
-                    """
-                    select
-                        COALESCE(SUM(CAST(summary['added-data-files'] AS LONG)), 0) as num_files,
-                        COALESCE(SUM(CAST(summary['added-files-size'] AS LONG)), 0) as size_in_bytes
-                    from $fullName.snapshots
-                    where snapshot_id != $firstSnapshotId
-                    """.trimIndent(),
-                ).collectAsList()
-                .firstOrNull()
+        val firstSnapshot = allSnapshots.first()
+        val lastSnapshot = allSnapshots.last()
 
-        val restNumFiles = restSnapshots?.getLong("num_files") ?: 0L
-        val restSizeInBytes = restSnapshots?.getLong("size_in_bytes") ?: 0L
+        var restNumFiles = 0L
+        var restSizeInBytes = 0L
+        for (i in 1 until allSnapshots.size) {
+            restNumFiles += allSnapshots[i].getLong("added_data_files") ?: 0L
+            restSizeInBytes += allSnapshots[i].getLong("added_files_size") ?: 0L
+        }
 
         return TableStatistics(
             lastModified = lastSnapshot.getTimestamp("committed_at"),
             numFiles = lastSnapshot.getLong("total_data_files"),
-            totalTableNumFiles = (firstSnapshot.getLong("num_files") ?: 0L) + restNumFiles,
-            sizeInBytes = lastSnapshot.getLong("total_files_sizes"),
-            totalTableSizeInBytes = (firstSnapshot.getLong("size_in_bytes") ?: 0L) + restSizeInBytes,
+            totalTableNumFiles = (firstSnapshot.getLong("total_data_files") ?: 0L) + restNumFiles,
+            sizeInBytes = lastSnapshot.getLong("total_files_size"),
+            totalTableSizeInBytes = (firstSnapshot.getLong("total_files_size") ?: 0L) + restSizeInBytes,
             totalRecords = lastSnapshot.getLong("total_records"),
         )
     }

@@ -77,6 +77,7 @@ class TableMetadataExtractorTest {
                 catalog = catalog,
                 schema = schema,
                 table = tableName,
+                tableProperties = any(),
             )
         } returns extractor
 
@@ -303,7 +304,8 @@ class TableMetadataExtractorTest {
         every {
             tableExtractorFactory.extractorFor(
                 spark = sparkSession, provider = "iceberg", isView = false,
-                catalog = "cat", schema = "sch", table = "tbl"
+                catalog = "cat", schema = "sch", table = "tbl",
+                tableProperties = any()
             )
         } returns mockk<TableExtractor>()
 
@@ -329,7 +331,8 @@ class TableMetadataExtractorTest {
         every {
             tableExtractorFactory.extractorFor(
                 spark = sparkSession, provider = "iceberg", isView = false,
-                catalog = "cat", schema = "sch", table = "tbl"
+                catalog = "cat", schema = "sch", table = "tbl",
+                tableProperties = any()
             )
         } returns mockk<TableExtractor>()
 
@@ -355,7 +358,8 @@ class TableMetadataExtractorTest {
         every {
             tableExtractorFactory.extractorFor(
                 spark = sparkSession, provider = "iceberg", isView = false,
-                catalog = "cat", schema = "sch", table = "tbl"
+                catalog = "cat", schema = "sch", table = "tbl",
+                tableProperties = any()
             )
         } returns mockk<TableExtractor>()
 
