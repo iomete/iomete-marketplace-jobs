@@ -13,11 +13,17 @@ import jakarta.inject.Singleton
 import org.apache.spark.sql.SparkSession
 import org.eclipse.microprofile.rest.client.inject.RestClient
 import org.slf4j.LoggerFactory
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executors
 import java.util.concurrent.ForkJoinPool
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.log
 
 private val logger = LoggerFactory.getLogger(MetadataScraper::class.java)
+
+private data class SchemaResult(
+    val schemaMetadata: SchemaMetadata,
+    val tableMetadataList: List<TableMetadata>,
+)
 
 @Singleton
 class MetadataScraper(
@@ -31,6 +37,9 @@ class MetadataScraper(
     private val exclusionRules = applicationConfig.exclusionRules
     private val schemaParallelism = System.getenv("SCHEMA_PARALLELISM")?.toIntOrNull()
         ?: Runtime.getRuntime().availableProcessors()
+    private val httpPool = Executors.newFixedThreadPool(
+        System.getenv("HTTP_PARALLELISM")?.toIntOrNull() ?: 16
+    )
 
     fun run() {
         logger.info("Running process with application config: {}", applicationConfig)
@@ -48,8 +57,8 @@ class MetadataScraper(
                 val schemas = sparkMetadataReader.getSchemas(spark, catalog.name)
                 logger.info("Processing {} schemas with parallelism={}", schemas.size, schemaParallelism)
                 val pool = ForkJoinPool(schemaParallelism)
-                val processedSchemas: List<SchemaMetadata> = try {
-                    pool.submit<List<SchemaMetadata>> {
+                val schemaResults: List<SchemaResult> = try {
+                    pool.submit<List<SchemaResult>> {
                         schemas.parallelStream()
                             .map { schema ->
                                 ignoreExcluded {
@@ -57,10 +66,7 @@ class MetadataScraper(
                                         spark = spark,
                                         catalog = catalog,
                                         schema = schema,
-                                    )?.also {
-                                        it.log()
-                                        catalogServiceClient.indexSchema(it)
-                                    }
+                                    )
                                 }
                             }
                             .toList()
@@ -70,8 +76,35 @@ class MetadataScraper(
                     pool.shutdown()
                 }
 
+                val allTableMetadata = schemaResults.flatMap { it.tableMetadataList }
+                val allSchemaMetadata = schemaResults.map { it.schemaMetadata }
+
+                logger.info(
+                    "Spark processing complete for catalog {}. Firing {} indexTable and {} indexSchema HTTP calls concurrently.",
+                    catalog.name, allTableMetadata.size, allSchemaMetadata.size
+                )
+
+                val tableFutures = allTableMetadata.map { table ->
+                    CompletableFuture.runAsync({
+                        logger.info(
+                            "Indexing table {}.{}.{} with spark session ID={}",
+                            table.catalog, table.schema, table.name, table.sparkApplicationId
+                        )
+                        catalogServiceClient.indexTable(table)
+                    }, httpPool)
+                }
+
+                val schemaFutures = allSchemaMetadata.map { schema ->
+                    CompletableFuture.runAsync({
+                        schema.log()
+                        catalogServiceClient.indexSchema(schema)
+                    }, httpPool)
+                }
+
+                CompletableFuture.allOf(*(tableFutures + schemaFutures).toTypedArray()).join()
+
                 CatalogMetadata
-                    .build(catalog, processedSchemas, sparkApplicationId = spark.sparkContext().applicationId())
+                    .build(catalog, allSchemaMetadata, sparkApplicationId = spark.sparkContext().applicationId())
                     .also { it.log() }
                     .also { catalogServiceClient.indexCatalog(it) }
             }
@@ -81,7 +114,7 @@ class MetadataScraper(
         spark: SparkSession,
         catalog: CatalogDetails,
         schema: String,
-    ): SchemaMetadata {
+    ): SchemaResult {
         logger.info("Processing schema: {}.{}", catalog, schema)
 
         exclusionRules.enforceSchemaExclusionRules(
@@ -100,16 +133,6 @@ class MetadataScraper(
                         tableMetadataExtractor
                             .scrapeTable(spark, catalog.name, schema, t.name, t.isTemp)
                             .also { it.log() }
-                            .also {
-                                logger.info(
-                                    "Indexing table {}.{}.{} with spark session ID={}",
-                                    it.catalog,
-                                    schema,
-                                    t.name,
-                                    it.sparkApplicationId,
-                                )
-                                catalogServiceClient.indexTable(it)
-                            }
                     } catch (_: ExcludedItemException) {
                         null // skipped
                     } catch (th: Throwable) {
@@ -120,12 +143,17 @@ class MetadataScraper(
                 }.toList()
                 .mapNotNull { it }
 
-        return SchemaMetadata.build(
+        val schemaMetadata = SchemaMetadata.build(
             catalog = catalog.name,
             schema = schema,
             tables = tables,
             failuresSize = failures.get(),
             sparkApplicationId = spark.sparkContext().applicationId(),
+        )
+
+        return SchemaResult(
+            schemaMetadata = schemaMetadata,
+            tableMetadataList = tables,
         )
     }
 }
