@@ -42,7 +42,7 @@ class IcebergTableExtractor(
             spark
                 .sql(
                     """
-                    select
+                    select 
                         count(*) as total_table_num_files,
                         sum(file_size_in_bytes) as total_table_size_in_bytes
                     from $fullName.all_data_files
