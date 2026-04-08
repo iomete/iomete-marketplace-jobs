@@ -83,6 +83,11 @@ class TableMetadataExtractorTest {
         return extractor
     }
 
+    private fun extractorWithExclusionRules(exclusionRules: ExclusionRules): TableMetadataExtractor {
+        every { applicationConfig.exclusionRules } returns exclusionRules
+        return TableMetadataExtractor(tableExtractorFactory, piiDetectionService, applicationConfig, sparkMetadataReader)
+    }
+
     @Test
     fun `scrapeTable should extract table metadata correctly`() {
         setupBasicTableExtractor()
@@ -97,7 +102,6 @@ class TableMetadataExtractorTest {
         assertEquals("email", result.columns[1].name)
     }
 
-    // §4.1.2 EXTERNAL table type
     @Test
     fun `scrapeTable with EXTERNAL table type`() {
         setupBasicTableExtractor(metadata = mapOf("Type" to "EXTERNAL", "Provider" to "parquet"))
@@ -108,7 +112,6 @@ class TableMetadataExtractorTest {
         assertFalse(result.isView)
     }
 
-    // §4.1.3 VIEW type
     @Test
     fun `scrapeTable with VIEW type sets isView true`() {
         val viewExtractor = mockk<TableExtractor>()
@@ -128,15 +131,12 @@ class TableMetadataExtractorTest {
         assertEquals("view", result.tableType)
     }
 
-    // §4.1.4 Table excluded by rules
     @Test
     fun `scrapeTable throws ExcludedItemException for excluded table`() {
-        every { applicationConfig.exclusionRules } returns ExclusionRules(
+        val extractor = extractorWithExclusionRules(ExclusionRules(
             tables = GeneralFilter(filterByProperties = mapOf("hidden" to "true")),
             defaultRule = DefaultRule(filterByProperties = emptyMap())
-        )
-        // Recreate extractor with new config
-        tableMetadataExtractor = TableMetadataExtractor(tableExtractorFactory, piiDetectionService, applicationConfig, sparkMetadataReader)
+        ))
 
         val tableDescription = TableDescription(
             columns = listOf(ColumnMetadata("id", "int", null, 0, false)),
@@ -145,11 +145,10 @@ class TableMetadataExtractorTest {
         every { sparkMetadataReader.describeTable(sparkSession, "cat", "sch", "tbl") } returns tableDescription
 
         assertThrows(ExcludedItemException::class.java) {
-            tableMetadataExtractor.scrapeTable(sparkSession, "cat", "sch", "tbl", false)
+            extractor.scrapeTable(sparkSession, "cat", "sch", "tbl", false)
         }
     }
 
-    // §4.1.5 Table statistics populated for Iceberg
     @Test
     fun `scrapeTable populates statistics for SupportTableStatistics extractor`() {
         val statsExtractor = object : TableExtractor, SupportTableStatistics, SupportColumnTags {
@@ -176,7 +175,6 @@ class TableMetadataExtractorTest {
         assertEquals(100L, result.totalRecords)
     }
 
-    // §4.1.6 GenericTableExtractor → statistics null
     @Test
     fun `scrapeTable with generic extractor has null statistics`() {
         val genericExtractor = mockk<TableExtractor>()
@@ -193,7 +191,6 @@ class TableMetadataExtractorTest {
         assertNull(result.totalRecords)
     }
 
-    // §4.1.7 DatasourceV1Like → column statistics populated
     @Test
     fun `scrapeTable with column statistics extractor populates column stats`() {
         val colStatsExtractor = object : TableExtractor, SupportColumnStatistics, SupportColumnTags {
@@ -212,7 +209,6 @@ class TableMetadataExtractorTest {
         assertEquals("100", result.columns[0].stats[0].statValue)
     }
 
-    // §4.1.8 PII tags assigned to columns
     @Test
     fun `scrapeTable assigns PII tags to columns`() {
         val tagExtractor = object : TableExtractor, SupportColumnTags {
@@ -232,7 +228,6 @@ class TableMetadataExtractorTest {
         assertTrue(result.tags.contains("DETECTED:PII"))
     }
 
-    // §4.1.9 PII detection skipped when extractor doesn't support tags
     @Test
     fun `scrapeTable skips PII detection when extractor does not support tags`() {
         val noTagExtractor = mockk<TableExtractor>()
@@ -243,7 +238,6 @@ class TableMetadataExtractorTest {
         verify(exactly = 0) { piiDetectionService.extract(any(), any(), any(), any()) }
     }
 
-    // §4.1.10 Temporary table
     @Test
     fun `scrapeTable with isTemp true sets isTemporary`() {
         setupBasicTableExtractor()
@@ -253,7 +247,6 @@ class TableMetadataExtractorTest {
         assertTrue(result.isTemporary)
     }
 
-    // §4.1.11 syncTime and sparkApplicationId populated
     @Test
     fun `scrapeTable populates syncTime and sparkApplicationId`() {
         setupBasicTableExtractor()
@@ -264,16 +257,13 @@ class TableMetadataExtractorTest {
         assertEquals("app-test-123", result.sparkApplicationId)
     }
 
-    // §4.2 parseIcebergPropertiesSafe (tested indirectly via scrapeTable)
 
-    // §4.2.1 Valid properties parsed - excluded by matching rule
     @Test
     fun `scrapeTable with valid Table Properties triggers exclusion when rule matches`() {
-        every { applicationConfig.exclusionRules } returns ExclusionRules(
+        val extractor = extractorWithExclusionRules(ExclusionRules(
             tables = GeneralFilter(filterByProperties = mapOf("hidden" to "true")),
             defaultRule = DefaultRule(filterByProperties = emptyMap())
-        )
-        tableMetadataExtractor = TableMetadataExtractor(tableExtractorFactory, piiDetectionService, applicationConfig, sparkMetadataReader)
+        ))
 
         val tableDescription = TableDescription(
             columns = listOf(ColumnMetadata("id", "int", null, 0, false)),
@@ -282,18 +272,16 @@ class TableMetadataExtractorTest {
         every { sparkMetadataReader.describeTable(sparkSession, "cat", "sch", "tbl") } returns tableDescription
 
         assertThrows(ExcludedItemException::class.java) {
-            tableMetadataExtractor.scrapeTable(sparkSession, "cat", "sch", "tbl", false)
+            extractor.scrapeTable(sparkSession, "cat", "sch", "tbl", false)
         }
     }
 
-    // §4.2.2 Null Table Properties → no exclusion
     @Test
     fun `scrapeTable with null Table Properties does not trigger exclusion`() {
-        every { applicationConfig.exclusionRules } returns ExclusionRules(
+        val extractor = extractorWithExclusionRules(ExclusionRules(
             tables = GeneralFilter(filterByProperties = mapOf("hidden" to "true")),
             defaultRule = DefaultRule(filterByProperties = emptyMap())
-        )
-        tableMetadataExtractor = TableMetadataExtractor(tableExtractorFactory, piiDetectionService, applicationConfig, sparkMetadataReader)
+        ))
 
         val tableDescription = TableDescription(
             columns = listOf(ColumnMetadata("id", "int", null, 0, false)),
@@ -308,18 +296,16 @@ class TableMetadataExtractorTest {
         } returns mockk<TableExtractor>()
 
         assertDoesNotThrow {
-            tableMetadataExtractor.scrapeTable(sparkSession, "cat", "sch", "tbl", false)
+            extractor.scrapeTable(sparkSession, "cat", "sch", "tbl", false)
         }
     }
 
-    // §4.2.3 Empty string Table Properties → no exclusion
     @Test
     fun `scrapeTable with empty Table Properties does not trigger exclusion`() {
-        every { applicationConfig.exclusionRules } returns ExclusionRules(
+        val extractor = extractorWithExclusionRules(ExclusionRules(
             tables = GeneralFilter(filterByProperties = mapOf("hidden" to "true")),
             defaultRule = DefaultRule(filterByProperties = emptyMap())
-        )
-        tableMetadataExtractor = TableMetadataExtractor(tableExtractorFactory, piiDetectionService, applicationConfig, sparkMetadataReader)
+        ))
 
         val tableDescription = TableDescription(
             columns = listOf(ColumnMetadata("id", "int", null, 0, false)),
@@ -334,18 +320,16 @@ class TableMetadataExtractorTest {
         } returns mockk<TableExtractor>()
 
         assertDoesNotThrow {
-            tableMetadataExtractor.scrapeTable(sparkSession, "cat", "sch", "tbl", false)
+            extractor.scrapeTable(sparkSession, "cat", "sch", "tbl", false)
         }
     }
 
-    // §4.2.4 Malformed Table Properties → no exclusion
     @Test
     fun `scrapeTable with malformed Table Properties does not trigger exclusion`() {
-        every { applicationConfig.exclusionRules } returns ExclusionRules(
+        val extractor = extractorWithExclusionRules(ExclusionRules(
             tables = GeneralFilter(filterByProperties = mapOf("hidden" to "true")),
             defaultRule = DefaultRule(filterByProperties = emptyMap())
-        )
-        tableMetadataExtractor = TableMetadataExtractor(tableExtractorFactory, piiDetectionService, applicationConfig, sparkMetadataReader)
+        ))
 
         val tableDescription = TableDescription(
             columns = listOf(ColumnMetadata("id", "int", null, 0, false)),
@@ -360,18 +344,16 @@ class TableMetadataExtractorTest {
         } returns mockk<TableExtractor>()
 
         assertDoesNotThrow {
-            tableMetadataExtractor.scrapeTable(sparkSession, "cat", "sch", "tbl", false)
+            extractor.scrapeTable(sparkSession, "cat", "sch", "tbl", false)
         }
     }
 
-    // §4.2.5 Values containing = sign
     @Test
     fun `scrapeTable with Table Properties containing values with equals sign`() {
-        every { applicationConfig.exclusionRules } returns ExclusionRules(
+        val extractor = extractorWithExclusionRules(ExclusionRules(
             tables = GeneralFilter(filterByProperties = mapOf("key" to "val=ue")),
             defaultRule = DefaultRule(filterByProperties = emptyMap())
-        )
-        tableMetadataExtractor = TableMetadataExtractor(tableExtractorFactory, piiDetectionService, applicationConfig, sparkMetadataReader)
+        ))
 
         val tableDescription = TableDescription(
             columns = listOf(ColumnMetadata("id", "int", null, 0, false)),
@@ -380,13 +362,11 @@ class TableMetadataExtractorTest {
         every { sparkMetadataReader.describeTable(sparkSession, "cat", "sch", "tbl") } returns tableDescription
 
         assertThrows(ExcludedItemException::class.java) {
-            tableMetadataExtractor.scrapeTable(sparkSession, "cat", "sch", "tbl", false)
+            extractor.scrapeTable(sparkSession, "cat", "sch", "tbl", false)
         }
     }
 
-    // §4.3 Creation Time Parsing
 
-    // §4.3.1 Valid Created Time → createdAt epoch seconds
     @Test
     fun `scrapeTable parses valid Created Time to epoch seconds`() {
         setupBasicTableExtractor(
@@ -399,7 +379,6 @@ class TableMetadataExtractorTest {
         assertTrue(result.createdAt!! > 0)
     }
 
-    // §4.3.2 Missing Created Time → createdAt null
     @Test
     fun `scrapeTable with missing Created Time returns null createdAt`() {
         setupBasicTableExtractor(
@@ -411,7 +390,6 @@ class TableMetadataExtractorTest {
         assertNull(result.createdAt)
     }
 
-    // §4.3.3 Unparseable Created Time → createdAt null
     @Test
     fun `scrapeTable with unparseable Created Time returns null createdAt`() {
         setupBasicTableExtractor(

@@ -1,11 +1,11 @@
 package com.iomete.catalogsync.extract.datasets
 
+import com.iomete.catalogsync.mockRow
 import io.mockk.every
 import io.mockk.mockk
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.types.StructType
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -18,28 +18,6 @@ class IcebergTableExtractorTest {
     @BeforeEach
     fun setup() {
         mockSparkSession = mockk(relaxed = true)
-    }
-
-    private fun mockRow(fields: Map<String, Any?>): Row {
-        val row = mockk<Row>()
-        val schema = mockk<StructType>()
-        every { row.schema() } returns schema
-
-        val fieldNames = fields.keys.toList()
-        fieldNames.forEachIndexed { index, name ->
-            every { schema.fieldIndex(name) } returns index
-            val value = fields[name]
-            every { row.get(index) } returns value
-            when (value) {
-                is Timestamp -> every { row.getTimestamp(index) } returns value
-                is Long -> every { row.getLong(index) } returns value
-                null -> {
-                    every { row.getTimestamp(index) } returns null
-                    every { row.getLong(index) } throws NullPointerException()
-                }
-            }
-        }
-        return row
     }
 
     /**

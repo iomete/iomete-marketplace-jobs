@@ -117,7 +117,6 @@ class DatasourceV1LikeTableExtractorTest {
         return colStat
     }
 
-    // §7.1.1 — Extract stats from CatalogTable
     @Test
     fun `extractTableStatistics returns correct stats when statistics present`() {
         val createTime = 1700000000000L
@@ -135,7 +134,6 @@ class DatasourceV1LikeTableExtractorTest {
         assertNull(result.numFiles)
     }
 
-    // §7.1.2 — Handle missing statistics
     @Test
     fun `extractTableStatistics returns null when no statistics available`() {
         every { mockCatalogTable.stats() } returns Option.empty()
@@ -144,7 +142,6 @@ class DatasourceV1LikeTableExtractorTest {
         assertNull(extractor.extractTableStatistics())
     }
 
-    // §7.1.3 — Handle table not found in Spark catalog
     @Test
     fun `constructor throws when table not found in catalog`() {
         every {
@@ -156,7 +153,6 @@ class DatasourceV1LikeTableExtractorTest {
         }
     }
 
-    // §7.2.1 — Extract column stats for numeric column
     @Test
     fun `extractColumnStatistics returns numeric stats for column`() {
         val colStat = mockCatalogColumnStat(
@@ -180,7 +176,6 @@ class DatasourceV1LikeTableExtractorTest {
         assertTrue(ageStats.any { it.name == "nullCount" && it.statValue == "5" })
     }
 
-    // §7.2.2 — Extract column stats for string column
     @Test
     fun `extractColumnStatistics returns string stats for column`() {
         val colStat = mockCatalogColumnStat(avgLen = 25, maxLen = 100)
@@ -197,7 +192,6 @@ class DatasourceV1LikeTableExtractorTest {
         assertTrue(nameStats.any { it.name == "maxLen" && it.statValue == "100" })
     }
 
-    // §7.2.3 — Handle column with no statistics
     @Test
     fun `extractColumnStatistics returns empty list when column not in stats map`() {
         val stats = mockCatalogStatistics(sizeInBytes = 1024)
@@ -209,7 +203,6 @@ class DatasourceV1LikeTableExtractorTest {
         assertEquals(emptyList<com.iomete.catalogsync.extract.ColumnStat>(), result["unknown_col"])
     }
 
-    // §7.2.4 — Handle multiple columns
     @Test
     fun `extractColumnStatistics handles multiple columns`() {
         val colStatA = mockCatalogColumnStat(distinctCount = 10)
@@ -231,7 +224,6 @@ class DatasourceV1LikeTableExtractorTest {
         assertEquals(1, result["colC"]!!.size)
     }
 
-    // §7.2.5 — Handle Scala Option.None values
     @Test
     fun `extractColumnStatistics returns empty list when all stat fields are None`() {
         val colStat = mockCatalogColumnStat() // all defaults to null -> Option.empty()
@@ -245,7 +237,6 @@ class DatasourceV1LikeTableExtractorTest {
         assertEquals(emptyList<com.iomete.catalogsync.extract.ColumnStat>(), result["col"])
     }
 
-    // §7.3.1 — Return type from Spark catalog (MANAGED)
     @Test
     fun `getTableType returns MANAGED when table is managed`() {
         every { mockCatalogTable.stats() } returns Option.empty()
@@ -255,7 +246,6 @@ class DatasourceV1LikeTableExtractorTest {
         assertEquals("MANAGED", extractor.getTableType)
     }
 
-    // §7.3.2 — Return type for EXTERNAL table
     @Test
     fun `getTableType returns EXTERNAL when table is external`() {
         every { mockCatalogTable.stats() } returns Option.empty()
