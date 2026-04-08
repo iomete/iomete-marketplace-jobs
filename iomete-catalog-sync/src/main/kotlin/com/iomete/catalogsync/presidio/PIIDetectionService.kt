@@ -85,9 +85,6 @@ class PIIDetectionService(
     }
 
     private fun isPiiDetectionEnabled(): Boolean {
-        // Check if the system property piiDetectionEnabled exists
-        val systemProperty = System.getProperty("piiDetectionEnabled", "false")
-
         // Check if the environment variable PII_DETECTION_ENABLED exists via MicroProfile Config
         val envVar = try {
             ConfigProvider.getConfig()
@@ -96,6 +93,9 @@ class PIIDetectionService(
         } catch (e: Exception) {
             "false"
         }
+
+        // Check if the system property piiDetectionEnabled exists
+        val systemProperty = System.getProperty("piiDetectionEnabled", "false")
 
         // Determine the value to use
         return systemProperty.toBoolean() || envVar.toBoolean()
