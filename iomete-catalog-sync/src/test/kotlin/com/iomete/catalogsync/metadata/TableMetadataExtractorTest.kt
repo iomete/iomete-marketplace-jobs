@@ -114,8 +114,6 @@ class TableMetadataExtractorTest {
 
     @Test
     fun `scrapeTable with VIEW type sets isView true`() {
-        val viewExtractor = mockk<TableExtractor>()
-        // ViewExtractor implements SupportColumnTags
         val viewWithTags = object : TableExtractor, SupportColumnTags {
             override val getTableType = "VIEW"
         }
