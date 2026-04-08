@@ -98,6 +98,6 @@ class PIIDetectionService(
         val systemProperty = System.getProperty("piiDetectionEnabled", "false")
 
         // Determine the value to use
-        return systemProperty.toBoolean() || envVar.toBoolean()
+        return envVar.toBoolean() || systemProperty.toBoolean()
     }
 }
