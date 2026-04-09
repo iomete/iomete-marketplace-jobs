@@ -160,7 +160,7 @@ class MetadataScraper(
         val tables =
             sparkMetadataReader
                 .getTables(spark, catalog, schema)
-                .parallelStream()
+                .stream()
                 .map { t ->
                     try {
                         tableMetadataExtractor
