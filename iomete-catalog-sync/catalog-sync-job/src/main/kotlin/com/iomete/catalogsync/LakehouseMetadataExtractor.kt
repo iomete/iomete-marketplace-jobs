@@ -141,10 +141,6 @@ class LakehouseMetadataExtractor(
                         tableName,
                     )
 
-                    val dataSyncMetric = getTimer(name = METRIC_NAME_DATA_SYNC, catalog = catalog, schema = schema, tableName = tableName)
-                    scrapedData?.let {
-                        dataSyncMetric.record<Unit> { dataSync.syncTableData(it) }
-                    }
                     scrapedData
                 } catch (th: Throwable) {
                     failedTables[tableName] = th.message ?: "Unknown error"
@@ -155,6 +151,21 @@ class LakehouseMetadataExtractor(
         }
 
         val tableResults = tableFutures.mapNotNull { it.join() }
+
+        // Sync extracted table data in parallel, decoupled from extraction thread pool
+        val syncFutures = tableResults.map { scrapedData ->
+            CompletableFuture.runAsync({
+                try {
+                    val dataSyncMetric = getTimer(
+                        name = METRIC_NAME_DATA_SYNC, catalog = catalog, schema = schema, tableName = scrapedData.name
+                    )
+                    dataSyncMetric.record<Unit> { dataSync.syncTableData(scrapedData) }
+                } catch (th: Throwable) {
+                    logger.error("Failed to sync table {}.{}.{}: {}", catalog, schema, scrapedData.name, th.message, th)
+                }
+            }, executor)
+        }
+        syncFutures.forEach { it.join() }
 
         for (result in tableResults) {
             if (result.isView) totalViewCount++

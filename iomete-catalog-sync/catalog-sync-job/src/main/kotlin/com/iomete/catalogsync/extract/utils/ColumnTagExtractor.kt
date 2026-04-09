@@ -4,17 +4,28 @@ import com.iomete.catalogsync.*
 import org.apache.spark.sql.SparkSession
 import org.eclipse.microprofile.config.ConfigProvider
 import org.slf4j.LoggerFactory
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 
 
 class ColumnTagExtractor(
     private val spark: SparkSession,
     private val presidioClient: PresidioClient
 ) {
+    private val piiDetectionEnabled: Boolean by lazy { checkPiiDetectionEnabled() }
+
+    private val piiResultCache = ConcurrentHashMap<String, List<String>>()
+
+    private val presidioExecutor = Executors.newFixedThreadPool(
+        (System.getenv("PII_PARALLELISM")?.toIntOrNull() ?: 8).coerceIn(1, 32)
+    )
+
     fun extract(
         fullTableName: String,
         columns: List<String>
     ): Map<String, List<String>> {
-        if (isPiiDetectionEnabled().not()) {
+        if (!piiDetectionEnabled) {
             return emptyMap()
         }
 
@@ -26,18 +37,27 @@ class ColumnTagExtractor(
             val sampleData = spark.sql("SELECT * FROM $fullTableName TABLESAMPLE (5 ROWS)")
                 .collectAsList().orEmpty()
 
-            columns.forEach { columnName ->
-                val columnSampleData =
-                    sampleData.map { it.get(columnName).toString() }
-                        .filter { it.isNotEmpty() }
-                        .distinct().firstOrNull()
+            // Prepare column sample data
+            val columnSamples = columns.associateWith { columnName ->
+                sampleData.map { it.get(columnName).toString() }
+                    .filter { it.isNotEmpty() }
+                    .distinct().firstOrNull()
+            }
 
-                val detectedTags = detectedTags(columnSampleData)
-                logger.info(
-                    "table={} column={} detected-tags={} for sample data: {}",
-                    fullTableName, columnName, detectedTags, columnSampleData
-                )
-                result[columnName] = detectedTags
+            // Parallelize Presidio HTTP calls across columns
+            val futures = columnSamples.map { (columnName, sampleValue) ->
+                columnName to CompletableFuture.supplyAsync({
+                    val detectedTags = detectedTags(sampleValue)
+                    logger.info(
+                        "table={} column={} detected-tags={} for sample data: {}",
+                        fullTableName, columnName, detectedTags, sampleValue
+                    )
+                    detectedTags
+                }, presidioExecutor)
+            }
+
+            futures.forEach { (columnName, future) ->
+                result[columnName] = future.join()
             }
         } catch (ex: Exception) {
             logger.error("Error on detectColumnTags. Table: {}. Message: {}", fullTableName, ex.message)
@@ -50,6 +70,9 @@ class ColumnTagExtractor(
         if (input.isNullOrBlank()) {
             return emptyList()
         }
+
+        // Return cached result for identical sample values
+        piiResultCache[input]?.let { return it }
 
         val responseData = presidioClient.analyze(PresidioRequest(input))
         val sortedResult = responseData.sortedByDescending { it.score }
@@ -65,23 +88,19 @@ class ColumnTagExtractor(
             detectedTags.add("PCI")
         }
 
-        return detectedTags.map { "DETECTED_${it.uppercase()}" }
+        val tags = detectedTags.map { "DETECTED_${it.uppercase()}" }
+        piiResultCache[input] = tags
+        return tags
     }
 
     companion object {
         private val logger = LoggerFactory.getLogger(ColumnTagExtractor::class.java)
     }
 
-    private fun isPiiDetectionEnabled(): Boolean {
+    private fun checkPiiDetectionEnabled(): Boolean {
         val config = ConfigProvider.getConfig()
-
-        // Check if the environment variable PII_DETECTION_ENABLED exists
         val envVar = config.getOptionalValue("PII_DETECTION_ENABLED", String::class.java).orElse("false")
-
-        // Check if the system property piiDetectionEnabled exists
         val systemProperty = System.getProperty("piiDetectionEnabled", "false")
-
-        // Determine the value to use
         return envVar.toBoolean() || systemProperty.toBoolean()
     }
 }
