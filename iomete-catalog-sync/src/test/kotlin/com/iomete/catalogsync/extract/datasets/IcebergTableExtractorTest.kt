@@ -21,27 +21,34 @@ class IcebergTableExtractorTest {
     }
 
     /**
-     * Helper: sets up the 2 queries that extractTableStatistics uses.
-     * - lastSnapshot: ordered desc limit 1 (committed_at, total_files_sizes, total_records, total_data_files)
-     * - allDataFiles: aggregated from all_data_files (total_table_num_files, total_table_size_in_bytes)
+     * Helper: sets up the snapshots query that extractTableStatistics uses.
+     * The implementation runs a single query on $fullName.snapshots ordered by committed_at asc.
      */
-    private fun setupSnapshotQueries(
-        lastSnapshotRows: List<Row>,
-        allDataFilesRows: List<Row> = emptyList(),
-    ) {
-        val lastDataset = mockk<Dataset<Row>>()
-        val allDataFilesDataset = mockk<Dataset<Row>>()
-
+    private fun setupSnapshotsQuery(rows: List<Row>) {
+        val dataset = mockk<Dataset<Row>>()
         every {
-            mockSparkSession.sql(match<String> { it.contains("order by committed_at desc") })
-        } returns lastDataset
-        every { lastDataset.collectAsList() } returns lastSnapshotRows
-
-        every {
-            mockSparkSession.sql(match<String> { it.contains("all_data_files") })
-        } returns allDataFilesDataset
-        every { allDataFilesDataset.collectAsList() } returns allDataFilesRows
+            mockSparkSession.sql(match<String> { it.contains(".snapshots") })
+        } returns dataset
+        every { dataset.collectAsList() } returns rows
     }
+
+    private fun snapshotRow(
+        committedAt: Timestamp,
+        totalFilesSize: Long?,
+        totalRecords: Long?,
+        totalDataFiles: Long?,
+        addedDataFiles: Long? = null,
+        addedFilesSize: Long? = null,
+    ): Row = mockRow(
+        mapOf(
+            "committed_at" to committedAt,
+            "total_files_size" to totalFilesSize,
+            "total_records" to totalRecords,
+            "total_data_files" to totalDataFiles,
+            "added_data_files" to addedDataFiles,
+            "added_files_size" to addedFilesSize,
+        )
+    )
 
     @Test
     fun `getTableType always returns MANAGED`() {
@@ -51,66 +58,47 @@ class IcebergTableExtractorTest {
 
     @Test
     fun `extractTableStatistics returns correct stats when data exists`() {
-        val commitTime = Timestamp.from(Instant.parse("2025-01-15T10:30:00Z"))
+        val firstTime = Timestamp.from(Instant.parse("2025-01-10T00:00:00Z"))
+        val lastTime = Timestamp.from(Instant.parse("2025-01-15T10:30:00Z"))
 
-        val lastSnapshotRow = mockRow(
-            mapOf(
-                "committed_at" to commitTime,
-                "total_files_sizes" to 1024L,
-                "total_records" to 500L,
-                "total_data_files" to 3L,
+        setupSnapshotsQuery(
+            listOf(
+                snapshotRow(
+                    committedAt = firstTime,
+                    totalFilesSize = 500L,
+                    totalRecords = 200L,
+                    totalDataFiles = 3L,
+                    addedDataFiles = 3L,
+                    addedFilesSize = 500L,
+                ),
+                snapshotRow(
+                    committedAt = lastTime,
+                    totalFilesSize = 1024L,
+                    totalRecords = 500L,
+                    totalDataFiles = 5L,
+                    addedDataFiles = 2L,
+                    addedFilesSize = 524L,
+                ),
             )
-        )
-
-        val allDataFilesRow = mockRow(
-            mapOf(
-                "total_table_num_files" to 10L,
-                "total_table_size_in_bytes" to 2048L,
-            )
-        )
-
-        setupSnapshotQueries(
-            lastSnapshotRows = listOf(lastSnapshotRow),
-            allDataFilesRows = listOf(allDataFilesRow),
         )
 
         val extractor = IcebergTableExtractor(mockSparkSession, "cat", "sch", "tbl")
         val stats = extractor.extractTableStatistics()
 
         assertNotNull(stats)
-        assertEquals(commitTime.toInstant().toEpochMilli(), stats!!.lastModified)
-        assertEquals(3L, stats.numFiles)
-        assertEquals(10L, stats.totalTableNumFiles)
+        assertEquals(lastTime.toInstant().toEpochMilli(), stats!!.lastModified)
+        assertEquals(5L, stats.numFiles)
+        // totalTableNumFiles = first.total_data_files + sum of rest's added_data_files = 3 + 2 = 5
+        assertEquals(5L, stats.totalTableNumFiles)
         assertEquals(1024L, stats.sizeInBytes)
-        assertEquals(2048L, stats.totalTableSizeInBytes)
+        // totalTableSizeInBytes = first.total_files_size + sum of rest's added_files_size = 500 + 524 = 1024
+        assertEquals(1024L, stats.totalTableSizeInBytes)
         assertEquals(500L, stats.totalRecords)
     }
 
     @Test
-    fun `extractTableStatistics returns null when lastSnapshot query returns empty`() {
-        setupSnapshotQueries(lastSnapshotRows = emptyList())
-
-        val extractor = IcebergTableExtractor(mockSparkSession, "cat", "sch", "tbl")
-        assertNull(extractor.extractTableStatistics())
-    }
-
-    @Test
-    fun `extractTableStatistics returns null when allDataFiles query returns empty`() {
-        val commitTime = Timestamp.from(Instant.now())
-
-        val lastSnapshotRow = mockRow(
-            mapOf(
-                "committed_at" to commitTime,
-                "total_files_sizes" to 100L,
-                "total_records" to 10L,
-                "total_data_files" to 1L,
-            )
-        )
-
-        setupSnapshotQueries(
-            lastSnapshotRows = listOf(lastSnapshotRow),
-            allDataFilesRows = emptyList(),
-        )
+    fun `extractTableStatistics returns null when snapshots query returns empty`() {
+        setupSnapshotsQuery(emptyList())
 
         val extractor = IcebergTableExtractor(mockSparkSession, "cat", "sch", "tbl")
         assertNull(extractor.extractTableStatistics())
@@ -132,25 +120,17 @@ class IcebergTableExtractorTest {
     fun `extractTableStatistics handles null values in row fields`() {
         val commitTime = Timestamp.from(Instant.parse("2025-06-01T00:00:00Z"))
 
-        val lastSnapshotRow = mockRow(
-            mapOf(
-                "committed_at" to commitTime,
-                "total_files_sizes" to null,
-                "total_records" to null,
-                "total_data_files" to 2L,
+        setupSnapshotsQuery(
+            listOf(
+                snapshotRow(
+                    committedAt = commitTime,
+                    totalFilesSize = null,
+                    totalRecords = null,
+                    totalDataFiles = 2L,
+                    addedDataFiles = null,
+                    addedFilesSize = null,
+                ),
             )
-        )
-
-        val allDataFilesRow = mockRow(
-            mapOf(
-                "total_table_num_files" to null,
-                "total_table_size_in_bytes" to null,
-            )
-        )
-
-        setupSnapshotQueries(
-            lastSnapshotRows = listOf(lastSnapshotRow),
-            allDataFilesRows = listOf(allDataFilesRow),
         )
 
         val extractor = IcebergTableExtractor(mockSparkSession, "cat", "sch", "tbl")
@@ -175,41 +155,83 @@ class IcebergTableExtractorTest {
         every { snapshotsDataset.collectAsList() } returns emptyList()
 
         val extractor = IcebergTableExtractor(mockSparkSession, "my-catalog", "my-schema", "my-table")
-        // Will return null due to empty snapshots, but the important thing is
-        // that the sql() call matched our backtick-escaped pattern
         assertNull(extractor.extractTableStatistics())
     }
 
     @Test
-    fun `extractTableStatistics returns totalTableNumFiles from allDataFiles query`() {
-        val commitTime = Timestamp.from(Instant.now())
+    fun `extractTableStatistics computes totalTableNumFiles from all snapshots`() {
+        val firstTime = Timestamp.from(Instant.parse("2025-01-01T00:00:00Z"))
+        val secondTime = Timestamp.from(Instant.parse("2025-01-02T00:00:00Z"))
+        val thirdTime = Timestamp.from(Instant.parse("2025-01-03T00:00:00Z"))
 
-        val lastSnapshotRow = mockRow(
-            mapOf(
-                "committed_at" to commitTime,
-                "total_files_sizes" to 500L,
-                "total_records" to 50L,
-                "total_data_files" to 5L,
+        setupSnapshotsQuery(
+            listOf(
+                snapshotRow(
+                    committedAt = firstTime,
+                    totalFilesSize = 200L,
+                    totalRecords = 10L,
+                    totalDataFiles = 2L,
+                    addedDataFiles = 2L,
+                    addedFilesSize = 200L,
+                ),
+                snapshotRow(
+                    committedAt = secondTime,
+                    totalFilesSize = 500L,
+                    totalRecords = 30L,
+                    totalDataFiles = 5L,
+                    addedDataFiles = 3L,
+                    addedFilesSize = 300L,
+                ),
+                snapshotRow(
+                    committedAt = thirdTime,
+                    totalFilesSize = 800L,
+                    totalRecords = 50L,
+                    totalDataFiles = 7L,
+                    addedDataFiles = 4L,
+                    addedFilesSize = 500L,
+                ),
             )
-        )
-
-        val allDataFilesRow = mockRow(
-            mapOf(
-                "total_table_num_files" to 7L,
-                "total_table_size_in_bytes" to 800L,
-            )
-        )
-
-        setupSnapshotQueries(
-            lastSnapshotRows = listOf(lastSnapshotRow),
-            allDataFilesRows = listOf(allDataFilesRow),
         )
 
         val extractor = IcebergTableExtractor(mockSparkSession, "cat", "sch", "tbl")
         val stats = extractor.extractTableStatistics()
 
         assertNotNull(stats)
-        assertEquals(7L, stats!!.totalTableNumFiles)
-        assertEquals(800L, stats.totalTableSizeInBytes)
+        assertEquals(7L, stats!!.numFiles)
+        // totalTableNumFiles = first.total_data_files(2) + second.added_data_files(3) + third.added_data_files(4) = 9
+        assertEquals(9L, stats.totalTableNumFiles)
+        // totalTableSizeInBytes = first.total_files_size(200) + second.added_files_size(300) + third.added_files_size(500) = 1000
+        assertEquals(1000L, stats.totalTableSizeInBytes)
+        assertEquals(800L, stats.sizeInBytes)
+        assertEquals(50L, stats.totalRecords)
+    }
+
+    @Test
+    fun `extractTableStatistics with single snapshot uses first as both first and last`() {
+        val commitTime = Timestamp.from(Instant.now())
+
+        setupSnapshotsQuery(
+            listOf(
+                snapshotRow(
+                    committedAt = commitTime,
+                    totalFilesSize = 500L,
+                    totalRecords = 50L,
+                    totalDataFiles = 5L,
+                    addedDataFiles = 5L,
+                    addedFilesSize = 500L,
+                ),
+            )
+        )
+
+        val extractor = IcebergTableExtractor(mockSparkSession, "cat", "sch", "tbl")
+        val stats = extractor.extractTableStatistics()
+
+        assertNotNull(stats)
+        assertEquals(5L, stats!!.numFiles)
+        // Single snapshot: totalTableNumFiles = first.total_data_files(5) + no rest = 5
+        assertEquals(5L, stats.totalTableNumFiles)
+        assertEquals(500L, stats.sizeInBytes)
+        assertEquals(500L, stats.totalTableSizeInBytes)
+        assertEquals(50L, stats.totalRecords)
     }
 }
