@@ -9,13 +9,16 @@ import com.iomete.catalogsync.config.ExcludedItemException
 import com.iomete.catalogsync.config.enforceCatalogExclusionRules
 import com.iomete.catalogsync.config.enforceSchemaExclusionRules
 import com.iomete.catalogsync.config.ignoreExcluded
+import jakarta.annotation.PreDestroy
 import jakarta.inject.Singleton
 import org.apache.spark.sql.SparkSession
 import org.eclipse.microprofile.rest.client.inject.RestClient
 import org.slf4j.LoggerFactory
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ForkJoinPool
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 private val logger = LoggerFactory.getLogger(MetadataScraper::class.java)
@@ -37,9 +40,19 @@ class MetadataScraper(
     private val exclusionRules = applicationConfig.exclusionRules
     private val schemaParallelism = System.getenv("SCHEMA_PARALLELISM")?.toIntOrNull()
         ?: Runtime.getRuntime().availableProcessors()
-    private val httpPool = Executors.newFixedThreadPool(
+    private val httpPool: ExecutorService = Executors.newFixedThreadPool(
         System.getenv("HTTP_PARALLELISM")?.toIntOrNull() ?: 16
     )
+
+    @PreDestroy
+    fun shutdown() {
+        logger.info("Shutting down httpPool")
+        httpPool.shutdown()
+        if (!httpPool.awaitTermination(60, TimeUnit.SECONDS)) {
+            logger.warn("httpPool did not terminate in time, forcing shutdown")
+            httpPool.shutdownNow()
+        }
+    }
 
     fun run() {
         logger.info("Running process with application config: {}", applicationConfig)
@@ -51,62 +64,82 @@ class MetadataScraper(
                     exclusionRules.enforceCatalogExclusionRules(catalog)
                     catalog // keep it if not excluded
                 }
-            }.onEach { catalog ->
-                val spark = sparkSessionProvider.getSession(catalog)
+            }.forEach { catalog ->
+                try {
+                    val spark = sparkSessionProvider.getSession(catalog)
 
-                val schemas = sparkMetadataReader.getSchemas(spark, catalog.name)
-                logger.info("Processing {} schemas with parallelism={}", schemas.size, schemaParallelism)
-                val pool = ForkJoinPool(schemaParallelism)
-                val schemaResults: List<SchemaResult> = try {
-                    pool.submit<List<SchemaResult>> {
-                        schemas.parallelStream()
-                            .map { schema ->
-                                ignoreExcluded {
-                                    processSchema(
-                                        spark = spark,
-                                        catalog = catalog,
-                                        schema = schema,
-                                    )
+                    val schemas = sparkMetadataReader.getSchemas(spark, catalog.name)
+                    logger.info("Processing {} schemas with parallelism={}", schemas.size, schemaParallelism)
+                    val pool = ForkJoinPool(schemaParallelism)
+                    val schemaResults: List<SchemaResult> = try {
+                        pool.submit<List<SchemaResult>> {
+                            schemas.parallelStream()
+                                .map { schema ->
+                                    ignoreExcluded {
+                                        processSchema(
+                                            spark = spark,
+                                            catalog = catalog,
+                                            schema = schema,
+                                        )
+                                    }
                                 }
-                            }
-                            .toList()
-                            .filterNotNull()
-                    }.get()
-                } finally {
-                    pool.shutdown()
+                                .toList()
+                                .filterNotNull()
+                        }.get()
+                    } finally {
+                        pool.shutdown()
+                    }
+
+                    val allTableMetadata = schemaResults.flatMap { it.tableMetadataList }
+                    val allSchemaMetadata = schemaResults.map { it.schemaMetadata }
+
+                    logger.info(
+                        "Spark processing complete for catalog {}. Firing {} indexTable and {} indexSchema HTTP calls concurrently.",
+                        catalog.name, allTableMetadata.size, allSchemaMetadata.size
+                    )
+
+                    val tableFutures = allTableMetadata.map { table ->
+                        CompletableFuture.runAsync({
+                            logger.info(
+                                "Indexing table {}.{}.{} with spark session ID={}",
+                                table.catalog, table.schema, table.name, table.sparkApplicationId
+                            )
+                            catalogServiceClient.indexTable(table)
+                        }, httpPool).exceptionally { th ->
+                            logger.error(
+                                "Failed to index table {}.{}.{}: {}",
+                                table.catalog, table.schema, table.name, th.cause?.message ?: th.message
+                            )
+                            null
+                        }
+                    }
+
+                    val schemaFutures = allSchemaMetadata.map { schema ->
+                        CompletableFuture.runAsync({
+                            schema.log()
+                            catalogServiceClient.indexSchema(schema)
+                        }, httpPool).exceptionally { th ->
+                            logger.error(
+                                "Failed to index schema {}.{}: {}",
+                                catalog.name, schema.name, th.cause?.message ?: th.message
+                            )
+                            null
+                        }
+                    }
+
+                    CompletableFuture.allOf(*(tableFutures + schemaFutures).toTypedArray()).join()
+
+                    try {
+                        CatalogMetadata
+                            .build(catalog, allSchemaMetadata, sparkApplicationId = spark.sparkContext().applicationId())
+                            .also { it.log() }
+                            .also { catalogServiceClient.indexCatalog(it) }
+                    } catch (th: Throwable) {
+                        logger.error("Failed to index catalog {}: {}", catalog.name, th.cause?.message ?: th.message, th)
+                    }
+                } catch (th: Throwable) {
+                    logger.error("Failed to process catalog {}: {}", catalog.name, th.message, th)
                 }
-
-                val allTableMetadata = schemaResults.flatMap { it.tableMetadataList }
-                val allSchemaMetadata = schemaResults.map { it.schemaMetadata }
-
-                logger.info(
-                    "Spark processing complete for catalog {}. Firing {} indexTable and {} indexSchema HTTP calls concurrently.",
-                    catalog.name, allTableMetadata.size, allSchemaMetadata.size
-                )
-
-                val tableFutures = allTableMetadata.map { table ->
-                    CompletableFuture.runAsync({
-                        logger.info(
-                            "Indexing table {}.{}.{} with spark session ID={}",
-                            table.catalog, table.schema, table.name, table.sparkApplicationId
-                        )
-                        catalogServiceClient.indexTable(table)
-                    }, httpPool)
-                }
-
-                val schemaFutures = allSchemaMetadata.map { schema ->
-                    CompletableFuture.runAsync({
-                        schema.log()
-                        catalogServiceClient.indexSchema(schema)
-                    }, httpPool)
-                }
-
-                CompletableFuture.allOf(*(tableFutures + schemaFutures).toTypedArray()).join()
-
-                CatalogMetadata
-                    .build(catalog, allSchemaMetadata, sparkApplicationId = spark.sparkContext().applicationId())
-                    .also { it.log() }
-                    .also { catalogServiceClient.indexCatalog(it) }
             }
     }
 
@@ -115,7 +148,7 @@ class MetadataScraper(
         catalog: CatalogDetails,
         schema: String,
     ): SchemaResult {
-        logger.info("Processing schema: {}.{}", catalog, schema)
+        logger.info("Processing schema: {}.{}", catalog.name, schema)
 
         exclusionRules.enforceSchemaExclusionRules(
             schema = schema,
@@ -141,7 +174,7 @@ class MetadataScraper(
                         null
                     }
                 }.toList()
-                .mapNotNull { it }
+                .filterNotNull()
 
         val schemaMetadata = SchemaMetadata.build(
             catalog = catalog.name,
