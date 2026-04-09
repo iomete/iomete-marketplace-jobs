@@ -16,6 +16,7 @@ class TableExtractorFactory {
         catalog: String,
         schema: String,
         table: String,
+        tableProperties: Map<String, String> = emptyMap(),
     ): TableExtractor {
         if (isView) return ViewExtractor(catalog = catalog, schema = schema, table = table)
 
@@ -26,6 +27,7 @@ class TableExtractorFactory {
                     catalog = catalog,
                     schema = schema,
                     table = table,
+                    currentSnapshotId = tableProperties["current-snapshot-id"],
                 )
             }
 
