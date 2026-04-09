@@ -121,7 +121,7 @@ class MetadataScraper(
                         }, httpPool).exceptionally { th ->
                             logger.error(
                                 "Failed to index schema {}.{}: {}",
-                                catalog.name, schema.name, th.cause?.message ?: th.message
+                                catalog.name, schema, th.cause?.message ?: th.message
                             )
                             null
                         }
