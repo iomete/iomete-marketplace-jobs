@@ -100,15 +100,15 @@ class MetadataScraper(
 
                     val tableFutures = allTableMetadata.map { table ->
                         CompletableFuture.runAsync({
-                            logger.info(
+                            logger.debug(
                                 "Indexing table {}.{}.{} with spark session ID={}",
                                 table.catalog, table.schema, table.name, table.sparkApplicationId
                             )
                             catalogServiceClient.indexTable(table)
                         }, httpPool).exceptionally { th ->
                             logger.error(
-                                "Failed to index table {}.{}.{}: {}",
-                                table.catalog, table.schema, table.name, th.cause?.message ?: th.message
+                                "Failed to index table {}.{}.{}",
+                                table.catalog, table.schema, table.name, th.cause ?: th
                             )
                             null
                         }
@@ -120,8 +120,8 @@ class MetadataScraper(
                             catalogServiceClient.indexSchema(schema)
                         }, httpPool).exceptionally { th ->
                             logger.error(
-                                "Failed to index schema {}.{}: {}",
-                                catalog.name, schema, th.cause?.message ?: th.message
+                                "Failed to index schema {}.{}",
+                                catalog.name, schema, th.cause ?: th
                             )
                             null
                         }
@@ -170,7 +170,7 @@ class MetadataScraper(
                         null // skipped
                     } catch (th: Throwable) {
                         failures.incrementAndGet()
-                        logger.error("Failed to process table {}.{}.{}: {}", catalog.name, schema, t.name, th.localizedMessage)
+                        logger.error("Failed to process table {}.{}.{}: {}", catalog.name, schema, t.name, th.localizedMessage, th)
                         null
                     }
                 }.toList()

@@ -3,6 +3,7 @@ package com.iomete.catalogsync.extract.datasets
 import com.iomete.catalogsync.mockRow
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.SparkSession
@@ -204,6 +205,15 @@ class IcebergTableExtractorTest {
         assertEquals(1000L, stats.totalTableSizeInBytes)
         assertEquals(800L, stats.sizeInBytes)
         assertEquals(50L, stats.totalRecords)
+    }
+
+    @Test
+    fun `extractTableStatistics returns null without querying when currentSnapshotId is none`() {
+        val extractor = IcebergTableExtractor(mockSparkSession, "cat", "sch", "tbl", currentSnapshotId = "none")
+        val stats = extractor.extractTableStatistics()
+
+        assertNull(stats)
+        verify(exactly = 0) { mockSparkSession.sql(any<String>()) }
     }
 
     @Test
