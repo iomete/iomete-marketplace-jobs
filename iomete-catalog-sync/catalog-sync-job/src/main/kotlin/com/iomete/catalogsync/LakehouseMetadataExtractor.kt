@@ -15,7 +15,9 @@ import java.util.concurrent.TimeUnit
 import java.util.function.Supplier
 import jakarta.inject.Singleton
 import org.eclipse.microprofile.rest.client.inject.RestClient
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ForkJoinPool
 import kotlin.collections.set
 
 const val METRIC_NAME_TABLE_PROCESS = "1.table_process"
@@ -51,130 +53,180 @@ class LakehouseMetadataExtractor(
     private val catalogViewSupport = ConcurrentHashMap<String, Boolean>()
     private val viewSupportedCatalogTypes = setOf("iceberg", "glue", "rest")
 
+    private data class SchemaBatch(
+        val catalog: CoreServiceClient.CatalogDetails,
+        val schema: String,
+        val tables: List<Row>
+    )
+
+    private data class TableWorkItem(
+        val catalog: CoreServiceClient.CatalogDetails,
+        val schema: String,
+        val tableRow: Row
+    )
+
+    private data class TableResult(
+        val catalogName: String,
+        val schema: String,
+        val tableName: String,
+        val metadata: TableMetadata?,
+        val error: String?
+    )
+
     fun scrape(appConfig: AppConfig) {
         val catalogs = getCatalog(appConfig)
         logger.info("Catalogs: {}", catalogs)
 
-        catalogs.forEach { catalog ->
-            logger.info("Processing catalog: {}", catalog)
+        val parallelism = Runtime.getRuntime().availableProcessors().coerceAtLeast(4)
+        val pool = ForkJoinPool(parallelism)
+        logger.info("Using ForkJoinPool with parallelism={}", parallelism)
 
-            val schemas = getSchemas(catalog.name)
-            logger.info("Schemas: {}", schemas)
-
-            val totalSchemaCount = schemas.size
-            var totalTableCount = 0
-            var totalSizeInBytes = 0L
-            var totalFiles = 0L
-
-            schemas.forEach { schema ->
-                val schemaMetrics = processSchema(catalog = catalog.name, schema = schema, catalogType = catalog.type)
-                totalTableCount += schemaMetrics.totalTableCount
-                totalSizeInBytes += schemaMetrics.totalSizeInBytes
-                totalFiles += schemaMetrics.totalFiles
+        try {
+            // Phase 1: Discover all schemas and tables (parallel, flat — no nesting)
+            val allSchemaEntries = catalogs.flatMap { catalog ->
+                logger.info("Fetching schemas for catalog: {}", catalog.name)
+                val schemas = getSchemas(catalog.name)
+                logger.info("Catalog {} has {} schemas", catalog.name, schemas.size)
+                schemas.map { schema -> catalog to schema }
             }
 
-            val catalogMetadata = CatalogMetadata(
-                catalog = catalog.name,
-                type = catalog.type.toSet(),
-                location = catalog.location,
-                storageEndpoint = catalog.storageEndpoint,
-                totalSchemaCount = totalSchemaCount,
-                totalTableCount = totalTableCount,
-                totalSizeInBytes = totalSizeInBytes,
-                totalFiles = totalFiles,
-                domainsAllowed = catalog.domainsAllowed.toSet()
-            )
-            dataSync.syncCatalogData(catalogMetadata)
+            val schemaBatches = Collections.synchronizedList(mutableListOf<SchemaBatch>())
+            pool.submit {
+                allSchemaEntries.parallelStream().forEach { (catalog, schema) ->
+                    logger.info("Discovering tables in {}.{}", catalog.name, schema)
+                    val tables = getTables(catalog.name, schema, catalog.type)
+                    schemaBatches.add(SchemaBatch(catalog, schema, tables))
+                }
+            }.get()
 
-            logger.info(
-                "Processing catalog: {} finished! Total Schemas: {}, Total Tables: {}, Total Size: {} bytes, Total Files: {}",
-                catalog, totalSchemaCount, totalTableCount, totalSizeInBytes, totalFiles
+            logger.info("Discovery complete: {} schemas, {} tables total",
+                schemaBatches.size,
+                schemaBatches.sumOf { it.tables.size }
             )
+
+            // Phase 2: Process all tables (parallel, flat — no nesting)
+            val allWorkItems = schemaBatches.flatMap { batch ->
+                batch.tables.map { tableRow -> TableWorkItem(batch.catalog, batch.schema, tableRow) }
+            }
+
+            val results = Collections.synchronizedList(mutableListOf<TableResult>())
+            pool.submit {
+                allWorkItems.parallelStream().forEach { work ->
+                    val tableName = work.tableRow.getString(1)
+                    val isTemp = work.tableRow.getBoolean(2)
+                    val catalogName = work.catalog.name
+
+                    logger.info("Processing table: {}.{}.{}", catalogName, work.schema, tableName)
+
+                    try {
+                        val tableProcessMetric = getTimer(
+                            name = METRIC_NAME_TABLE_PROCESS, catalog = catalogName, schema = work.schema, tableName = tableName
+                        )
+                        val scrapedData = tableProcessMetric.recordCallable {
+                            scrapeTable(catalog = catalogName, schema = work.schema, tableName = tableName, isTemp = isTemp)
+                        }
+
+                        logger.info(
+                            "Processing finished in {} ms for schema: {}.{}, table: {}",
+                            tableProcessMetric.totalTime(TimeUnit.MILLISECONDS),
+                            catalogName,
+                            work.schema,
+                            tableName,
+                        )
+
+                        results.add(TableResult(catalogName, work.schema, tableName, scrapedData, null))
+                    } catch (th: Throwable) {
+                        logger.error("Failed to process table {}.{}.{}: {}", catalogName, work.schema, tableName, th.message, th)
+                        results.add(TableResult(catalogName, work.schema, tableName, null, th.message ?: "Unknown error"))
+                    }
+                }
+            }.get()
+
+            // Phase 3: Sync table data (parallel, flat — no nesting)
+            val successfulResults = results.filter { it.metadata != null }
+            pool.submit {
+                successfulResults.parallelStream().forEach { result ->
+                    val dataSyncMetric = getTimer(
+                        name = METRIC_NAME_DATA_SYNC, catalog = result.catalogName, schema = result.schema, tableName = result.tableName
+                    )
+                    dataSyncMetric.record<Unit> { dataSync.syncTableData(result.metadata!!) }
+                }
+            }.get()
+
+            // Phase 4: Aggregate and sync schema/catalog metadata (sequential, fast)
+            val resultsBySchema = results.groupBy { "${it.catalogName}/${it.schema}" }
+            val schemasByCatalog = schemaBatches.groupBy { it.catalog.name }
+
+            catalogs.forEach { catalog ->
+                val catalogSchemas = schemasByCatalog[catalog.name] ?: emptyList()
+                var totalTableCount = 0
+                var totalSizeInBytes = 0L
+                var totalFiles = 0L
+
+                catalogSchemas.forEach { batch ->
+                    val key = "${catalog.name}/${batch.schema}"
+                    val schemaResults = resultsBySchema[key] ?: emptyList()
+                    val successful = schemaResults.mapNotNull { it.metadata }
+                    val failedCount = schemaResults.count { it.error != null }
+
+                    if (failedCount > 0) {
+                        logger.warn("Failed to process {} tables in schema {}.{}", failedCount, catalog.name, batch.schema)
+                        schemaResults.filter { it.error != null }.forEach {
+                            logger.warn("Table {}.{}.{} failed: {}", catalog.name, batch.schema, it.tableName, it.error)
+                        }
+                    }
+
+                    val schemaTableCount = batch.tables.size
+                    val viewCount = successful.count { it.isView }
+                    val schemaSizeInBytes = successful.sumOf { it.sizeInBytes ?: 0L }
+                    val schemaDbSizeInBytes = successful.sumOf { it.totalTableSizeInBytes ?: 0L }
+                    val schemaFiles = successful.sumOf { it.numFiles ?: 0L }
+
+                    val schemaMetadata = SchemaMetadata(
+                        catalog = catalog.name,
+                        schema = batch.schema,
+                        totalTableCount = schemaTableCount,
+                        totalViewCount = viewCount,
+                        totalSizeInBytes = schemaSizeInBytes,
+                        totalDbSizeInBytes = schemaDbSizeInBytes,
+                        totalFiles = schemaFiles,
+                        failedTableCount = failedCount
+                    )
+                    dataSync.syncSchemaData(schemaMetadata)
+
+                    totalTableCount += schemaTableCount
+                    totalSizeInBytes += schemaSizeInBytes
+                    totalFiles += schemaFiles
+
+                    logger.info(
+                        "Processing schema: {} finished! Total Tables: {}, Views: {}, Total Size: {} bytes, Total Files: {}, Failed Tables: {}",
+                        batch.schema, schemaTableCount, viewCount, schemaSizeInBytes, schemaFiles, failedCount
+                    )
+                }
+
+                val catalogMetadata = CatalogMetadata(
+                    catalog = catalog.name,
+                    type = catalog.type.toSet(),
+                    location = catalog.location,
+                    storageEndpoint = catalog.storageEndpoint,
+                    totalSchemaCount = catalogSchemas.size,
+                    totalTableCount = totalTableCount,
+                    totalSizeInBytes = totalSizeInBytes,
+                    totalFiles = totalFiles,
+                    domainsAllowed = catalog.domainsAllowed.toSet()
+                )
+                dataSync.syncCatalogData(catalogMetadata)
+
+                logger.info(
+                    "Processing catalog: {} finished! Total Schemas: {}, Total Tables: {}, Total Size: {} bytes, Total Files: {}",
+                    catalog, catalogSchemas.size, totalTableCount, totalSizeInBytes, totalFiles
+                )
+            }
+        } finally {
+            pool.shutdown()
         }
 
         printMetrics()
-    }
-
-    private fun processSchema(catalog: String, schema: String, catalogType: List<String>): SchemaMetadata {
-        logger.info("Processing schema: {}.{}", catalog, schema)
-        val tables = getTables(catalog, schema, catalogType)
-        val totalTableCount = tables.size
-        var totalViewCount = 0
-        var totalSizeInBytes = 0L
-        var totalDbSizeInBytes = 0L
-        var totalFiles = 0L
-        var failedTableCount = 0
-
-        // Create a thread-safe collection to track failed tables
-        val failedTables = ConcurrentHashMap<String, String>()
-
-        tables.parallelStream().forEach { tableRow ->
-            val tableName = tableRow.getString(1)
-            val isTemp = tableRow.getBoolean(2)
-
-            logger.info("Processing table: {}.{}.{}", catalog, schema, tableName)
-            var scrapedData: TableMetadata? = null
-
-            try {
-                val tableProcessMetric = getTimer(name = METRIC_NAME_TABLE_PROCESS, catalog = catalog, schema = schema, tableName = tableName)
-                scrapedData =
-                    tableProcessMetric.recordCallable { scrapeTable(catalog = catalog, schema = schema, tableName = tableName, isTemp = isTemp) }
-
-                logger.info(
-                    "Processing finished in {} ms for schema: {}.{}, table: {}",
-                    tableProcessMetric.totalTime(TimeUnit.MILLISECONDS),
-                    catalog,
-                    schema,
-                    tableName,
-                )
-
-                val dataSyncMetric = getTimer(name = METRIC_NAME_DATA_SYNC, catalog = catalog, schema = schema, tableName = tableName)
-                scrapedData?.let {
-                    dataSyncMetric.record<Unit> { dataSync.syncTableData(it) }
-                    synchronized(this) {
-                        if (it.isView) totalViewCount++
-                        totalSizeInBytes += it.sizeInBytes ?: 0L
-                        totalDbSizeInBytes += it.totalTableSizeInBytes ?: 0L
-                        totalFiles += it.numFiles ?: 0L
-                        // totalSchemaFiles += it.totalTableNumFiles ?: 0L
-                    }
-                }
-            } catch (th: Throwable) {
-                // Record the failure but continue processing other tables
-                failedTables[tableName] = th.message ?: "Unknown error"
-                logger.error("Failed to process table {}.{}.{}: {}", catalog, schema, tableName, th.message, th)
-                synchronized(this) {
-                    failedTableCount++
-                }
-            }
-        }
-
-        // Log information about failed tables
-        if (failedTableCount > 0) {
-            logger.warn("Failed to process {} tables in schema {}.{}", failedTableCount, catalog, schema)
-            failedTables.forEach { (tableName, errorMessage) ->
-                logger.warn("Table {}.{}.{} failed: {}", catalog, schema, tableName, errorMessage)
-            }
-        }
-
-        val schemaMetadata = SchemaMetadata(
-            catalog = catalog,
-            schema = schema,
-            totalTableCount = totalTableCount,
-            totalViewCount = totalViewCount,
-            totalSizeInBytes = totalSizeInBytes,
-            totalDbSizeInBytes = totalDbSizeInBytes,
-            totalFiles = totalFiles,
-            // totalSchemaFiles = 0L,
-            failedTableCount = failedTableCount
-        )
-        dataSync.syncSchemaData(schemaMetadata)
-
-        logger.info(
-            "Processing schema: {} finished! Total Tables: {}, Views: {}, Total Size: {} bytes, Total Files: {}, Failed Tables: {}",
-            schema, totalTableCount, totalViewCount, totalSizeInBytes, totalFiles, failedTableCount
-        )
-        return schemaMetadata
     }
 
     private fun scrapeTable(catalog: String, schema: String, tableName: String, isTemp: Boolean): TableMetadata? {
@@ -188,12 +240,15 @@ class LakehouseMetadataExtractor(
             tableType = "MANAGED"
         }
 
+        val currentSnapshotId = extractCurrentSnapshotId(table.metadata)
+
         val tableExtractor = tableExtractorFactory.extractorFor(
             provider = tableProvider,
             isView = isView,
             catalog = catalog,
             schema = schema,
-            table = tableName
+            table = tableName,
+            currentSnapshotId = currentSnapshotId
         )
 
         val extractTableStatisticsMetric = getTimer(
@@ -369,6 +424,22 @@ class LakehouseMetadataExtractor(
         }
 
         return hasViewSupport
+    }
+
+    /**
+     * Extracts the current-snapshot-id from DESCRIBE EXTENDED metadata.
+     * Iceberg stores this inside the "Table Properties" value as a bracketed key-value list,
+     * e.g. "[current-snapshot-id=1234567890, format-version=2, ...]".
+     * Returns "none" if the table has no snapshot, null if the key is not found.
+     */
+    private fun extractCurrentSnapshotId(metadata: Map<String, String>): String? {
+        // Try direct key first (in case Spark version exposes it directly)
+        metadata["Current-Snapshot-Id"]?.let { return it }
+
+        // Parse from Table Properties: "[key1=val1, key2=val2, ...]"
+        val tableProperties = metadata["Table Properties"] ?: return null
+        val match = Regex("""current-snapshot-id\s*=\s*([^,\]\s]+)""").find(tableProperties)
+        return match?.groupValues?.get(1) ?: "none"
     }
 
     private fun describeTable(catalog: String, schema: String, tableName: String): TableDescription {
