@@ -1,12 +1,12 @@
 package com.iomete.catalogsync.presidio
 
+import com.iomete.catalogsync.mockRow
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.types.StructType
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
@@ -30,24 +30,10 @@ class PIIDetectionServiceTest {
         System.clearProperty("piiDetectionEnabled")
     }
 
-    private fun mockRow(fields: Map<String, Any?>): Row {
-        val row = mockk<Row>()
-        val schema = mockk<StructType>()
-        every { row.schema() } returns schema
-
-        val fieldNames = fields.keys.toList()
-        fieldNames.forEachIndexed { index, name ->
-            every { schema.fieldIndex(name) } returns index
-            every { row.get(index) } returns fields[name]
-        }
-        return row
-    }
-
     private fun enablePiiDetection() {
         System.setProperty("piiDetectionEnabled", "true")
     }
 
-    // §10.1 Feature Toggle
 
     @Test
     fun `default disabled - returns empty map without calling Presidio`() {
@@ -75,7 +61,6 @@ class PIIDetectionServiceTest {
         verify(atLeast = 1) { presidioClient.analyze(any()) }
     }
 
-    // §10.2 Data Sampling
 
     @Test
     fun `samples data and uses first non-empty distinct value`() {
@@ -122,7 +107,6 @@ class PIIDetectionServiceTest {
         assertEquals(emptyMap<String, List<String>>(), result)
     }
 
-    // §10.3 PII Entity Detection
 
     @Test
     fun `PERSON detected - tags include DETECTED PERSON and DETECTED PII`() {

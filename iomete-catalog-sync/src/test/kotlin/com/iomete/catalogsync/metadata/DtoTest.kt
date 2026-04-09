@@ -33,7 +33,6 @@ class DtoTest {
         sparkApplicationId = "app-123",
     )
 
-    // §13.1 CatalogMetadata.build
 
     @Test
     fun `CatalogMetadata build aggregates counts from multiple schemas`() {
@@ -76,7 +75,6 @@ class DtoTest {
         assertEquals("s3://ep", result.storageEndpoint)
     }
 
-    // §13.2 SchemaMetadata.build
 
     @Test
     fun `SchemaMetadata build from multiple tables returns correct counts and sums`() {

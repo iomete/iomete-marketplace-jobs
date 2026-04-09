@@ -24,6 +24,15 @@ class SparkMetadataReaderTest {
         reader = SparkMetadataReader()
     }
 
+    /** Creates a mocked Row matching the 3-column shape of DESCRIBE EXTENDED output. */
+    private fun describeRow(name: String, type: String, comment: String? = null): Row {
+        val row = mockk<Row>()
+        every { row.getString(0) } returns name
+        every { row.getString(1) } returns type
+        every { row.getString(2) } returns comment
+        return row
+    }
+
     @Test
     fun `getTables should combine tables and views and remove duplicates`() {
         val mockTableRow1 = mockk<Row>()
@@ -125,7 +134,6 @@ class SparkMetadataReaderTest {
         verify(exactly = 0) { mockSparkSession.sql("show views from `catalog1`.`schema1`") }
     }
 
-    // §3.1 getSchemas
 
     @Test
     fun `getSchemas returns schema names from Spark SQL result`() {
@@ -163,7 +171,6 @@ class SparkMetadataReaderTest {
         assertEquals(emptyList<String>(), result)
     }
 
-    // §3.2 getSchemaProperties
 
     @Test
     fun `getSchemaProperties parses properties from DESC DATABASE EXTENDED output`() {
@@ -238,7 +245,6 @@ class SparkMetadataReaderTest {
         assertEquals(mapOf("key1" to "value with spaces"), result)
     }
 
-    // §3.3 getTables additional tests
 
     @Test
     fun `getTables fetches views for glue catalog type`() {
@@ -306,23 +312,15 @@ class SparkMetadataReaderTest {
         assertTrue(result[0].isTemp)
     }
 
-    // §3.4 describeTable
 
     @Test
     fun `describeTable parses columns section correctly`() {
-        val colRow1 = mockk<Row>()
-        every { colRow1.getString(0) } returns "id"
-        every { colRow1.getString(1) } returns "int"
-        every { colRow1.getString(2) } returns "primary key"
-
-        val colRow2 = mockk<Row>()
-        every { colRow2.getString(0) } returns "name"
-        every { colRow2.getString(1) } returns "string"
-        every { colRow2.getString(2) } returns null
-
         val dataset = mockk<Dataset<Row>>()
         every { mockSparkSession.sql("describe extended `cat`.`sch`.`tbl`") } returns dataset
-        every { dataset.collectAsList() } returns listOf(colRow1, colRow2)
+        every { dataset.collectAsList() } returns listOf(
+            describeRow("id", "int", "primary key"),
+            describeRow("name", "string"),
+        )
 
         val result = reader.describeTable(mockSparkSession, "cat", "sch", "tbl")
 
@@ -337,29 +335,14 @@ class SparkMetadataReaderTest {
 
     @Test
     fun `describeTable parses partition columns`() {
-        val colRow = mockk<Row>()
-        every { colRow.getString(0) } returns "region"
-        every { colRow.getString(1) } returns "string"
-        every { colRow.getString(2) } returns null
-
-        val blankRow = mockk<Row>()
-        every { blankRow.getString(0) } returns ""
-        every { blankRow.getString(1) } returns ""
-        every { blankRow.getString(2) } returns null
-
-        val partitionHeader = mockk<Row>()
-        every { partitionHeader.getString(0) } returns "# Partition Information"
-        every { partitionHeader.getString(1) } returns ""
-        every { partitionHeader.getString(2) } returns null
-
-        val partitionColRow = mockk<Row>()
-        every { partitionColRow.getString(0) } returns "region"
-        every { partitionColRow.getString(1) } returns "string"
-        every { partitionColRow.getString(2) } returns null
-
         val dataset = mockk<Dataset<Row>>()
         every { mockSparkSession.sql("describe extended `cat`.`sch`.`tbl`") } returns dataset
-        every { dataset.collectAsList() } returns listOf(colRow, blankRow, partitionHeader, partitionColRow)
+        every { dataset.collectAsList() } returns listOf(
+            describeRow("region", "string"),
+            describeRow("", ""),
+            describeRow("# Partition Information", ""),
+            describeRow("region", "string"),
+        )
 
         val result = reader.describeTable(mockSparkSession, "cat", "sch", "tbl")
 
@@ -369,39 +352,16 @@ class SparkMetadataReaderTest {
 
     @Test
     fun `describeTable parses table metadata section`() {
-        val colRow = mockk<Row>()
-        every { colRow.getString(0) } returns "id"
-        every { colRow.getString(1) } returns "int"
-        every { colRow.getString(2) } returns null
-
-        val blankRow = mockk<Row>()
-        every { blankRow.getString(0) } returns ""
-        every { blankRow.getString(1) } returns ""
-        every { blankRow.getString(2) } returns null
-
-        val tableInfoHeader = mockk<Row>()
-        every { tableInfoHeader.getString(0) } returns "# Detailed Table Information"
-        every { tableInfoHeader.getString(1) } returns ""
-        every { tableInfoHeader.getString(2) } returns null
-
-        val typeRow = mockk<Row>()
-        every { typeRow.getString(0) } returns "Type"
-        every { typeRow.getString(1) } returns "MANAGED"
-        every { typeRow.getString(2) } returns null
-
-        val providerRow = mockk<Row>()
-        every { providerRow.getString(0) } returns "Provider"
-        every { providerRow.getString(1) } returns "iceberg"
-        every { providerRow.getString(2) } returns null
-
-        val ownerRow = mockk<Row>()
-        every { ownerRow.getString(0) } returns "Owner"
-        every { ownerRow.getString(1) } returns "admin"
-        every { ownerRow.getString(2) } returns null
-
         val dataset = mockk<Dataset<Row>>()
         every { mockSparkSession.sql("describe extended `cat`.`sch`.`tbl`") } returns dataset
-        every { dataset.collectAsList() } returns listOf(colRow, blankRow, tableInfoHeader, typeRow, providerRow, ownerRow)
+        every { dataset.collectAsList() } returns listOf(
+            describeRow("id", "int"),
+            describeRow("", ""),
+            describeRow("# Detailed Table Information", ""),
+            describeRow("Type", "MANAGED"),
+            describeRow("Provider", "iceberg"),
+            describeRow("Owner", "admin"),
+        )
 
         val result = reader.describeTable(mockSparkSession, "cat", "sch", "tbl")
 
@@ -412,24 +372,13 @@ class SparkMetadataReaderTest {
 
     @Test
     fun `describeTable assigns sequential sort orders to columns`() {
-        val colRow1 = mockk<Row>()
-        every { colRow1.getString(0) } returns "id"
-        every { colRow1.getString(1) } returns "int"
-        every { colRow1.getString(2) } returns null
-
-        val colRow2 = mockk<Row>()
-        every { colRow2.getString(0) } returns "name"
-        every { colRow2.getString(1) } returns "string"
-        every { colRow2.getString(2) } returns null
-
-        val colRow3 = mockk<Row>()
-        every { colRow3.getString(0) } returns "email"
-        every { colRow3.getString(1) } returns "string"
-        every { colRow3.getString(2) } returns null
-
         val dataset = mockk<Dataset<Row>>()
         every { mockSparkSession.sql("describe extended `cat`.`sch`.`tbl`") } returns dataset
-        every { dataset.collectAsList() } returns listOf(colRow1, colRow2, colRow3)
+        every { dataset.collectAsList() } returns listOf(
+            describeRow("id", "int"),
+            describeRow("name", "string"),
+            describeRow("email", "string"),
+        )
 
         val result = reader.describeTable(mockSparkSession, "cat", "sch", "tbl")
 
@@ -438,23 +387,15 @@ class SparkMetadataReaderTest {
         assertEquals(2, result.columns[2].sortOrder)
     }
 
-    // §3.5 processTableColumns (via describeTable)
 
     @Test
     fun `describeTable with no partitions all columns have isPartitionKey false`() {
-        val colRow1 = mockk<Row>()
-        every { colRow1.getString(0) } returns "id"
-        every { colRow1.getString(1) } returns "int"
-        every { colRow1.getString(2) } returns null
-
-        val colRow2 = mockk<Row>()
-        every { colRow2.getString(0) } returns "name"
-        every { colRow2.getString(1) } returns "string"
-        every { colRow2.getString(2) } returns null
-
         val dataset = mockk<Dataset<Row>>()
         every { mockSparkSession.sql("describe extended `cat`.`sch`.`tbl`") } returns dataset
-        every { dataset.collectAsList() } returns listOf(colRow1, colRow2)
+        every { dataset.collectAsList() } returns listOf(
+            describeRow("id", "int"),
+            describeRow("name", "string"),
+        )
 
         val result = reader.describeTable(mockSparkSession, "cat", "sch", "tbl")
 
@@ -463,14 +404,9 @@ class SparkMetadataReaderTest {
 
     @Test
     fun `describeTable with only columns and no metadata returns empty metadata map`() {
-        val colRow = mockk<Row>()
-        every { colRow.getString(0) } returns "id"
-        every { colRow.getString(1) } returns "int"
-        every { colRow.getString(2) } returns null
-
         val dataset = mockk<Dataset<Row>>()
         every { mockSparkSession.sql("describe extended `cat`.`sch`.`tbl`") } returns dataset
-        every { dataset.collectAsList() } returns listOf(colRow)
+        every { dataset.collectAsList() } returns listOf(describeRow("id", "int"))
 
         val result = reader.describeTable(mockSparkSession, "cat", "sch", "tbl")
 
