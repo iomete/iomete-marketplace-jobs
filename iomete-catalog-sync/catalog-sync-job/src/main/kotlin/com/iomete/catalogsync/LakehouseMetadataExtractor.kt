@@ -235,6 +235,7 @@ class LakehouseMetadataExtractor(
             }
         } finally {
             pool.shutdown()
+            pool.awaitTermination(30, TimeUnit.SECONDS)
         }
 
         printMetrics()
@@ -449,7 +450,7 @@ class LakehouseMetadataExtractor(
 
         // Parse from Table Properties: "[key1=val1, key2=val2, ...]"
         val tableProperties = metadata["Table Properties"] ?: return null
-        val match = Regex("""current-snapshot-id\s*=\s*([^,\]\s]+)""").find(tableProperties)
+        val match = SNAPSHOT_ID_REGEX.find(tableProperties)
         return match?.groupValues?.get(1) ?: "none"
     }
 
@@ -573,4 +574,8 @@ class LakehouseMetadataExtractor(
     data class TableDescription(val columns: List<ColumnMetadata>, val metadata: Map<String, String>)
 
     data class LogMetric(val name: String, val tag: String, val totalTime: Double?)
+
+    companion object {
+        private val SNAPSHOT_ID_REGEX = Regex("""current-snapshot-id\s*=\s*([^,\]\s]+)""")
+    }
 }
