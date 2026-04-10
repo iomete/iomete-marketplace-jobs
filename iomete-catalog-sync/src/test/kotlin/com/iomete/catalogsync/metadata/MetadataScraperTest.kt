@@ -147,7 +147,7 @@ class MetadataScraperTest {
     }
 
     @Test
-    fun `run fails entire catalog when a schema processing throws non-excluded exception`() {
+    fun `run continues processing other schemas when one schema throws non-excluded exception`() {
         val table1 = makeTableMetadata("test_catalog", "good_schema", "table1")
 
         every { mockCoreServiceClient.catalogs() } returns listOf(testCatalog)
@@ -155,18 +155,22 @@ class MetadataScraperTest {
 
         stubSchema("test_catalog", "good_schema", listOf("table1"), listOf(table1))
         // bad_schema throws a RuntimeException (not ExcludedItemException) during processSchema
-        // ignoreExcluded only catches ExcludedItemException, so this propagates and
-        // crashes the entire ForkJoinPool, preventing catalog indexing
+        // The error is caught per-schema so it doesn't crash the entire catalog
         every {
             mockSparkMetadataReader.getSchemaProperties(mockSparkSession, "test_catalog", "bad_schema")
         } throws RuntimeException("Schema read failure")
 
+        val mockResponse = mockk<Response>()
+        every { mockCatalogServiceClient.indexTable(any()) } returns mockResponse
+        every { mockCatalogServiceClient.indexSchema(any()) } returns mockResponse
+        every { mockCatalogServiceClient.indexCatalog(any()) } returns mockResponse
+
         scraper.run()
 
-        // The entire catalog processing is aborted — no indexing calls should have been made
-        verify(exactly = 0) { mockCatalogServiceClient.indexTable(any()) }
-        verify(exactly = 0) { mockCatalogServiceClient.indexSchema(any()) }
-        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+        // good_schema should still be indexed despite bad_schema failing
+        verify(exactly = 1) { mockCatalogServiceClient.indexTable(match { it.name == "table1" }) }
+        verify(exactly = 1) { mockCatalogServiceClient.indexSchema(match { it.schema == "good_schema" }) }
+        verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.totalSchemaCount == 1 }) }
     }
 
     @Test

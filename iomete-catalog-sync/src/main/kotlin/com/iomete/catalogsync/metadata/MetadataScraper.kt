@@ -75,12 +75,17 @@ class MetadataScraper(
                         pool.submit<List<SchemaResult>> {
                             schemas.parallelStream()
                                 .map { schema ->
-                                    ignoreExcluded {
-                                        processSchema(
-                                            spark = spark,
-                                            catalog = catalog,
-                                            schema = schema,
-                                        )
+                                    try {
+                                        ignoreExcluded {
+                                            processSchema(
+                                                spark = spark,
+                                                catalog = catalog,
+                                                schema = schema,
+                                            )
+                                        }
+                                    } catch (th: Throwable) {
+                                        logger.error("Failed to process schema {}.{}: {}", catalog.name, schema, th.message, th)
+                                        null
                                     }
                                 }
                                 .toList()
