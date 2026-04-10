@@ -135,6 +135,144 @@ class LakehouseMetadataExtractorTest {
         verify(exactly = 0) { mockSparkSession.sql("show views from `catalog1`.`schema1`") }
     }
     
+    // Helper to create a mock Row with 3 string columns for processTableColumns
+    private fun mockDescribeRow(colName: String, dataType: String, comment: String?): Row {
+        val row = mockk<Row>()
+        every { row.getString(0) } returns colName
+        every { row.getString(1) } returns dataType
+        every { row.getString(2) } returns comment
+        return row
+    }
+
+    @Test
+    fun `processTableColumns should parse basic columns correctly`() {
+        val rows = listOf(
+            mockDescribeRow("id", "int", "primary key"),
+            mockDescribeRow("name", "string", "user name"),
+            mockDescribeRow("age", "int", null)
+        )
+
+        val result = extractor.processTableColumns(rows)
+
+        assertEquals(3, result.columns.size)
+        assertEquals("id", result.columns[0].name)
+        assertEquals("int", result.columns[0].dataType)
+        assertEquals("primary key", result.columns[0].description)
+        assertEquals(0, result.columns[0].sortOrder)
+        assertFalse(result.columns[0].isPartitionKey)
+
+        assertEquals("name", result.columns[1].name)
+        assertEquals("string", result.columns[1].dataType)
+        assertEquals(1, result.columns[1].sortOrder)
+
+        assertEquals("age", result.columns[2].name)
+        assertNull(result.columns[2].description)
+    }
+
+    @Test
+    fun `processTableColumns should handle partition information section`() {
+        val rows = listOf(
+            mockDescribeRow("id", "int", null),
+            mockDescribeRow("region", "string", null),
+            mockDescribeRow("# Partition Information", "", ""),
+            mockDescribeRow("# col_name", "data_type", "comment"),
+            mockDescribeRow("region", "string", null)
+        )
+
+        val result = extractor.processTableColumns(rows)
+
+        assertEquals(2, result.columns.size)
+        assertFalse(result.columns[0].isPartitionKey) // id
+        assertTrue(result.columns[1].isPartitionKey) // region
+    }
+
+    @Test
+    fun `processTableColumns should handle iceberg-style partitioning with Part prefix`() {
+        val rows = listOf(
+            mockDescribeRow("dt", "date", null),
+            mockDescribeRow("# Partitioning", "", ""),
+            mockDescribeRow("Part 0", "dt", null)
+        )
+
+        val result = extractor.processTableColumns(rows)
+
+        assertEquals(1, result.columns.size)
+        assertTrue(result.columns[0].isPartitionKey) // dt marked via dataType
+    }
+
+    @Test
+    fun `processTableColumns should extract table info metadata`() {
+        val rows = listOf(
+            mockDescribeRow("id", "int", null),
+            mockDescribeRow("# Detailed Table Information", "", ""),
+            mockDescribeRow("Type", "MANAGED", null),
+            mockDescribeRow("Provider", "iceberg", null),
+            mockDescribeRow("Owner", "admin", null),
+            mockDescribeRow("Location", "s3://bucket/path", null)
+        )
+
+        val result = extractor.processTableColumns(rows)
+
+        assertEquals(1, result.columns.size)
+        assertEquals("MANAGED", result.metadata["Type"])
+        assertEquals("iceberg", result.metadata["Provider"])
+        assertEquals("admin", result.metadata["Owner"])
+        assertEquals("s3://bucket/path", result.metadata["Location"])
+    }
+
+    @Test
+    fun `processTableColumns should set Type to view for view info section`() {
+        val rows = listOf(
+            mockDescribeRow("id", "int", null),
+            mockDescribeRow("# Detailed View Information", "", ""),
+            mockDescribeRow("View Text", "SELECT * FROM t", null)
+        )
+
+        val result = extractor.processTableColumns(rows)
+
+        assertEquals("view", result.metadata["Type"])
+        assertEquals("SELECT * FROM t", result.metadata["View Text"])
+    }
+
+    @Test
+    fun `processTableColumns should skip blank and hash-prefixed rows`() {
+        val rows = listOf(
+            mockDescribeRow("id", "int", null),
+            mockDescribeRow("", "", ""),
+            mockDescribeRow("# some comment", "", ""),
+            mockDescribeRow("name", "string", null)
+        )
+
+        val result = extractor.processTableColumns(rows)
+
+        assertEquals(2, result.columns.size)
+        assertEquals("id", result.columns[0].name)
+        assertEquals("name", result.columns[1].name)
+    }
+
+    @Test
+    fun `processTableColumns should return empty columns for empty input`() {
+        val result = extractor.processTableColumns(emptyList())
+
+        assertTrue(result.columns.isEmpty())
+        assertTrue(result.metadata.isEmpty())
+    }
+
+    @Test
+    fun `processTableColumns should handle metadata section without processing`() {
+        val rows = listOf(
+            mockDescribeRow("id", "int", null),
+            mockDescribeRow("# Metadata Columns", "", ""),
+            mockDescribeRow("_file", "string", "internal metadata"),
+            mockDescribeRow("_pos", "long", "internal position")
+        )
+
+        val result = extractor.processTableColumns(rows)
+
+        assertEquals(1, result.columns.size)
+        assertEquals("id", result.columns[0].name)
+    }
+
     @Test
     fun `should check for combined supported and non-supported catalog types`() {
         val mockTableRow = mockk<Row>()
