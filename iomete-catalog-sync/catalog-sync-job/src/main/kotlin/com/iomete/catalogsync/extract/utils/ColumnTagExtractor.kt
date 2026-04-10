@@ -82,7 +82,10 @@ class ColumnTagExtractor(
 
     companion object {
         private val logger = LoggerFactory.getLogger(ColumnTagExtractor::class.java)
-        private val presidioExecutor = Executors.newFixedThreadPool(16)
+        private val httpParallelism = ConfigProvider.getConfig()
+            .getOptionalValue("HTTP_PARALLELISM", Int::class.java)
+            .orElse(16)
+        private val presidioExecutor = Executors.newFixedThreadPool(httpParallelism)
     }
 
     private fun isPiiDetectionEnabled(): Boolean {

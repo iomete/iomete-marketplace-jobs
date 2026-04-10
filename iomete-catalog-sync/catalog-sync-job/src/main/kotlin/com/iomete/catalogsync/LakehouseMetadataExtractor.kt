@@ -19,6 +19,7 @@ import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ForkJoinPool
 import kotlin.collections.set
+import org.eclipse.microprofile.config.ConfigProvider
 
 const val METRIC_NAME_TABLE_PROCESS = "1.table_process"
 const val METRIC_NAME_EXTRACT_TABLE_STATISTICS = "2.extract_table_statistics"
@@ -26,6 +27,8 @@ const val METRIC_NAME_EXTRACT_COLUMNS = "3.extract_columns"
 const val METRIC_NAME_EXTRACT_COLUMNS_STATISTICS = "4.extract_columns_statistics"
 const val METRIC_NAME_EXTRACT_TAGS = "5.extract_tags"
 const val METRIC_NAME_DATA_SYNC = "6.data_sync"
+const val METRIC_NAME_TABLE_PROCESS_FAILURES = "table_process_failures"
+const val METRIC_NAME_DATA_SYNC_FAILURES = "data_sync_failures"
 
 val METRIC_NAMES = setOf(
     METRIC_NAME_TABLE_PROCESS,
@@ -77,7 +80,9 @@ class LakehouseMetadataExtractor(
         val catalogs = getCatalog(appConfig)
         logger.info("Catalogs: {}", catalogs)
 
-        val parallelism = Runtime.getRuntime().availableProcessors().coerceAtLeast(4)
+        val parallelism = ConfigProvider.getConfig()
+            .getOptionalValue("HTTP_PARALLELISM", Int::class.java)
+            .orElse(Runtime.getRuntime().availableProcessors().coerceAtLeast(4))
         val pool = ForkJoinPool(parallelism)
         logger.info("Using ForkJoinPool with parallelism={}", parallelism)
 
@@ -137,6 +142,7 @@ class LakehouseMetadataExtractor(
                         results.add(TableResult(catalogName, work.schema, tableName, scrapedData, null))
                     } catch (th: Throwable) {
                         logger.error("Failed to process table {}.{}.{}: {}", catalogName, work.schema, tableName, th.message, th)
+                        registry.counter(METRIC_NAME_TABLE_PROCESS_FAILURES, "catalog", catalogName, "schema", work.schema, "table", tableName).increment()
                         results.add(TableResult(catalogName, work.schema, tableName, null, th.message ?: "Unknown error"))
                     }
                 }
@@ -146,10 +152,15 @@ class LakehouseMetadataExtractor(
             val successfulResults = results.filter { it.metadata != null }
             pool.submit {
                 successfulResults.parallelStream().forEach { result ->
-                    val dataSyncMetric = getTimer(
-                        name = METRIC_NAME_DATA_SYNC, catalog = result.catalogName, schema = result.schema, tableName = result.tableName
-                    )
-                    dataSyncMetric.record<Unit> { dataSync.syncTableData(result.metadata!!) }
+                    try {
+                        val dataSyncMetric = getTimer(
+                            name = METRIC_NAME_DATA_SYNC, catalog = result.catalogName, schema = result.schema, tableName = result.tableName
+                        )
+                        dataSyncMetric.record<Unit> { dataSync.syncTableData(result.metadata!!) }
+                    } catch (th: Throwable) {
+                        logger.error("Failed to sync table {}.{}.{}: {}", result.catalogName, result.schema, result.tableName, th.message, th)
+                        registry.counter(METRIC_NAME_DATA_SYNC_FAILURES, "catalog", result.catalogName, "schema", result.schema, "table", result.tableName).increment()
+                    }
                 }
             }.get()
 
