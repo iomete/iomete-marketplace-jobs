@@ -1,6 +1,5 @@
 package com.iomete.catalogsync.extract.datasets
 
-import com.iomete.catalogsync.PresidioClient
 import com.iomete.catalogsync.extract.utils.ColumnTagExtractor
 import io.mockk.*
 import org.apache.spark.sql.Dataset
@@ -37,40 +36,70 @@ class IcebergTableExtractorTest {
         assertEquals("MANAGED", extractor.getTableType)
     }
 
+    private fun mockAggregationRow(
+        lastCommittedAt: Timestamp?,
+        lastTotalDataFiles: Long?,
+        lastTotalFilesSize: Long?,
+        lastTotalRecords: Long?,
+        firstTotalDataFiles: Long?,
+        firstTotalFilesSize: Long?,
+        totalAddedDataFiles: Long?,
+        totalAddedFilesSize: Long?,
+        firstAddedDataFiles: Long?,
+        firstAddedFilesSize: Long?
+    ): Row {
+        val row = mockk<Row>()
+        val schema = mockk<StructType>()
+        every { row.schema() } returns schema
+
+        // Map field names to indices
+        val fields = listOf(
+            "last_committed_at", "last_total_data_files", "last_total_files_size",
+            "last_total_records", "first_total_data_files", "first_total_files_size",
+            "total_added_data_files", "total_added_files_size",
+            "first_added_data_files", "first_added_files_size"
+        )
+        fields.forEachIndexed { index, name -> every { schema.fieldIndex(name) } returns index }
+
+        // getTimestamp for last_committed_at (index 0)
+        every { row.getTimestamp(0) } returns lastCommittedAt
+
+        // get/getLong for each Long? field
+        val longValues = listOf(
+            lastTotalDataFiles, lastTotalFilesSize, lastTotalRecords,
+            firstTotalDataFiles, firstTotalFilesSize,
+            totalAddedDataFiles, totalAddedFilesSize,
+            firstAddedDataFiles, firstAddedFilesSize
+        )
+        longValues.forEachIndexed { i, value ->
+            val idx = i + 1
+            every { row.get(idx) } returns value
+            if (value != null) {
+                every { row.getLong(idx) } returns value
+            }
+        }
+
+        return row
+    }
+
     @Test
-    fun `extractTableStatistics should return stats from snapshots and data files`() {
-        val snapshotRow = mockk<Row>()
-        val snapshotSchema = mockk<StructType>()
-        every { snapshotRow.schema() } returns snapshotSchema
-        every { snapshotSchema.fieldIndex("committed_at") } returns 0
-        every { snapshotSchema.fieldIndex("total_files_sizes") } returns 1
-        every { snapshotSchema.fieldIndex("total_records") } returns 2
-        every { snapshotSchema.fieldIndex("total_data_files") } returns 3
-        every { snapshotRow.getTimestamp(0) } returns Timestamp(1700000000000L)
-        every { snapshotRow.get(1) } returns 1024L
-        every { snapshotRow.getLong(1) } returns 1024L
-        every { snapshotRow.get(2) } returns 100L
-        every { snapshotRow.getLong(2) } returns 100L
-        every { snapshotRow.get(3) } returns 5L
-        every { snapshotRow.getLong(3) } returns 5L
+    fun `extractTableStatistics should return stats from aggregation query`() {
+        val row = mockAggregationRow(
+            lastCommittedAt = Timestamp(1700000000000L),
+            lastTotalDataFiles = 5L,
+            lastTotalFilesSize = 1024L,
+            lastTotalRecords = 100L,
+            firstTotalDataFiles = 2L,
+            firstTotalFilesSize = 512L,
+            totalAddedDataFiles = 8L,
+            totalAddedFilesSize = 1536L,
+            firstAddedDataFiles = 3L,
+            firstAddedFilesSize = 500L
+        )
 
-        val dataFilesRow = mockk<Row>()
-        val dataFilesSchema = mockk<StructType>()
-        every { dataFilesRow.schema() } returns dataFilesSchema
-        every { dataFilesSchema.fieldIndex("total_table_num_files") } returns 0
-        every { dataFilesSchema.fieldIndex("total_table_size_in_bytes") } returns 1
-        every { dataFilesRow.get(0) } returns 10L
-        every { dataFilesRow.getLong(0) } returns 10L
-        every { dataFilesRow.get(1) } returns 2048L
-        every { dataFilesRow.getLong(1) } returns 2048L
-
-        val snapshotDataset = mockk<Dataset<Row>>()
-        val dataFilesDataset = mockk<Dataset<Row>>()
-
-        every { mockSpark.sql(match { it.contains("snapshots") }) } returns snapshotDataset
-        every { snapshotDataset.collectAsList() } returns listOf(snapshotRow)
-        every { mockSpark.sql(match { it.contains("all_data_files") }) } returns dataFilesDataset
-        every { dataFilesDataset.collectAsList() } returns listOf(dataFilesRow)
+        val dataset = mockk<Dataset<Row>>()
+        every { mockSpark.sql(match { it.contains("snapshots") }) } returns dataset
+        every { dataset.first() } returns row
 
         val result = extractor.extractTableStatistics()
 
@@ -79,15 +108,31 @@ class IcebergTableExtractorTest {
         assertEquals(1024L, result.sizeInBytes)
         assertEquals(100L, result.totalRecords)
         assertEquals(5L, result.numFiles)
-        assertEquals(10L, result.totalTableNumFiles)
-        assertEquals(2048L, result.totalTableSizeInBytes)
+        // totalTableNumFiles = firstTotalDataFiles + (totalAddedDataFiles - firstAddedDataFiles) = 2 + (8 - 3) = 7
+        assertEquals(7L, result.totalTableNumFiles)
+        // totalTableSizeInBytes = firstTotalFilesSize + (totalAddedFilesSize - firstAddedFilesSize) = 512 + (1536 - 500) = 1548
+        assertEquals(1548L, result.totalTableSizeInBytes)
     }
 
     @Test
     fun `extractTableStatistics should return null when no snapshots exist`() {
-        val snapshotDataset = mockk<Dataset<Row>>()
-        every { mockSpark.sql(match { it.contains("snapshots") }) } returns snapshotDataset
-        every { snapshotDataset.collectAsList() } returns emptyList()
+        // Aggregation on empty input returns one row of nulls
+        val row = mockAggregationRow(
+            lastCommittedAt = null,
+            lastTotalDataFiles = null,
+            lastTotalFilesSize = null,
+            lastTotalRecords = null,
+            firstTotalDataFiles = null,
+            firstTotalFilesSize = null,
+            totalAddedDataFiles = null,
+            totalAddedFilesSize = null,
+            firstAddedDataFiles = null,
+            firstAddedFilesSize = null
+        )
+
+        val dataset = mockk<Dataset<Row>>()
+        every { mockSpark.sql(match { it.contains("snapshots") }) } returns dataset
+        every { dataset.first() } returns row
 
         val result = extractor.extractTableStatistics()
 
@@ -95,31 +140,17 @@ class IcebergTableExtractorTest {
     }
 
     @Test
-    fun `extractTableStatistics should return null when all_data_files returns empty`() {
-        val snapshotRow = mockk<Row>()
-        val snapshotSchema = mockk<StructType>()
-        every { snapshotRow.schema() } returns snapshotSchema
-        every { snapshotSchema.fieldIndex("committed_at") } returns 0
-        every { snapshotSchema.fieldIndex("total_files_sizes") } returns 1
-        every { snapshotSchema.fieldIndex("total_records") } returns 2
-        every { snapshotSchema.fieldIndex("total_data_files") } returns 3
-        every { snapshotRow.getTimestamp(0) } returns Timestamp(1700000000000L)
-        every { snapshotRow.get(1) } returns 1024L
-        every { snapshotRow.getLong(1) } returns 1024L
-        every { snapshotRow.get(2) } returns 100L
-        every { snapshotRow.getLong(2) } returns 100L
-        every { snapshotRow.get(3) } returns 5L
-        every { snapshotRow.getLong(3) } returns 5L
+    fun `extractTableStatistics should return null when currentSnapshotId is none`() {
+        val extractorWithNoSnapshots = IcebergTableExtractor(
+            spark = mockSpark,
+            columnTagExtractor = mockColumnTagExtractor,
+            catalog = "test_catalog",
+            schema = "test_schema",
+            table = "test_table",
+            currentSnapshotId = "none"
+        )
 
-        val snapshotDataset = mockk<Dataset<Row>>()
-        val dataFilesDataset = mockk<Dataset<Row>>()
-
-        every { mockSpark.sql(match { it.contains("snapshots") }) } returns snapshotDataset
-        every { snapshotDataset.collectAsList() } returns listOf(snapshotRow)
-        every { mockSpark.sql(match { it.contains("all_data_files") }) } returns dataFilesDataset
-        every { dataFilesDataset.collectAsList() } returns emptyList()
-
-        val result = extractor.extractTableStatistics()
+        val result = extractorWithNoSnapshots.extractTableStatistics()
 
         assertNull(result)
     }
