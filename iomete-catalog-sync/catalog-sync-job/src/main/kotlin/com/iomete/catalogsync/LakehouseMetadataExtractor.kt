@@ -169,69 +169,73 @@ class LakehouseMetadataExtractor(
             val schemasByCatalog = schemaBatches.groupBy { it.catalog.name }
 
             catalogs.forEach { catalog ->
-                val catalogSchemas = schemasByCatalog[catalog.name] ?: emptyList()
-                var totalTableCount = 0
-                var totalSizeInBytes = 0L
-                var totalFiles = 0L
+                try {
+                    val catalogSchemas = schemasByCatalog[catalog.name] ?: emptyList()
+                    var totalTableCount = 0
+                    var totalSizeInBytes = 0L
+                    var totalFiles = 0L
 
-                catalogSchemas.forEach { batch ->
-                    val key = "${catalog.name}/${batch.schema}"
-                    val schemaResults = resultsBySchema[key] ?: emptyList()
-                    val successful = schemaResults.mapNotNull { it.metadata }
-                    val failedCount = schemaResults.count { it.error != null }
+                    catalogSchemas.forEach { batch ->
+                        val key = "${catalog.name}/${batch.schema}"
+                        val schemaResults = resultsBySchema[key] ?: emptyList()
+                        val successful = schemaResults.mapNotNull { it.metadata }
+                        val failedCount = schemaResults.count { it.error != null }
 
-                    if (failedCount > 0) {
-                        logger.warn("Failed to process {} tables in schema {}.{}", failedCount, catalog.name, batch.schema)
-                        schemaResults.filter { it.error != null }.forEach {
-                            logger.warn("Table {}.{}.{} failed: {}", catalog.name, batch.schema, it.tableName, it.error)
+                        if (failedCount > 0) {
+                            logger.warn("Failed to process {} tables in schema {}.{}", failedCount, catalog.name, batch.schema)
+                            schemaResults.filter { it.error != null }.forEach {
+                                logger.warn("Table {}.{}.{} failed: {}", catalog.name, batch.schema, it.tableName, it.error)
+                            }
                         }
+
+                        val schemaTableCount = batch.tables.size
+                        val viewCount = successful.count { it.isView }
+                        val schemaSizeInBytes = successful.sumOf { it.sizeInBytes ?: 0L }
+                        val schemaDbSizeInBytes = successful.sumOf { it.totalTableSizeInBytes ?: 0L }
+                        val schemaFiles = successful.sumOf { it.numFiles ?: 0L }
+
+                        val schemaMetadata = SchemaMetadata(
+                            catalog = catalog.name,
+                            schema = batch.schema,
+                            totalTableCount = schemaTableCount,
+                            totalViewCount = viewCount,
+                            totalSizeInBytes = schemaSizeInBytes,
+                            totalDbSizeInBytes = schemaDbSizeInBytes,
+                            totalFiles = schemaFiles,
+                            failedTableCount = failedCount
+                        )
+                        dataSync.syncSchemaData(schemaMetadata)
+
+                        totalTableCount += schemaTableCount
+                        totalSizeInBytes += schemaSizeInBytes
+                        totalFiles += schemaFiles
+
+                        logger.info(
+                            "Processing schema: {} finished! Total Tables: {}, Views: {}, Total Size: {} bytes, Total Files: {}, Failed Tables: {}",
+                            batch.schema, schemaTableCount, viewCount, schemaSizeInBytes, schemaFiles, failedCount
+                        )
                     }
 
-                    val schemaTableCount = batch.tables.size
-                    val viewCount = successful.count { it.isView }
-                    val schemaSizeInBytes = successful.sumOf { it.sizeInBytes ?: 0L }
-                    val schemaDbSizeInBytes = successful.sumOf { it.totalTableSizeInBytes ?: 0L }
-                    val schemaFiles = successful.sumOf { it.numFiles ?: 0L }
-
-                    val schemaMetadata = SchemaMetadata(
+                    val catalogMetadata = CatalogMetadata(
                         catalog = catalog.name,
-                        schema = batch.schema,
-                        totalTableCount = schemaTableCount,
-                        totalViewCount = viewCount,
-                        totalSizeInBytes = schemaSizeInBytes,
-                        totalDbSizeInBytes = schemaDbSizeInBytes,
-                        totalFiles = schemaFiles,
-                        failedTableCount = failedCount
+                        type = catalog.type.toSet(),
+                        location = catalog.location,
+                        storageEndpoint = catalog.storageEndpoint,
+                        totalSchemaCount = catalogSchemas.size,
+                        totalTableCount = totalTableCount,
+                        totalSizeInBytes = totalSizeInBytes,
+                        totalFiles = totalFiles,
+                        domainsAllowed = catalog.domainsAllowed.toSet()
                     )
-                    dataSync.syncSchemaData(schemaMetadata)
-
-                    totalTableCount += schemaTableCount
-                    totalSizeInBytes += schemaSizeInBytes
-                    totalFiles += schemaFiles
+                    dataSync.syncCatalogData(catalogMetadata)
 
                     logger.info(
-                        "Processing schema: {} finished! Total Tables: {}, Views: {}, Total Size: {} bytes, Total Files: {}, Failed Tables: {}",
-                        batch.schema, schemaTableCount, viewCount, schemaSizeInBytes, schemaFiles, failedCount
+                        "Processing catalog: {} finished! Total Schemas: {}, Total Tables: {}, Total Size: {} bytes, Total Files: {}",
+                        catalog, catalogSchemas.size, totalTableCount, totalSizeInBytes, totalFiles
                     )
+                } catch (th: Throwable) {
+                    logger.error("Failed to sync metadata for catalog {}: {}", catalog.name, th.message, th)
                 }
-
-                val catalogMetadata = CatalogMetadata(
-                    catalog = catalog.name,
-                    type = catalog.type.toSet(),
-                    location = catalog.location,
-                    storageEndpoint = catalog.storageEndpoint,
-                    totalSchemaCount = catalogSchemas.size,
-                    totalTableCount = totalTableCount,
-                    totalSizeInBytes = totalSizeInBytes,
-                    totalFiles = totalFiles,
-                    domainsAllowed = catalog.domainsAllowed.toSet()
-                )
-                dataSync.syncCatalogData(catalogMetadata)
-
-                logger.info(
-                    "Processing catalog: {} finished! Total Schemas: {}, Total Tables: {}, Total Size: {} bytes, Total Files: {}",
-                    catalog, catalogSchemas.size, totalTableCount, totalSizeInBytes, totalFiles
-                )
             }
         } finally {
             pool.shutdown()
