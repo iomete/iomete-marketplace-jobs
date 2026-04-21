@@ -1,2 +1,2 @@
-FROM iomete.azurecr.io/iomete/spark:3.5.5-v3
+FROM iomete.azurecr.io/iomete/spark:3.5.5-latest
 COPY build/*-runner.jar /opt/spark/jars/

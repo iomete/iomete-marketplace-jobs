@@ -4,17 +4,21 @@ import com.iomete.catalogsync.*
 import org.apache.spark.sql.SparkSession
 import org.eclipse.microprofile.config.ConfigProvider
 import org.slf4j.LoggerFactory
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executors
 
 
 class ColumnTagExtractor(
     private val spark: SparkSession,
     private val presidioClient: PresidioClient
 ) {
+    private val piiDetectionEnabled: Boolean by lazy { isPiiDetectionEnabled() }
+
     fun extract(
         fullTableName: String,
         columns: List<String>
     ): Map<String, List<String>> {
-        if (isPiiDetectionEnabled().not()) {
+        if (!piiDetectionEnabled) {
             return emptyMap()
         }
 
@@ -26,18 +30,26 @@ class ColumnTagExtractor(
             val sampleData = spark.sql("SELECT * FROM $fullTableName TABLESAMPLE (5 ROWS)")
                 .collectAsList().orEmpty()
 
-            columns.forEach { columnName ->
-                val columnSampleData =
-                    sampleData.map { it.get(columnName).toString() }
-                        .filter { it.isNotEmpty() }
-                        .distinct().firstOrNull()
+            val futures = columns.map { columnName ->
+                CompletableFuture.supplyAsync({
+                    val columnSampleData =
+                        sampleData.map { it.get(columnName).toString() }
+                            .filter { it.isNotEmpty() }
+                            .distinct().firstOrNull()
 
-                val detectedTags = detectedTags(columnSampleData)
-                logger.info(
-                    "table={} column={} detected-tags={} for sample data: {}",
-                    fullTableName, columnName, detectedTags, columnSampleData
-                )
-                result[columnName] = detectedTags
+                    val detectedTags = detectedTags(columnSampleData)
+                    logger.info(
+                        "table={} column={} detected-tags={} for sample data: {}",
+                        fullTableName, columnName, detectedTags, columnSampleData
+                    )
+                    columnName to detectedTags
+                }, presidioExecutor)
+            }
+
+            CompletableFuture.allOf(*futures.toTypedArray()).join()
+            futures.forEach { future ->
+                val (columnName, tags) = future.get()
+                result[columnName] = tags
             }
         } catch (ex: Exception) {
             logger.error("Error on detectColumnTags. Table: {}. Message: {}", fullTableName, ex.message)
@@ -70,6 +82,10 @@ class ColumnTagExtractor(
 
     companion object {
         private val logger = LoggerFactory.getLogger(ColumnTagExtractor::class.java)
+        private val httpParallelism = ConfigProvider.getConfig()
+            .getOptionalValue("HTTP_PARALLELISM", Int::class.java)
+            .orElse(16)
+        private val presidioExecutor = Executors.newFixedThreadPool(httpParallelism)
     }
 
     private fun isPiiDetectionEnabled(): Boolean {

@@ -26,14 +26,16 @@ class TableExtractorFactory(
         isView: Boolean = false,
         catalog: String,
         schema: String,
-        table: String
+        table: String,
+        currentSnapshotId: String? = null
     ): TableExtractor {
 
         if (isView) return ViewExtractor(columnTagExtractor = columnTagExtractor, catalog = catalog, schema = schema, table = table)
 
         return when (provider) {
             "iceberg" -> IcebergTableExtractor(
-                spark = spark, columnTagExtractor = columnTagExtractor, catalog = catalog, schema = schema, table = table
+                spark = spark, columnTagExtractor = columnTagExtractor, catalog = catalog, schema = schema, table = table,
+                currentSnapshotId = currentSnapshotId
             )
 
             "parquet", "orc", "hive" -> DatasourceV1LikeTableExtractor(
