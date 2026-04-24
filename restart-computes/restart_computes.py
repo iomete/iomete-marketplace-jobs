@@ -1,4 +1,5 @@
 import os
+import argparse
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,6 +11,7 @@ from dotenv import load_dotenv
 from psycopg2.extensions import connection as PgConnection
 from requests import Response, Session
 from requests.exceptions import RequestException
+
 
 RED = "\033[91m"
 YELLOW = "\033[93m"
@@ -84,12 +86,12 @@ def get_float_env(name: str, default: float) -> float:
     return float(value) if value is not None else default
 
 
-def load_config() -> Config:
+def load_config(env_file: str = ".env") -> Config:
     """
     Load everything once so the rest of the script reads from a single config object.
     That keeps env parsing out of the operational logic.
     """
-    load_dotenv()
+    load_dotenv(dotenv_path=env_file)
 
     logs_dir = Path("logs")
     logs_dir.mkdir(exist_ok=True)
@@ -128,6 +130,18 @@ def load_config() -> Config:
         api_retry_delay_seconds=int(os.getenv("API_RETRY_DELAY_SECONDS", "2")),
         logs_dir=logs_dir,
     )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Restart active compute clusters using the configured environment."
+    )
+    parser.add_argument(
+        "--env-file",
+        default=".env",
+        help="Path to the environment file to load. Defaults to .env",
+    )
+    return parser.parse_args()
 
 
 # --------
@@ -542,10 +556,12 @@ def print_summary(
 
 def main() -> None:
     global_start = time.time()
-    config = load_config()
+    args = parse_args()
+    config = load_config(env_file=args.env_file)
     log_file = (
         config.logs_dir / f"restart_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     )
+    log(f"Env file: {args.env_file}", log_file)
 
     clusters = fetch_active_clusters(config)
     if not clusters:
