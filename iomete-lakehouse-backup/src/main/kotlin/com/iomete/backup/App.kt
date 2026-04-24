@@ -1,6 +1,7 @@
 package com.iomete.backup
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.ConfigParseException
 import com.iomete.backup.config.ConfigParser
 import com.iomete.backup.config.ConfigUtils
@@ -45,38 +46,9 @@ object App {
         val configPath = args.getOrNull(0) ?: DEFAULT_CONFIG_PATH
         logger.info("Configuration path: {}", configPath)
 
-        // Parse configuration
-        logger.info("Parsing configuration...")
-        val config = try {
-            ConfigParser.parseFromFile(configPath)
-        } catch (e: ConfigParseException) {
-            logger.error("Configuration parsing failed: {}", e.message)
-            throw e
-        }
-        logger.info("Configuration parsed successfully")
-
-        // Validate configuration
-        logger.info("Validating configuration...")
-        val validationResult = ConfigValidator.validate(config)
-        if (validationResult is ValidationResult.Invalid) {
-            logger.error("Configuration validation failed with {} error(s):", validationResult.errors.size)
-            validationResult.errors.forEach { error ->
-                logger.error("  - {}", error)
-            }
-            throw IllegalArgumentException("Configuration validation failed")
-        }
-        logger.info("Configuration validation passed")
-
-        // Print parsed configuration (with secrets redacted)
-        logger.info("-".repeat(60))
-        logger.info("Parsed Configuration (secrets redacted):")
-        logger.info("-".repeat(60))
-        val redactedConfig = ConfigUtils.redactSecrets(config)
-        val configJson = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(redactedConfig)
-        configJson.lines().forEach { line ->
-            logger.info(line)
-        }
-        logger.info("-".repeat(60))
+        val config = parseConfig(configPath)
+        validateConfig(config)
+        logRedactedConfig(config)
 
         // Initialize Spark session
         logger.info("Initializing Spark session...")
@@ -113,5 +85,42 @@ object App {
             logger.info("Spark session stopped")
         }
 
+    }
+
+    private fun parseConfig(configPath: String): ApplicationConfig {
+        logger.info("Parsing configuration...")
+        val config = try {
+            ConfigParser.parseFromFile(configPath)
+        } catch (e: ConfigParseException) {
+            logger.error("Configuration parsing failed: {}", e.message)
+            throw e
+        }
+        logger.info("Configuration parsed successfully")
+        return config
+    }
+
+    private fun validateConfig(config: ApplicationConfig) {
+        logger.info("Validating configuration...")
+        val validationResult = ConfigValidator.validate(config)
+        if (validationResult is ValidationResult.Invalid) {
+            logger.error("Configuration validation failed with {} error(s):", validationResult.errors.size)
+            validationResult.errors.forEach { error ->
+                logger.error("  - {}", error)
+            }
+            throw IllegalArgumentException("Configuration validation failed")
+        }
+        logger.info("Configuration validation passed")
+    }
+
+    private fun logRedactedConfig(config: ApplicationConfig) {
+        logger.info("-".repeat(60))
+        logger.info("Parsed Configuration (secrets redacted):")
+        logger.info("-".repeat(60))
+        val redactedConfig = ConfigUtils.redactSecrets(config)
+        val configJson = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(redactedConfig)
+        configJson.lines().forEach { line ->
+            logger.info(line)
+        }
+        logger.info("-".repeat(60))
     }
 }
