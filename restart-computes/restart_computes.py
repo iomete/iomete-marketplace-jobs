@@ -1,5 +1,5 @@
-import os
 import argparse
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,7 +11,6 @@ from dotenv import load_dotenv
 from psycopg2.extensions import connection as PgConnection
 from requests import Response, Session
 from requests.exceptions import RequestException
-
 
 RED = "\033[91m"
 YELLOW = "\033[93m"
@@ -132,6 +131,7 @@ def load_config(env_file: str = ".env") -> Config:
     )
 
 
+# Argument parsing for env-file
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Restart active compute clusters using the configured environment."

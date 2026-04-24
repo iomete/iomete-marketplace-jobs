@@ -37,9 +37,11 @@ class TableMetadataExtractor(
     ): TableMetadata {
         val table = sparkMetadataReader.describeTable(spark, catalog, schema, tableName)
 
+        val tableProperties = parseIcebergPropertiesSafe(table.metadata["Table Properties"])
+
         exclusionRules.enforceTableExclusionRules(
             table = tableName,
-            props = parseIcebergPropertiesSafe(table.metadata["Table Properties"]),
+            props = tableProperties,
         )
 
         var tableType = table.metadata.getOrDefault("Type", "UNKNOWN")
@@ -58,6 +60,7 @@ class TableMetadataExtractor(
                 catalog = catalog,
                 schema = schema,
                 table = tableName,
+                tableProperties = tableProperties,
             )
 
         val datasetStatistics: TableStatistics? =

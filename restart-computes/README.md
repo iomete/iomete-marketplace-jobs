@@ -47,7 +47,6 @@ These are discovered from the `lakehouse` table in the target PostgreSQL databas
 
 ---
 
-
 ## Environment Configuration
 
 Use `.env.example` as the template for required configuration.

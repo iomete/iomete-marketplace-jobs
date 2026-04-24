@@ -1,8 +1,8 @@
 .env
 .env.*
 !.env.example
+.venv/
 .env.docker
 logs/
 __pycache__/
 *.pyc
-.venv/
