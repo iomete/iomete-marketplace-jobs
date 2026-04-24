@@ -1,4 +1,7 @@
 .env
+.env.*
+!.env.example
+.venv/
 .env.docker
 logs/
 __pycache__/
