@@ -1,4 +1,4 @@
-FROM iomete/spark-py:3.2.1.0
+FROM iomete.azurecr.io/iomete/spark-py:3.5.5-v13
 
 WORKDIR "/app"
 
@@ -9,8 +9,12 @@ USER 0
 COPY setup.py setup.cfg driver.py ./
 COPY file_streaming ./file_streaming
 
-RUN pip install .
+RUN pip install --break-system-packages .
+
+# Ensure the runtime Spark user can write to the working directory.
+# Spark's entrypoint writes java_opts.txt in the current working directory.
+ARG spark_uid=1001
+RUN chown -R ${spark_uid}:${spark_uid} /app
 
 # Specify the User that the actual main process will run as
-ARG spark_uid=185
 USER ${spark_uid}
