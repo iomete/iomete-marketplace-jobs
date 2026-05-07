@@ -8,7 +8,21 @@ from file_streaming.utils.schema_utils import schema_from_config
 
 logger = logging.getLogger(__name__)
 
-checkpointLocation = "file_streaming/data/_checkpoints_" + os.getenv("SPARK_INSTANCE_ID")
+
+def get_checkpoint_location() -> str:
+    compute_id = (
+        os.getenv("SPARK_INSTANCE_ID")
+        or os.getenv("IOMETE_COMPUTE_ID")
+        or os.getenv("IOMETE_COMPUTE_NAME")
+    )
+
+    if not compute_id:
+        raise ValueError(
+            "Checkpoint location cannot be built because none of "
+            "SPARK_INSTANCE_ID, IOMETE_COMPUTE_ID, or IOMETE_COMPUTE_NAME is set."
+        )
+
+    return f"file_streaming/data/_checkpoints_{compute_id}"
 
 
 @dataclass
@@ -19,7 +33,7 @@ class QueueConfig:
 
     @property
     def region(self) -> str:
-        return re.search('sqs.(.*).amazonaws', self.URL).group(1)
+        return re.search("sqs.(.*).amazonaws", self.URL).group(1)
 
 
 @dataclass
@@ -72,48 +86,47 @@ def get_config(application_path) -> ApplicationConfig:
 
     def parse_queue(queue_config):
         return QueueConfig(
-            URL=queue_config['URL'],
-            fetch_interval_seconds=queue_config['fetch_interval_seconds'],
-            log_polling_wait_time_seconds=queue_config['log_polling_wait_time_seconds']
+            URL=queue_config["URL"],
+            fetch_interval_seconds=queue_config["fetch_interval_seconds"],
+            log_polling_wait_time_seconds=queue_config["log_polling_wait_time_seconds"],
         )
 
     def parse_file(file_config):
         return FileConfig(
-            format=file_config['format'],
-            header=file_config['header'],
-            path=file_config['path'],
-            max_files_per_trigger=file_config['max_files_per_trigger'],
-            latest_first=file_config['latest_first'],
-            max_file_age=file_config['max_file_age']
+            format=file_config["format"],
+            header=file_config["header"],
+            path=file_config["path"],
+            max_files_per_trigger=file_config["max_files_per_trigger"],
+            latest_first=file_config["latest_first"],
+            max_file_age=file_config["max_file_age"],
         )
 
     def parse_destination(db_config):
         return DestinationConfig(
-            schema=db_config['schema'],
-            table=db_config['table'],
-            partitions=db_config['partitions']
+            schema=db_config["schema"],
+            table=db_config["table"],
+            partitions=db_config["partitions"],
         )
 
     def parse_processing_time(processing_config):
-        return format_processing_time(processing_config['interval'],
-                                      processing_config['unit'])
+        return format_processing_time(
+            processing_config["interval"], processing_config["unit"]
+        )
 
     def parse_source(source_config):
         schema = None
-        if hasattr(source_config, 'schema'):
-            schema = schema_from_config(source_config['schema'])
+        if hasattr(source_config, "schema"):
+            schema = schema_from_config(source_config["schema"])
         queue = None
-        if hasattr(source_config, 'queue'):
-            queue = parse_queue(source_config['queue'])
+        if hasattr(source_config, "queue"):
+            queue = parse_queue(source_config["queue"])
         return SourceConfig(
-            file=parse_file(source_config['file']),
-            schema=schema,
-            queue=queue
+            file=parse_file(source_config["file"]), schema=schema, queue=queue
         )
 
     return ApplicationConfig(
-        source=parse_source(config['source']),
-        processing_time=parse_processing_time(config['processing_time']),
-        destination=parse_destination(config['destination']),
-        checkpoint_location=checkpointLocation
+        source=parse_source(config["source"]),
+        processing_time=parse_processing_time(config["processing_time"]),
+        destination=parse_destination(config["destination"]),
+        checkpoint_location=get_checkpoint_location(),
     )
