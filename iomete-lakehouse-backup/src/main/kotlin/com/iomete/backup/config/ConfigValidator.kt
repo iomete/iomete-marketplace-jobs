@@ -11,7 +11,7 @@ object ConfigValidator {
 
         validateStorageConfig(config.source, "source", errors)
         validateStorageConfig(config.target, "target", errors)
-//        validateCopyConfig(config.copy, errors) #TODO
+        validateCopyConfig(config.copy, errors)
 
         return if (errors.isEmpty()) {
             logger.debug("Configuration validation passed")
@@ -50,6 +50,40 @@ object ConfigValidator {
         if (config.secretKey.isBlank()) {
             errors.add("S3 $location: secretKey is required and cannot be empty")
         }
+    }
+
+    private fun validateCopyConfig(
+        config: CopyConfig,
+        errors: MutableList<String>
+    ) {
+        validateCopyOptions(config.options, errors)
+    }
+
+    private fun validateCopyOptions(
+        options: CopyOptions,
+        errors: MutableList<String>
+    ) {
+        if (options.maxMaps <= 0) {
+            errors.add("Copy options: maxMaps must be a positive integer (got ${options.maxMaps})")
+        }
+
+        if (options.maxAttempts <= 0) {
+            errors.add("Copy options: maxAttempts must be a positive integer (got ${options.maxAttempts})")
+        }
+
+        if (options.retryDelayMs < 0) {
+            errors.add("Copy options: retryDelayMs must be zero or a positive integer (got ${options.retryDelayMs})")
+        }
+
+//        options.bandwidthMb?.let { bandwidth ->
+//            if (bandwidth <= 0) {
+//                errors.add("Copy options: bandwidthMb must be a positive integer if specified (got $bandwidth)")
+//            }
+//        }
+
+//        if (options.numListStatusThreads <= 0) {
+//            errors.add("Copy options: numListStatusThreads must be a positive integer (got ${options.numListStatusThreads})")
+//        } #TODO
     }
 }
 

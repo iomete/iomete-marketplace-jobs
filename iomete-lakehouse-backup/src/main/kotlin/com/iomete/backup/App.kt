@@ -7,6 +7,7 @@ import com.iomete.backup.config.ConfigParser
 import com.iomete.backup.config.ConfigUtils
 import com.iomete.backup.config.ConfigValidator
 import com.iomete.backup.config.ValidationResult
+import com.iomete.backup.copy.CopyJobRunner
 import com.iomete.backup.copy.HadoopConfigBuilder
 import com.iomete.backup.copy.PathResolver
 import com.iomete.backup.fs.FileLister
@@ -14,6 +15,7 @@ import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
 import org.slf4j.LoggerFactory
 import java.net.URI
+import java.time.Instant
 
 object App {
     private val logger = LoggerFactory.getLogger(App::class.java)
@@ -77,6 +79,37 @@ object App {
             if (files.isEmpty()) {
                 logger.info("No files found in source. Nothing to copy.")
                 return
+            }
+
+            // Execute distributed copy
+            logger.info("-".repeat(60))
+            logger.info("Starting distributed copy...")
+            val copyJobResult = CopyJobRunner.run(spark, config, files)
+            val summary = copyJobResult.summary
+
+            // Log summary
+            logger.info("-".repeat(60))
+            logger.info("Copy Summary:")
+            logger.info("  Total files:  {}", summary.totalFiles)
+            logger.info("  Succeeded:    {}", summary.successCount)
+            logger.info("  Failed:       {}", summary.failureCount)
+            logger.info("  Bytes copied: {} ({} MB)", summary.totalBytesCopied,
+                summary.totalBytesCopied / (1024 * 1024))
+            logger.info("-".repeat(60))
+
+            logger.info("File-level copy results:")
+            copyJobResult.fileResults.forEach { result ->
+                if (result.success) {
+                    logger.info(
+                        "  [SUCCESS] source={} target={} bytesCopied={} attemptsUsed={}",
+                        result.sourcePath, result.targetPath, result.bytesCopied, result.attemptsUsed
+                    )
+                } else {
+                    logger.warn(
+                        "  [FAILED] source={} target={} attemptsUsed={} reason={}",
+                        result.sourcePath, result.targetPath, result.attemptsUsed, result.error
+                    )
+                }
             }
         } finally {
             // Stop Spark session

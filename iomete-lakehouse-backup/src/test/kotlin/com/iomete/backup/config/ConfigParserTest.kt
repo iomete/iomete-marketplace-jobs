@@ -46,9 +46,42 @@ class ConfigParserTest {
         assertEquals("target-bucket", target.bucket)
         assertEquals("backup/", target.prefix)
 
-        // Default copy config #TODO
-//        assertEquals(CopyMode.FULL, config.copy.mode)
-//        assertEquals(IncrementalStrategy.MTIME, config.copy.incrementalStrategy)
+        assertEquals(20, config.copy.options.maxMaps)
+        assertEquals(3, config.copy.options.maxAttempts)
+        assertEquals(1000L, config.copy.options.retryDelayMs)
+    }
+
+    @Test
+    fun `parse copy retry options`() {
+        val json = """
+        {
+          "source": {
+            "type": "s3",
+            "bucket": "source-bucket",
+            "accessKey": "access123",
+            "secretKey": "secret456"
+          },
+          "target": {
+            "type": "s3",
+            "bucket": "target-bucket",
+            "accessKey": "access789",
+            "secretKey": "secret012"
+          },
+          "copy": {
+            "options": {
+              "maxMaps": 10,
+              "maxAttempts": 5,
+              "retryDelayMs": 2500
+            }
+          }
+        }
+        """.trimIndent()
+
+        val config = ConfigParser.parse(json)
+
+        assertEquals(10, config.copy.options.maxMaps)
+        assertEquals(5, config.copy.options.maxAttempts)
+        assertEquals(2500L, config.copy.options.retryDelayMs)
     }
 
 //    @Test
