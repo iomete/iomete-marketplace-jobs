@@ -1,0 +1,61 @@
+package com.iomete.cleanup.untrackedtablefolders.config
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.databind.DeserializationFeature
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.KotlinModule
+import com.fasterxml.jackson.module.kotlin.readValue
+import jakarta.enterprise.context.ApplicationScoped
+import jakarta.enterprise.inject.Produces
+import org.jboss.logging.Logger
+import java.io.File
+
+private const val APPLICATION_CONFIG_PATH = "/etc/configs/application.json"
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class ApplicationConfig(
+    val catalog: String = "spark_catalog",
+
+    val databases: List<String> = emptyList(),
+
+    @field:JsonProperty("exclude_paths")
+    val excludePaths: List<String> = emptyList(),
+
+    @field:JsonProperty("older_than_hours")
+    val olderThanHours: Long = 24,
+
+    @field:JsonProperty("dry_run")
+    val dryRun: Boolean = true,
+
+    @field:JsonProperty("delete_enabled")
+    val deleteEnabled: Boolean = false,
+
+    @field:JsonProperty("max_candidate_folders_per_database")
+    val maxCandidateFoldersPerDatabase: Int = 10,
+)
+
+@ApplicationScoped
+class ConfigProducer {
+    private val logger = Logger.getLogger(ConfigProducer::class.java)
+
+    @Produces
+    @ApplicationScoped
+    fun applicationConfig(): ApplicationConfig {
+        val configFile = File(APPLICATION_CONFIG_PATH)
+
+        if (!configFile.exists()) {
+            // TODO: Before enabling real catalog/storage cleanup, change this to fail fast.
+            // Using defaults is acceptable for the skeleton, but a destructive job should not run
+            // when /etc/configs/application.json is missing.
+            logger.warn("Config file was not found at $APPLICATION_CONFIG_PATH. Using default config.")
+            return ApplicationConfig()
+        }
+
+        val objectMapper = ObjectMapper()
+            .registerModule(KotlinModule.Builder().build())
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+
+        return objectMapper.readValue(configFile)
+    }
+}

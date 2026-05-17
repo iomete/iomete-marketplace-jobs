@@ -1,0 +1,9 @@
+{
+  "catalog": "spark_catalog",
+  "databases": ["sample_database"],
+  "exclude_paths": [],
+  "older_than_hours": 24,
+  "dry_run": true,
+  "delete_enabled": false,
+  "max_candidate_folders_per_database": 10
+}
