@@ -34,7 +34,7 @@ class CleanupUntrackedTableFoldersService {
 
             tables.forEach { table ->
                 logger.info(
-                    "Active table discovered: catalog=${table.catalog}, database=${table.database}, table=${table.table}, isTemporary=${table.isTemporary}"
+                    "Active table discovered: catalog=${table.catalog}, database=${table.database}, table=${table.table}, isTemporary=${table.isTemporary}, location=${table.location}"
                 )
             }
         }

@@ -10,6 +10,7 @@ data class DiscoveredTable(
     val database: String,
     val table: String,
     val isTemporary: Boolean,
+    val location: String?,
 )
 
 @ApplicationScoped
@@ -36,12 +37,42 @@ class CatalogDiscoveryService {
             }
 
         return rows.map { row ->
+            val tableName = row.getString(1)
+
             DiscoveredTable(
                 catalog = catalog,
                 database = database,
-                table = row.getString(1),
+                table = tableName,
                 isTemporary = row.getBoolean(2),
+                location = discoverTableLocation(
+                    catalog = catalog,
+                    database = database,
+                    table = tableName,
+                ),
             )
         }
+    }
+
+    private fun discoverTableLocation(
+        catalog: String,
+        database: String,
+        table: String,
+    ): String? {
+        val spark = sparkSessionProvider.getOrCreate()
+        val qualifiedTableName = "`$catalog`.`$database`.`$table`"
+
+        val rows =
+            try {
+                spark.sql("DESCRIBE EXTENDED $qualifiedTableName").collectAsList()
+            } catch (th: Throwable) {
+                logger.warn("Failed to discover location for table=$qualifiedTableName", th)
+                return null
+            }
+
+        return rows
+            .firstOrNull { row -> row.getString(0).trim().equals("Location", ignoreCase = true) }
+            ?.getString(1)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
     }
 }
