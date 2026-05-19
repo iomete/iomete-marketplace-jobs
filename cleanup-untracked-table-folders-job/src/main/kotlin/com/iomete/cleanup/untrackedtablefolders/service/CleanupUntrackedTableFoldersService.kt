@@ -2,6 +2,7 @@ package com.iomete.cleanup.untrackedtablefolders.service
 
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
+import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import org.jboss.logging.Logger
@@ -15,6 +16,9 @@ class CleanupUntrackedTableFoldersService {
 
     @Inject
     lateinit var catalogDiscoveryService: CatalogDiscoveryService
+
+    @Inject
+    lateinit var objectStorageDiscoveryService: ObjectStorageDiscoveryService
 
     fun run() {
         logger.info("Loaded cleanup config: $config")
@@ -41,10 +45,29 @@ class CleanupUntrackedTableFoldersService {
                     "Active table discovered: catalog=${table.catalog}, database=${table.database}, table=${table.table}, isTemporary=${table.isTemporary}, location=${table.location}"
                 )
             }
+
+            if (discoveredDatabase.location.isNullOrBlank()) {
+                logger.warn(
+                    "Skipping storage folder discovery because database location is missing for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
+                )
+            } else {
+                val storageFolders =
+                    objectStorageDiscoveryService.listImmediateChildFolders(
+                        location = discoveredDatabase.location,
+                    )
+
+                logger.info(
+                    "Discovered ${storageFolders.size} immediate storage folder(s) under database location=${discoveredDatabase.location}"
+                )
+
+                storageFolders.forEach { folder ->
+                    logger.info("Storage folder discovered: $folder")
+                }
+            }
         }
 
         logger.info(
-            "Read-only catalog discovery completed. No ECS listing, comparison, or deletion was performed."
+            "Read-only discovery completed. No comparison or deletion was performed."
         )
     }
 
