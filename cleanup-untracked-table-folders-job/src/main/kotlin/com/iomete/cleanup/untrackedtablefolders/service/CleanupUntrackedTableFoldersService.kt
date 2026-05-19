@@ -69,13 +69,25 @@ class CleanupUntrackedTableFoldersService {
                     .map { normalizePath(it) }
                     .toSet()
 
+                val excludedPathSet = config.excludePaths
+                    .map { normalizePath(it) }
+                    .toSet()
+
                 val candidateFolders = storageFolders
                     .filter { normalizePath(it) !in activeTableLocationSet }
+                    .filter { normalizePath(it) !in excludedPathSet }
                     .sorted()
 
                 logger.info(
                     "Detected ${candidateFolders.size} candidate untracked table folder(s) for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
                 )
+
+                if (candidateFolders.size > config.maxCandidateFoldersPerDatabase) {
+                    logger.warn(
+                        "Detected candidate folder count=${candidateFolders.size}, which exceeds max_candidate_folders_per_database=${config.maxCandidateFoldersPerDatabase}. Refusing to continue for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}. Narrow the scope or increase the limit explicitly."
+                    )
+                    return@forEach
+                }
 
                 candidateFolders.forEach { folder ->
                     logger.info("Dry-run candidate untracked table folder: $folder")
