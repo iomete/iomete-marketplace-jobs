@@ -5,6 +5,8 @@ import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
+import java.time.Duration
+import java.time.Instant
 import org.jboss.logging.Logger
 
 @ApplicationScoped
@@ -61,7 +63,9 @@ class CleanupUntrackedTableFoldersService {
                 )
 
                 storageFolders.forEach { folder ->
-                    logger.info("Storage folder discovered: $folder")
+                    logger.info(
+                        "Storage folder discovered: path=${folder.path}, modifiedAt=${Instant.ofEpochMilli(folder.modificationTimeMillis)}"
+                    )
                 }
 
                 val activeTableLocationSet = discoveredDatabase.tables
@@ -73,10 +77,18 @@ class CleanupUntrackedTableFoldersService {
                     .map { normalizePath(it) }
                     .toSet()
 
+                val cutoffTime = Instant.now().minus(Duration.ofHours(config.olderThanHours))
+                val cutoffTimeMillis = cutoffTime.toEpochMilli()
+
+                logger.info(
+                    "Applying older_than_hours=${config.olderThanHours}; candidate folders must have modification time at or before $cutoffTime"
+                )
+
                 val candidateFolders = storageFolders
-                    .filter { normalizePath(it) !in activeTableLocationSet }
-                    .filter { normalizePath(it) !in excludedPathSet }
-                    .sorted()
+                    .filter { normalizePath(it.path) !in activeTableLocationSet }
+                    .filter { normalizePath(it.path) !in excludedPathSet }
+                    .filter { it.modificationTimeMillis <= cutoffTimeMillis }
+                    .sortedBy { it.path }
 
                 logger.info(
                     "Detected ${candidateFolders.size} candidate untracked table folder(s) for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
@@ -90,7 +102,9 @@ class CleanupUntrackedTableFoldersService {
                 }
 
                 candidateFolders.forEach { folder ->
-                    logger.info("Dry-run candidate untracked table folder: $folder")
+                    logger.info(
+                        "Dry-run candidate untracked table folder: path=${folder.path}, modifiedAt=${Instant.ofEpochMilli(folder.modificationTimeMillis)}"
+                    )
                 }
             }
         }
@@ -110,6 +124,14 @@ class CleanupUntrackedTableFoldersService {
 
         require(config.databases.isNotEmpty()) {
             "databases must contain at least one database name"
+        }
+
+        require(config.olderThanHours >= 0) {
+            "older_than_hours must be greater than or equal to 0"
+        }
+
+        require(config.maxCandidateFoldersPerDatabase >= 0) {
+            "max_candidate_folders_per_database must be greater than or equal to 0"
         }
 
         if (!config.dryRun && !config.deleteEnabled) {

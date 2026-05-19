@@ -6,6 +6,11 @@ import jakarta.inject.Inject
 import org.apache.hadoop.fs.Path
 import org.jboss.logging.Logger
 
+data class StorageFolder(
+    val path: String,
+    val modificationTimeMillis: Long,
+)
+
 @ApplicationScoped
 class ObjectStorageDiscoveryService {
     private val logger = Logger.getLogger(ObjectStorageDiscoveryService::class.java)
@@ -13,7 +18,7 @@ class ObjectStorageDiscoveryService {
     @Inject
     lateinit var sparkSessionProvider: SparkSessionProvider
 
-    fun listImmediateChildFolders(location: String): List<String> {
+    fun listImmediateChildFolders(location: String): List<StorageFolder> {
         logger.info("Listing immediate child folders under location=$location")
 
         val spark = sparkSessionProvider.getOrCreate()
@@ -23,8 +28,13 @@ class ObjectStorageDiscoveryService {
         return try {
             fileSystem.listStatus(path)
                 .filter { it.isDirectory }
-                .map { it.path.toString() }
-                .sorted()
+                .map {
+                    StorageFolder(
+                        path = it.path.toString(),
+                        modificationTimeMillis = it.modificationTime,
+                    )
+                }
+                .sortedBy { it.path }
         } catch (th: Throwable) {
             logger.warn("Failed to list immediate child folders under location=$location", th)
             emptyList()
