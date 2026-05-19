@@ -133,7 +133,12 @@ class CleanupUntrackedTableFoldersService {
             .sorted()
 
         return when (inferredScanLocations.size) {
-            0 -> databaseLocation
+            0 -> {
+                logger.warn(
+                    "No active table locations were discovered for databaseLocation=$databaseLocation. Falling back to discovered database location for storage scan. This may miss untracked folders if the database location differs from the actual table storage root."
+                )
+                databaseLocation
+            }
             1 -> inferredScanLocations.single()
             else -> {
                 logger.warn(
