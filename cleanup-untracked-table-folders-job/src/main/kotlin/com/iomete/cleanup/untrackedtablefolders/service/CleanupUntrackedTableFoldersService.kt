@@ -110,6 +110,16 @@ class CleanupUntrackedTableFoldersService {
                     "Detected ${candidateFolders.size} candidate untracked table folder(s) for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
                 )
 
+                logDryRunSummary(
+                    catalog = discoveredDatabase.catalog,
+                    database = discoveredDatabase.database,
+                    discoveredDatabaseLocation = discoveredDatabase.location,
+                    storageScanLocation = storageScanLocation,
+                    activeTableLocations = discoveredDatabase.tables.mapNotNull { it.location }.sorted(),
+                    storageFolderPaths = storageFolders.map { it.path }.sorted(),
+                    candidateFolderPaths = candidateFolders.map { it.path }.sorted(),
+                )
+
                 candidateFolders.forEach { folder ->
                     logger.info(
                         "Dry-run candidate untracked table folder: path=${folder.path}, modifiedAt=${Instant.ofEpochMilli(folder.modificationTimeMillis)}"
@@ -122,6 +132,47 @@ class CleanupUntrackedTableFoldersService {
             "Read-only discovery and candidate detection completed. No deletion was performed."
         )
     }
+    private fun logDryRunSummary(
+        catalog: String,
+        database: String,
+        discoveredDatabaseLocation: String?,
+        storageScanLocation: String,
+        activeTableLocations: List<String>,
+        storageFolderPaths: List<String>,
+        candidateFolderPaths: List<String>,
+    ) {
+        val candidateFolderSet = candidateFolderPaths.toSet()
+        val protectedFolderPaths = activeTableLocations.toSet()
+        val nonCandidateStorageFolderPaths = storageFolderPaths
+            .filter { it !in candidateFolderSet }
+            .sorted()
+
+        logger.info("========== Cleanup Untracked Table Folders Dry-Run Summary ==========")
+        logger.info("Catalog: $catalog")
+        logger.info("Database: $database")
+        logger.info("Discovered database location: $discoveredDatabaseLocation")
+        logger.info("Storage scan location: $storageScanLocation")
+        logger.info("Active table location count: ${activeTableLocations.size}")
+        logger.info("Storage folder count: ${storageFolderPaths.size}")
+        logger.info("Candidate folder count: ${candidateFolderPaths.size}")
+        logger.info("Deletion performed: false")
+        logger.info("Protected active table folders:")
+        logListOrNone(protectedFolderPaths.sorted())
+        logger.info("Storage folders not selected as candidates:")
+        logListOrNone(nonCandidateStorageFolderPaths)
+        logger.info("Candidate folders that would be deleted if destructive mode were enabled:")
+        logListOrNone(candidateFolderPaths)
+        logger.info("====================================================================")
+    }
+
+    private fun logListOrNone(values: List<String>) {
+        if (values.isEmpty()) {
+            logger.info("- none")
+        } else {
+            values.forEach { value -> logger.info("- $value") }
+        }
+    }
+
 
     private fun resolveStorageScanLocation(
         databaseLocation: String,
