@@ -22,8 +22,11 @@ class App : QuarkusApplication {
         logger.info("Cleanup untracked table folders job finished")
         return 0
     }
-}
 
-fun main(args: Array<String>) {
-    Quarkus.run(App::class.java, *args)
+    companion object {
+        @JvmStatic
+        fun main(args: Array<String>) {
+            Quarkus.run(App::class.java, *args)
+        }
+    }
 }
