@@ -45,11 +45,10 @@ class ConfigProducer {
         val configFile = File(APPLICATION_CONFIG_PATH)
 
         if (!configFile.exists()) {
-            // TODO: Before enabling real catalog/storage cleanup, change this to fail fast.
-            // Using defaults is acceptable for the skeleton, but a destructive job should not run
-            // when /etc/configs/application.json is missing.
-            logger.warn("Config file was not found at $APPLICATION_CONFIG_PATH. Using default config.")
-            return ApplicationConfig()
+            val message =
+                "Config file was not found at $APPLICATION_CONFIG_PATH. This job requires an explicit configuration file."
+            logger.error(message)
+            throw IllegalStateException(message)
         }
 
         val objectMapper = ObjectMapper()
