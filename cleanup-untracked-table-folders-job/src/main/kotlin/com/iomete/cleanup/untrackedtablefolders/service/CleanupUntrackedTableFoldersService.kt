@@ -84,7 +84,7 @@ class CleanupUntrackedTableFoldersService {
         }
 
         logger.info(
-            "Read-only discovery completed. No comparison or deletion was performed."
+            "Read-only discovery and candidate detection completed. No deletion was performed."
         )
     }
 
