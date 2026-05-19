@@ -134,10 +134,8 @@ class CleanupUntrackedTableFoldersService {
             "max_candidate_folders_per_database must be greater than or equal to 0"
         }
 
-        if (!config.dryRun && !config.deleteEnabled) {
-            throw IllegalArgumentException(
-                "delete_enabled must be true when dry_run is false. Refusing to run destructive mode."
-            )
+        require(config.dryRun) {
+            "dry_run must be true because deletion mode is not implemented yet"
         }
     }
 }
