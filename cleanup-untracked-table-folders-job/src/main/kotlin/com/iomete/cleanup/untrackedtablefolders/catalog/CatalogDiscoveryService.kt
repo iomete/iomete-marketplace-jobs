@@ -5,6 +5,13 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import org.jboss.logging.Logger
 
+data class DiscoveredDatabase(
+    val catalog: String,
+    val database: String,
+    val location: String?,
+    val tables: List<DiscoveredTable>,
+)
+
 data class DiscoveredTable(
     val catalog: String,
     val database: String,
@@ -19,6 +26,26 @@ class CatalogDiscoveryService {
 
     @Inject
     lateinit var sparkSessionProvider: SparkSessionProvider
+
+    fun discoverDatabase(
+        catalog: String,
+        database: String,
+    ): DiscoveredDatabase {
+        logger.info("Discovering database metadata for catalog=$catalog database=$database")
+
+        return DiscoveredDatabase(
+            catalog = catalog,
+            database = database,
+            location = discoverDatabaseLocation(
+                catalog = catalog,
+                database = database,
+            ),
+            tables = discoverTables(
+                catalog = catalog,
+                database = database,
+            ),
+        )
+    }
 
     fun discoverTables(
         catalog: String,
@@ -51,6 +78,28 @@ class CatalogDiscoveryService {
                 ),
             )
         }
+    }
+
+    private fun discoverDatabaseLocation(
+        catalog: String,
+        database: String,
+    ): String? {
+        val spark = sparkSessionProvider.getOrCreate()
+        val qualifiedDatabaseName = "`$catalog`.`$database`"
+
+        val rows =
+            try {
+                spark.sql("DESCRIBE DATABASE EXTENDED $qualifiedDatabaseName").collectAsList()
+            } catch (th: Throwable) {
+                logger.warn("Failed to discover location for database=$qualifiedDatabaseName", th)
+                return null
+            }
+
+        return rows
+            .firstOrNull { row -> row.getString(0).trim().equals("Location", ignoreCase = true) }
+            ?.getString(1)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
     }
 
     private fun discoverTableLocation(

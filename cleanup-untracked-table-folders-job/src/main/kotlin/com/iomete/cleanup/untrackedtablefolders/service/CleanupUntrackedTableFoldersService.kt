@@ -22,17 +22,21 @@ class CleanupUntrackedTableFoldersService {
         validateConfig()
 
         config.databases.forEach { database ->
-            val tables =
-                catalogDiscoveryService.discoverTables(
+            val discoveredDatabase =
+                catalogDiscoveryService.discoverDatabase(
                     catalog = config.catalog,
                     database = database,
                 )
 
             logger.info(
-                "Discovered ${tables.size} active table(s) for catalog=${config.catalog}, database=$database"
+                "Discovered database: catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, location=${discoveredDatabase.location}"
             )
 
-            tables.forEach { table ->
+            logger.info(
+                "Discovered ${discoveredDatabase.tables.size} active table(s) for catalog=${config.catalog}, database=$database"
+            )
+
+            discoveredDatabase.tables.forEach { table ->
                 logger.info(
                     "Active table discovered: catalog=${table.catalog}, database=${table.database}, table=${table.table}, isTemporary=${table.isTemporary}, location=${table.location}"
                 )
