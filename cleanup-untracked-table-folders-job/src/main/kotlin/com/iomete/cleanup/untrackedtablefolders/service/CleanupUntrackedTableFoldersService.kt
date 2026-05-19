@@ -1,5 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.service
 
+import com.iomete.cleanup.untrackedtablefolders.candidate.TooManyCandidateFoldersException
+import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
@@ -21,6 +23,9 @@ class CleanupUntrackedTableFoldersService {
 
     @Inject
     lateinit var objectStorageDiscoveryService: ObjectStorageDiscoveryService
+
+    @Inject
+    lateinit var untrackedFolderCandidateDetector: UntrackedFolderCandidateDetector
 
     fun run() {
         logger.info("Loaded cleanup config: $config")
@@ -68,15 +73,6 @@ class CleanupUntrackedTableFoldersService {
                     )
                 }
 
-                val activeTableLocationSet = discoveredDatabase.tables
-                    .mapNotNull { it.location }
-                    .map { normalizePath(it) }
-                    .toSet()
-
-                val excludedPathSet = config.excludePaths
-                    .map { normalizePath(it) }
-                    .toSet()
-
                 val cutoffTime = Instant.now().minus(Duration.ofHours(config.olderThanHours))
                 val cutoffTimeMillis = cutoffTime.toEpochMilli()
 
@@ -84,22 +80,26 @@ class CleanupUntrackedTableFoldersService {
                     "Applying older_than_hours=${config.olderThanHours}; candidate folders must have modification time at or before $cutoffTime"
                 )
 
-                val candidateFolders = storageFolders
-                    .filter { normalizePath(it.path) !in activeTableLocationSet }
-                    .filter { normalizePath(it.path) !in excludedPathSet }
-                    .filter { it.modificationTimeMillis <= cutoffTimeMillis }
-                    .sortedBy { it.path }
+                val candidateFolders =
+                    try {
+                        untrackedFolderCandidateDetector.detectCandidates(
+                            storageFolders = storageFolders,
+                            activeTableLocations = discoveredDatabase.tables.mapNotNull { it.location },
+                            excludedPaths = config.excludePaths,
+                            cutoffTimeMillis = cutoffTimeMillis,
+                            maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
+                        )
+                    } catch (th: TooManyCandidateFoldersException) {
+                        logger.warn(
+                            "Refusing to continue for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}. Narrow the scope or increase the limit explicitly.",
+                            th,
+                        )
+                        return@forEach
+                    }
 
                 logger.info(
                     "Detected ${candidateFolders.size} candidate untracked table folder(s) for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
                 )
-
-                if (candidateFolders.size > config.maxCandidateFoldersPerDatabase) {
-                    logger.warn(
-                        "Detected candidate folder count=${candidateFolders.size}, which exceeds max_candidate_folders_per_database=${config.maxCandidateFoldersPerDatabase}. Refusing to continue for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}. Narrow the scope or increase the limit explicitly."
-                    )
-                    return@forEach
-                }
 
                 candidateFolders.forEach { folder ->
                     logger.info(
@@ -113,9 +113,6 @@ class CleanupUntrackedTableFoldersService {
             "Read-only discovery and candidate detection completed. No deletion was performed."
         )
     }
-
-    private fun normalizePath(path: String): String =
-        path.trim().trimEnd('/')
 
     private fun validateConfig() {
         require(config.catalog.isNotBlank()) {
