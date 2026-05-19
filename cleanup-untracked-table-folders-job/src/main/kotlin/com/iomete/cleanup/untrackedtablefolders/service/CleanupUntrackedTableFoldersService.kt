@@ -63,6 +63,23 @@ class CleanupUntrackedTableFoldersService {
                 storageFolders.forEach { folder ->
                     logger.info("Storage folder discovered: $folder")
                 }
+
+                val activeTableLocationSet = discoveredDatabase.tables
+                    .mapNotNull { it.location }
+                    .map { normalizePath(it) }
+                    .toSet()
+
+                val candidateFolders = storageFolders
+                    .filter { normalizePath(it) !in activeTableLocationSet }
+                    .sorted()
+
+                logger.info(
+                    "Detected ${candidateFolders.size} candidate untracked table folder(s) for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
+                )
+
+                candidateFolders.forEach { folder ->
+                    logger.info("Dry-run candidate untracked table folder: $folder")
+                }
             }
         }
 
@@ -70,6 +87,9 @@ class CleanupUntrackedTableFoldersService {
             "Read-only discovery completed. No comparison or deletion was performed."
         )
     }
+
+    private fun normalizePath(path: String): String =
+        path.trim().trimEnd('/')
 
     private fun validateConfig() {
         require(config.catalog.isNotBlank()) {
