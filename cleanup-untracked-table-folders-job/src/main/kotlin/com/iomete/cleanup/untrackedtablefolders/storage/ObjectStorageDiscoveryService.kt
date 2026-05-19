@@ -23,9 +23,10 @@ class ObjectStorageDiscoveryService {
 
         val spark = sparkSessionProvider.getOrCreate()
         val path = Path(location)
-        val fileSystem = path.getFileSystem(spark.sparkContext().hadoopConfiguration())
 
         return try {
+            val fileSystem = path.getFileSystem(spark.sparkContext().hadoopConfiguration())
+
             fileSystem.listStatus(path)
                 .filter { it.isDirectory }
                 .map {
