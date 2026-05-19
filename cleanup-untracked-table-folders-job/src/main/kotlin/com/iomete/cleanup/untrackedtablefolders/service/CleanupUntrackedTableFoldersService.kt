@@ -58,13 +58,22 @@ class CleanupUntrackedTableFoldersService {
                     "Skipping storage folder discovery because database location is missing for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
                 )
             } else {
+                val storageScanLocation = resolveStorageScanLocation(
+                    databaseLocation = discoveredDatabase.location,
+                    activeTableLocations = discoveredDatabase.tables.mapNotNull { it.location },
+                )
+
+                logger.info(
+                    "Using storage scan location=$storageScanLocation for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, discoveredDatabaseLocation=${discoveredDatabase.location}"
+                )
+
                 val storageFolders =
                     objectStorageDiscoveryService.listImmediateChildFolders(
-                        location = discoveredDatabase.location,
+                        location = storageScanLocation,
                     )
 
                 logger.info(
-                    "Discovered ${storageFolders.size} immediate storage folder(s) under database location=${discoveredDatabase.location}"
+                    "Discovered ${storageFolders.size} immediate storage folder(s) under storage scan location=$storageScanLocation"
                 )
 
                 storageFolders.forEach { folder ->
@@ -112,6 +121,38 @@ class CleanupUntrackedTableFoldersService {
         logger.info(
             "Read-only discovery and candidate detection completed. No deletion was performed."
         )
+    }
+
+    private fun resolveStorageScanLocation(
+        databaseLocation: String,
+        activeTableLocations: List<String>,
+    ): String {
+        val inferredScanLocations = activeTableLocations
+            .mapNotNull { parentLocation(it) }
+            .distinct()
+            .sorted()
+
+        return when (inferredScanLocations.size) {
+            0 -> databaseLocation
+            1 -> inferredScanLocations.single()
+            else -> {
+                logger.warn(
+                    "Multiple active table parent locations were discovered for databaseLocation=$databaseLocation: $inferredScanLocations. Falling back to database location."
+                )
+                databaseLocation
+            }
+        }
+    }
+
+    private fun parentLocation(location: String): String? {
+        val normalizedLocation = location.trim().trimEnd('/')
+        val lastSlashIndex = normalizedLocation.lastIndexOf('/')
+
+        return if (lastSlashIndex <= 0) {
+            null
+        } else {
+            normalizedLocation.substring(0, lastSlashIndex)
+        }
     }
 
     private fun validateConfig() {
