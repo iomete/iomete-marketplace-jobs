@@ -63,6 +63,38 @@ class CleanupUntrackedTableFoldersService {
                 logger.warn(
                     "Skipping storage folder discovery because database location is missing for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
                 )
+
+                cleanupAuditTableService.writeAuditRecord(
+                    CleanupAuditRecord(
+                        sparkAppId = cleanupAuditTableService.currentSparkAppId(),
+                        runId = runId,
+                        initiatedBy = cleanupAuditTableService.currentSparkUser(),
+                        catalogName = discoveredDatabase.catalog,
+                        databaseName = discoveredDatabase.database,
+                        operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
+                        dryRun = config.dryRun,
+                        deleteEnabled = config.deleteEnabled,
+                        status = STATUS_SKIPPED,
+                        discoveredDatabaseLocation = discoveredDatabase.location,
+                        storageScanLocation = "",
+                        activeTableCount = discoveredDatabase.tables.size.toLong(),
+                        storageFolderCount = 0,
+                        candidateFolderCount = 0,
+                        deletedFolderCount = 0,
+                        candidateFolders = emptyList(),
+                        deletedFolders = emptyList(),
+                        excludedPaths = config.excludePaths.sorted(),
+                        metrics = mapOf(
+                            "skip_reason" to "database_location_missing",
+                            "older_than_hours" to config.olderThanHours.toString(),
+                            "max_candidate_folders_per_database" to config.maxCandidateFoldersPerDatabase.toString(),
+                            "active_table_locations" to discoveredDatabase.tables.mapNotNull { it.location }.sorted().joinToString("\n"),
+                        ),
+                        errorMessage = "Database location is missing; storage folder discovery was skipped.",
+                        startTime = databaseStartTime,
+                        endTime = Instant.now(),
+                    )
+                )
             } else {
                 val storageScanLocation =
                     resolveStorageScanLocation(
@@ -94,6 +126,11 @@ class CleanupUntrackedTableFoldersService {
                     "Applying older_than_hours=${config.olderThanHours}; candidate folders must have modification time at or before $cutoffTime"
                 )
 
+                val activeTableLocations =
+                    discoveredDatabase.tables.mapNotNull { it.location }.sorted()
+
+                val storageFolderPaths = storageFolders.map { it.path }.sorted()
+
                 val candidateFolders =
                     try {
 
@@ -112,17 +149,46 @@ class CleanupUntrackedTableFoldersService {
                             th,
                         )
 
+                        cleanupAuditTableService.writeAuditRecord(
+                            CleanupAuditRecord(
+                                sparkAppId = cleanupAuditTableService.currentSparkAppId(),
+                                runId = runId,
+                                initiatedBy = cleanupAuditTableService.currentSparkUser(),
+                                catalogName = discoveredDatabase.catalog,
+                                databaseName = discoveredDatabase.database,
+                                operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
+                                dryRun = config.dryRun,
+                                deleteEnabled = config.deleteEnabled,
+                                status = STATUS_SKIPPED,
+                                discoveredDatabaseLocation = discoveredDatabase.location,
+                                storageScanLocation = storageScanLocation,
+                                activeTableCount = activeTableLocations.size.toLong(),
+                                storageFolderCount = storageFolderPaths.size.toLong(),
+                                candidateFolderCount = 0,
+                                deletedFolderCount = 0,
+                                candidateFolders = emptyList(),
+                                deletedFolders = emptyList(),
+                                excludedPaths = config.excludePaths.sorted(),
+                                metrics = mapOf(
+                                    "skip_reason" to "too_many_candidate_folders",
+                                    "older_than_hours" to config.olderThanHours.toString(),
+                                    "max_candidate_folders_per_database" to config.maxCandidateFoldersPerDatabase.toString(),
+                                    "cutoff_time" to cutoffTime.toString(),
+                                    "active_table_locations" to activeTableLocations.joinToString("\n"),
+                                    "storage_folder_paths" to storageFolderPaths.joinToString("\n"),
+                                ),
+                                errorMessage = th.message,
+                                startTime = databaseStartTime,
+                                endTime = Instant.now(),
+                            )
+                        )
+
                         return@forEach
                     }
 
                 logger.info(
                     "Detected ${candidateFolders.size} candidate untracked table folder(s) for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
                 )
-
-                val activeTableLocations =
-                    discoveredDatabase.tables.mapNotNull { it.location }.sorted()
-
-                val storageFolderPaths = storageFolders.map { it.path }.sorted()
 
                 val candidateFolderPaths = candidateFolders.map { it.path }.sorted()
 
@@ -352,5 +418,7 @@ class CleanupUntrackedTableFoldersService {
         const val OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS = "DISCOVER_UNTRACKED_TABLE_FOLDERS"
 
         const val STATUS_SUCCESS = "SUCCESS"
+
+        const val STATUS_SKIPPED = "SKIPPED"
     }
 }
