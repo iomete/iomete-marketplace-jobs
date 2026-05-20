@@ -1,6 +1,5 @@
 package com.iomete.cleanup.untrackedtablefolders.config
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -13,11 +12,10 @@ import java.io.File
 
 private const val APPLICATION_CONFIG_PATH = "/etc/configs/application.json"
 
-@JsonIgnoreProperties(ignoreUnknown = true)
 data class ApplicationConfig(
-    val catalog: String = "spark_catalog",
+    val catalog: String,
 
-    val databases: List<String> = emptyList(),
+    val databases: List<String>,
 
     @field:JsonProperty("exclude_paths")
     val excludePaths: List<String> = emptyList(),
@@ -53,7 +51,7 @@ class ConfigProducer {
 
         val objectMapper = ObjectMapper()
             .registerModule(KotlinModule.Builder().build())
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true)
 
         return objectMapper.readValue(configFile)
     }
