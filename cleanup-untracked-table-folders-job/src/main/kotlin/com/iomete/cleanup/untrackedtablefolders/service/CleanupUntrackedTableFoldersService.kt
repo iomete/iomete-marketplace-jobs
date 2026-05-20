@@ -93,11 +93,18 @@ class CleanupUntrackedTableFoldersService {
                                     "older_than_hours" to config.olderThanHours.toString(),
                                     "max_candidate_folders_per_database" to
                                             config.maxCandidateFoldersPerDatabase.toString(),
-                                    "active_table_locations" to
-                                            discoveredDatabase.tables
-                                                .mapNotNull { it.location }
-                                                .sorted()
-                                                .joinToString("\n"),
+                                    "active_table_locations_sample" to
+                                            auditPathSample(
+                                                discoveredDatabase.tables
+                                                    .mapNotNull { it.location }
+                                                    .sorted()
+                                            ),
+                                    "active_table_locations_truncated" to
+                                            isAuditPathSampleTruncated(
+                                                discoveredDatabase.tables
+                                                    .mapNotNull { it.location }
+                                                    .sorted()
+                                            ).toString(),
                                 ),
                             errorMessage =
                                 "Database location is missing; storage folder discovery was skipped.",
@@ -187,10 +194,12 @@ class CleanupUntrackedTableFoldersService {
                                             "max_candidate_folders_per_database" to
                                                     config.maxCandidateFoldersPerDatabase.toString(),
                                             "cutoff_time" to cutoffTime.toString(),
-                                            "active_table_locations" to
-                                                    activeTableLocations.joinToString("\n"),
-                                            "storage_folder_paths" to
-                                                    storageFolderPaths.joinToString("\n"),
+                                            "active_table_locations_sample" to auditPathSample(activeTableLocations),
+                                            "active_table_locations_truncated" to
+                                                    isAuditPathSampleTruncated(activeTableLocations).toString(),
+                                            "storage_folder_paths_sample" to auditPathSample(storageFolderPaths),
+                                            "storage_folder_paths_truncated" to
+                                                    isAuditPathSampleTruncated(storageFolderPaths).toString(),
                                         ),
                                     errorMessage = th.message,
                                     startTime = databaseStartTime,
@@ -305,14 +314,24 @@ class CleanupUntrackedTableFoldersService {
                                     "max_candidate_folders_per_database" to
                                             config.maxCandidateFoldersPerDatabase.toString(),
                                     "cutoff_time" to cutoffTime.toString(),
-                                    "active_table_locations" to
-                                            activeTableLocations.joinToString("\n"),
-                                    "storage_folder_paths" to storageFolderPaths.joinToString("\n"),
-                                    "non_candidate_storage_folder_paths" to
-                                            storageFolderPaths
-                                                .filter { it !in candidateFolderPaths.toSet() }
-                                                .sorted()
-                                                .joinToString("\n"),
+                                    "active_table_locations_sample" to auditPathSample(activeTableLocations),
+                                    "active_table_locations_truncated" to
+                                            isAuditPathSampleTruncated(activeTableLocations).toString(),
+                                    "storage_folder_paths_sample" to auditPathSample(storageFolderPaths),
+                                    "storage_folder_paths_truncated" to
+                                            isAuditPathSampleTruncated(storageFolderPaths).toString(),
+                                    "non_candidate_storage_folder_paths_sample" to
+                                            auditPathSample(
+                                                storageFolderPaths
+                                                    .filter { it !in candidateFolderPaths.toSet() }
+                                                    .sorted()
+                                            ),
+                                    "non_candidate_storage_folder_paths_truncated" to
+                                            isAuditPathSampleTruncated(
+                                                storageFolderPaths
+                                                    .filter { it !in candidateFolderPaths.toSet() }
+                                                    .sorted()
+                                            ).toString(),
                                 ),
                             errorMessage = null,
                             startTime = databaseStartTime,
@@ -399,15 +418,24 @@ class CleanupUntrackedTableFoldersService {
     }
 
     private fun logListOrNone(values: List<String>) {
-
         if (values.isEmpty()) {
-
             logger.info("- none")
         } else {
+            values.take(MAX_AUDIT_PATH_SAMPLE_SIZE).forEach { value ->
+                logger.info("- $value")
+            }
 
-            values.forEach { value -> logger.info("- $value") }
+            if (values.size > MAX_AUDIT_PATH_SAMPLE_SIZE) {
+                logger.info("- ... truncated ${values.size - MAX_AUDIT_PATH_SAMPLE_SIZE} additional path(s)")
+            }
         }
     }
+
+    private fun auditPathSample(paths: List<String>): String =
+        paths.take(MAX_AUDIT_PATH_SAMPLE_SIZE).joinToString("\n")
+
+    private fun isAuditPathSampleTruncated(paths: List<String>): Boolean =
+        paths.size > MAX_AUDIT_PATH_SAMPLE_SIZE
 
     private fun writeFailedAuditRecord(
         runId: String,
@@ -541,5 +569,7 @@ class CleanupUntrackedTableFoldersService {
         const val STATUS_SKIPPED = "SKIPPED"
 
         const val STATUS_FAILED = "FAILED"
+
+        const val MAX_AUDIT_PATH_SAMPLE_SIZE = 100
     }
 }
