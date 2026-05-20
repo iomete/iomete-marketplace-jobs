@@ -36,7 +36,6 @@ class CleanupUntrackedTableFoldersService {
     fun run() {
 
         logger.info("Loaded cleanup config: $config")
-        validateConfig()
         val runId = UUID.randomUUID().toString()
         logger.info("Cleanup run id: $runId")
         cleanupAuditTableService.ensureAuditTableExists()
@@ -540,27 +539,6 @@ class CleanupUntrackedTableFoldersService {
         } else {
 
             normalizedLocation.substring(0, lastSlashIndex)
-        }
-    }
-
-    private fun validateConfig() {
-
-        require(config.catalog.isNotBlank()) { "catalog must not be blank" }
-
-        require(config.databases.isNotEmpty()) {
-            "databases must contain at least one database name"
-        }
-
-        require(config.olderThanHours >= 0) {
-            "older_than_hours must be greater than or equal to 0"
-        }
-
-        require(config.maxCandidateFoldersPerDatabase >= 0) {
-            "max_candidate_folders_per_database must be greater than or equal to 0"
-        }
-
-        if (!config.dryRun) {
-            require(config.deleteEnabled) { "delete_enabled must be true when dry_run is false" }
         }
     }
 
