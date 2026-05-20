@@ -166,6 +166,7 @@ class CleanupUntrackedTableFoldersService {
                                 "Refusing to continue for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}. Narrow the scope or increase the limit explicitly.",
                                 th,
                             )
+                            val candidateFolderPaths = th.candidateFolderPaths.sorted()
 
                             cleanupAuditTableService.writeAuditRecord(
                                 CleanupAuditRecord(
@@ -182,9 +183,9 @@ class CleanupUntrackedTableFoldersService {
                                     storageScanLocation = storageScanLocation,
                                     activeTableCount = activeTableLocations.size.toLong(),
                                     storageFolderCount = storageFolderPaths.size.toLong(),
-                                    candidateFolderCount = 0,
+                                    candidateFolderCount = th.candidateCount.toLong(),
                                     deletedFolderCount = 0,
-                                    candidateFolders = emptyList(),
+                                    candidateFolders = candidateFolderPaths.take(MAX_AUDIT_PATH_SAMPLE_SIZE),
                                     deletedFolders = emptyList(),
                                     excludedPaths = config.excludePaths.sorted(),
                                     metrics =
@@ -200,6 +201,9 @@ class CleanupUntrackedTableFoldersService {
                                             "storage_folder_paths_sample" to auditPathSample(storageFolderPaths),
                                             "storage_folder_paths_truncated" to
                                                     isAuditPathSampleTruncated(storageFolderPaths).toString(),
+                                            "candidate_folder_paths_sample" to auditPathSample(candidateFolderPaths),
+                                            "candidate_folder_paths_truncated" to
+                                                    isAuditPathSampleTruncated(candidateFolderPaths).toString(),
                                         ),
                                     errorMessage = th.message,
                                     startTime = databaseStartTime,

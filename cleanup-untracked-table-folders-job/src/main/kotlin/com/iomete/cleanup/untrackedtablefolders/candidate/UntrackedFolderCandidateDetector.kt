@@ -4,7 +4,13 @@ import com.iomete.cleanup.untrackedtablefolders.storage.StorageFolder
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import jakarta.enterprise.context.ApplicationScoped
 
-class TooManyCandidateFoldersException(message: String) : RuntimeException(message)
+class TooManyCandidateFoldersException(
+    val candidateCount: Int,
+    val maxCandidateFolders: Int,
+    val candidateFolderPaths: List<String>,
+) : RuntimeException(
+    "Detected $candidateCount candidate untracked table folder(s), which exceeds max_candidate_folders_per_database=$maxCandidateFolders"
+)
 
 @ApplicationScoped
 class UntrackedFolderCandidateDetector {
@@ -35,7 +41,9 @@ class UntrackedFolderCandidateDetector {
 
         if (candidateFolders.size > maxCandidateFolders) {
             throw TooManyCandidateFoldersException(
-                "Detected candidate folder count=${candidateFolders.size}, which exceeds max_candidate_folders_per_database=$maxCandidateFolders"
+                candidateCount = candidateFolders.size,
+                maxCandidateFolders = maxCandidateFolders,
+                candidateFolderPaths = candidateFolders.map { it.path },
             )
         }
 
