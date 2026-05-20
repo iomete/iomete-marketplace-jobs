@@ -218,16 +218,45 @@ class CleanupUntrackedTableFoldersService {
                     }
 
                     val deletedFolders =
-                        if (config.dryRun) {
-                            emptyList()
-                        } else {
-                            candidateFolders
-                                .map {
-                                    objectStorageDeletionService.deleteFolderRecursively(it.path)
-                                }
-                                .filter { it.deleted }
-                                .map { it.path }
-                                .sorted()
+                        when {
+                            config.dryRun -> emptyList()
+
+                            !config.deleteEnabled ->
+                                throw IllegalStateException(
+                                    "delete_enabled must be true before deleting candidate folders"
+                                )
+
+                            else -> {
+                                val currentActiveTableLocationSet =
+                                    catalogDiscoveryService
+                                        .discoverDatabase(
+                                            catalog = discoveredDatabase.catalog,
+                                            database = discoveredDatabase.database,
+                                        )
+                                        .tables
+                                        .mapNotNull { it.location }
+                                        .map { StoragePathUtils.normalizeLocation(it) }
+                                        .toSet()
+
+                                candidateFolders
+                                    .mapNotNull { candidateFolder ->
+                                        val normalizedCandidatePath =
+                                            StoragePathUtils.normalizeLocation(candidateFolder.path)
+
+                                        if (normalizedCandidatePath in currentActiveTableLocationSet) {
+                                            logger.warn(
+                                                "Skipping deletion because candidate folder became active before deletion: path=${candidateFolder.path}"
+                                            )
+                                            null
+                                        } else {
+                                            objectStorageDeletionService
+                                                .deleteFolderRecursively(candidateFolder.path)
+                                                .takeIf { it.deleted }
+                                                ?.path
+                                        }
+                                    }
+                                    .sorted()
+                            }
                         }
 
                     if (deletedFolders.isNotEmpty()) {
