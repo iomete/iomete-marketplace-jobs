@@ -1,0 +1,55 @@
+# Eclipse
+.project
+.classpath
+.settings/
+bin/
+spark/
+
+# IntelliJ
+.idea
+*.ipr
+*.iml
+*.iws
+
+# NetBeans
+nb-configuration.xml
+
+# Visual Studio Code
+.vscode
+.factorypath
+
+# OSX
+.DS_Store
+
+# Vim
+*.swp
+*.swo
+
+# patch
+*.orig
+*.rej
+
+# Gradle
+.gradle/
+build/
+
+tmp/
+
+# Ignore Gradle project-specific cache directory
+.gradle
+
+# Ignore Gradle build output directory
+build
+
+.envrc
+
+spark-3.0.1
+
+derby.log
+
+core-service/loadtest/__pycache__/
+/lakehouse-metadata-sync/tmp-warehouse/
+/schema-service/http-client.private.env.json
+/iom-schema-service/http-client.private.env.json
+**/**.env
+/sql-service/token
