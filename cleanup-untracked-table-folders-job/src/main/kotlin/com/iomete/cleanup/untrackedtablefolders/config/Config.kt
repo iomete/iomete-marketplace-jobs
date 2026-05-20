@@ -31,7 +31,29 @@ data class ApplicationConfig(
 
     @field:JsonProperty("max_candidate_folders_per_database")
     val maxCandidateFoldersPerDatabase: Int = 10,
-)
+) {
+    fun validate() {
+        require(catalog.isNotBlank()) { "catalog must not be blank" }
+
+        require(databases.isNotEmpty()) {
+            "databases must contain at least one database name"
+        }
+
+        require(olderThanHours >= 0) {
+            "older_than_hours must be greater than or equal to 0"
+        }
+
+        require(maxCandidateFoldersPerDatabase >= 0) {
+            "max_candidate_folders_per_database must be greater than or equal to 0"
+        }
+
+        if (!dryRun) {
+            require(deleteEnabled) {
+                "delete_enabled must be true when dry_run is false"
+            }
+        }
+    }
+}
 
 @ApplicationScoped
 class ConfigProducer {
@@ -53,6 +75,6 @@ class ConfigProducer {
             .registerModule(KotlinModule.Builder().build())
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true)
 
-        return objectMapper.readValue(configFile)
+        return objectMapper.readValue<ApplicationConfig>(configFile).also { it.validate() }
     }
 }

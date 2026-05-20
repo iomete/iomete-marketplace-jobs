@@ -382,26 +382,33 @@ class CleanupUntrackedTableFoldersService {
 
         val nonCandidateStorageFolderPaths =
             storageFolderPaths.filter { it !in candidateFolderSet }.sorted()
+        logger.info("")
+
+        logger.info("")
+
+        logger.info("")
 
         logger.info("========== Cleanup Untracked Table Folders Summary ==========")
 
         logger.info("Catalog: $catalog")
 
-        logger.info("Database: $database")
+        logger.info("Configured database: $database")
 
         logger.info("Discovered database location: $discoveredDatabaseLocation")
 
-        logger.info("Storage scan location: $storageScanLocation")
+        logger.info("Object storage scan root: $storageScanLocation")
 
-        logger.info("Active table location count: ${activeTableLocations.size}")
+        logger.info("Catalog active table location count: ${activeTableLocations.size}")
 
-        logger.info("Storage folder count: ${storageFolderPaths.size}")
+        logger.info("Immediate child storage folders scanned: ${storageFolderPaths.size}")
 
-        logger.info("Candidate folder count: ${candidateFolderPaths.size}")
+        logger.info("Untracked candidate folder count: ${candidateFolderPaths.size}")
+
+        logger.info("Deleted folder count: ${deletedFolderPaths.size}")
 
         logger.info("Deletion performed: ${deletedFolderPaths.isNotEmpty()}")
 
-        logger.info("Protected active table folders:")
+        logger.info("Protected catalog active table locations:")
 
         logListOrNone(protectedFolderPaths.sorted())
 
@@ -409,7 +416,7 @@ class CleanupUntrackedTableFoldersService {
 
         logListOrNone(nonCandidateStorageFolderPaths)
 
-        logger.info("Candidate folders selected for cleanup:")
+        logger.info("Untracked candidate folders selected for cleanup:")
 
         logListOrNone(candidateFolderPaths)
 
@@ -418,6 +425,13 @@ class CleanupUntrackedTableFoldersService {
         logListOrNone(deletedFolderPaths)
 
         logger.info("============================================================")
+
+        logger.info("")
+
+        logger.info("")
+
+        logger.info("")
+
     }
 
     private fun logListOrNone(values: List<String>) {
