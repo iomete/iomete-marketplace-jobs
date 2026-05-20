@@ -8,6 +8,7 @@ import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDeletionService
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
+import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.time.Duration
@@ -42,231 +43,262 @@ class CleanupUntrackedTableFoldersService {
 
         config.databases.forEach { database ->
             val databaseStartTime = Instant.now()
-            val discoveredDatabase =
-                catalogDiscoveryService.discoverDatabase(
-                    catalog = config.catalog,
-                    database = database,
-                )
-            logger.info(
-                "Discovered database: catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, location=${discoveredDatabase.location}"
-            )
-            logger.info(
-                "Discovered ${discoveredDatabase.tables.size} active table(s) for catalog=${config.catalog}, database=$database"
-            )
-            discoveredDatabase.tables.forEach { table ->
-                logger.info(
-                    "Active table discovered: catalog=${table.catalog}, database=${table.database}, table=${table.table}, isTemporary=${table.isTemporary}, location=${table.location}"
-                )
-            }
 
-            if (discoveredDatabase.location.isNullOrBlank()) {
-                logger.warn(
-                    "Skipping storage folder discovery because database location is missing for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
-                )
-
-                cleanupAuditTableService.writeAuditRecord(
-                    CleanupAuditRecord(
-                        sparkAppId = cleanupAuditTableService.currentSparkAppId(),
-                        runId = runId,
-                        initiatedBy = cleanupAuditTableService.currentSparkUser(),
-                        catalogName = discoveredDatabase.catalog,
-                        databaseName = discoveredDatabase.database,
-                        operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
-                        dryRun = config.dryRun,
-                        deleteEnabled = config.deleteEnabled,
-                        status = STATUS_SKIPPED,
-                        discoveredDatabaseLocation = discoveredDatabase.location,
-                        storageScanLocation = "",
-                        activeTableCount = discoveredDatabase.tables.size.toLong(),
-                        storageFolderCount = 0,
-                        candidateFolderCount = 0,
-                        deletedFolderCount = 0,
-                        candidateFolders = emptyList(),
-                        deletedFolders = emptyList(),
-                        excludedPaths = config.excludePaths.sorted(),
-                        metrics = mapOf(
-                            "skip_reason" to "database_location_missing",
-                            "older_than_hours" to config.olderThanHours.toString(),
-                            "max_candidate_folders_per_database" to config.maxCandidateFoldersPerDatabase.toString(),
-                            "active_table_locations" to discoveredDatabase.tables.mapNotNull { it.location }.sorted().joinToString("\n"),
-                        ),
-                        errorMessage = "Database location is missing; storage folder discovery was skipped.",
-                        startTime = databaseStartTime,
-                        endTime = Instant.now(),
-                    )
-                )
-            } else {
-                val storageScanLocation =
-                    resolveStorageScanLocation(
-                        databaseLocation = discoveredDatabase.location,
-                        activeTableLocations = discoveredDatabase.tables.mapNotNull { it.location },
+            try {
+                val discoveredDatabase =
+                    catalogDiscoveryService.discoverDatabase(
+                        catalog = config.catalog,
+                        database = database,
                     )
                 logger.info(
-                    "Using storage scan location=$storageScanLocation for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, discoveredDatabaseLocation=${discoveredDatabase.location}"
+                    "Discovered database: catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, location=${discoveredDatabase.location}"
                 )
-
-                val storageFolders =
-                    objectStorageDiscoveryService.listImmediateChildFolders(
-                        location = storageScanLocation,
-                    )
                 logger.info(
-                    "Discovered ${storageFolders.size} immediate storage folder(s) under storage scan location=$storageScanLocation"
+                    "Discovered ${discoveredDatabase.tables.size} active table(s) for catalog=${config.catalog}, database=$database"
                 )
-                storageFolders.forEach { folder ->
+                discoveredDatabase.tables.forEach { table ->
                     logger.info(
-                        "Storage folder discovered: path=${folder.path}, modifiedAt=${Instant.ofEpochMilli(folder.modificationTimeMillis)}"
+                        "Active table discovered: catalog=${table.catalog}, database=${table.database}, table=${table.table}, isTemporary=${table.isTemporary}, location=${table.location}"
                     )
                 }
 
-                val cutoffTime = Instant.now().minus(Duration.ofHours(config.olderThanHours))
+                if (discoveredDatabase.location.isNullOrBlank()) {
+                    logger.warn(
+                        "Skipping storage folder discovery because database location is missing for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
+                    )
 
-                val cutoffTimeMillis = cutoffTime.toEpochMilli()
-
-                logger.info(
-                    "Applying older_than_hours=${config.olderThanHours}; candidate folders must have modification time at or before $cutoffTime"
-                )
-
-                val activeTableLocations =
-                    discoveredDatabase.tables.mapNotNull { it.location }.sorted()
-
-                val storageFolderPaths = storageFolders.map { it.path }.sorted()
-
-                val candidateFolders =
-                    try {
-
-                        untrackedFolderCandidateDetector.detectCandidates(
-                            storageFolders = storageFolders,
+                    cleanupAuditTableService.writeAuditRecord(
+                        CleanupAuditRecord(
+                            sparkAppId = cleanupAuditTableService.currentSparkAppId(),
+                            runId = runId,
+                            initiatedBy = cleanupAuditTableService.currentSparkUser(),
+                            catalogName = discoveredDatabase.catalog,
+                            databaseName = discoveredDatabase.database,
+                            operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
+                            dryRun = config.dryRun,
+                            deleteEnabled = config.deleteEnabled,
+                            status = STATUS_SKIPPED,
+                            discoveredDatabaseLocation = discoveredDatabase.location,
+                            storageScanLocation = "",
+                            activeTableCount = discoveredDatabase.tables.size.toLong(),
+                            storageFolderCount = 0,
+                            candidateFolderCount = 0,
+                            deletedFolderCount = 0,
+                            candidateFolders = emptyList(),
+                            deletedFolders = emptyList(),
+                            excludedPaths = config.excludePaths.sorted(),
+                            metrics =
+                                mapOf(
+                                    "skip_reason" to "database_location_missing",
+                                    "older_than_hours" to config.olderThanHours.toString(),
+                                    "max_candidate_folders_per_database" to
+                                            config.maxCandidateFoldersPerDatabase.toString(),
+                                    "active_table_locations" to
+                                            discoveredDatabase.tables
+                                                .mapNotNull { it.location }
+                                                .sorted()
+                                                .joinToString("\n"),
+                                ),
+                            errorMessage =
+                                "Database location is missing; storage folder discovery was skipped.",
+                            startTime = databaseStartTime,
+                            endTime = Instant.now(),
+                        )
+                    )
+                } else {
+                    val storageScanLocation =
+                        resolveStorageScanLocation(
+                            databaseLocation = discoveredDatabase.location,
                             activeTableLocations =
                                 discoveredDatabase.tables.mapNotNull { it.location },
-                            excludedPaths = config.excludePaths,
-                            cutoffTimeMillis = cutoffTimeMillis,
-                            maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
                         )
-                    } catch (th: TooManyCandidateFoldersException) {
-
-                        logger.warn(
-                            "Refusing to continue for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}. Narrow the scope or increase the limit explicitly.",
-                            th,
-                        )
-
-                        cleanupAuditTableService.writeAuditRecord(
-                            CleanupAuditRecord(
-                                sparkAppId = cleanupAuditTableService.currentSparkAppId(),
-                                runId = runId,
-                                initiatedBy = cleanupAuditTableService.currentSparkUser(),
-                                catalogName = discoveredDatabase.catalog,
-                                databaseName = discoveredDatabase.database,
-                                operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
-                                dryRun = config.dryRun,
-                                deleteEnabled = config.deleteEnabled,
-                                status = STATUS_SKIPPED,
-                                discoveredDatabaseLocation = discoveredDatabase.location,
-                                storageScanLocation = storageScanLocation,
-                                activeTableCount = activeTableLocations.size.toLong(),
-                                storageFolderCount = storageFolderPaths.size.toLong(),
-                                candidateFolderCount = 0,
-                                deletedFolderCount = 0,
-                                candidateFolders = emptyList(),
-                                deletedFolders = emptyList(),
-                                excludedPaths = config.excludePaths.sorted(),
-                                metrics = mapOf(
-                                    "skip_reason" to "too_many_candidate_folders",
-                                    "older_than_hours" to config.olderThanHours.toString(),
-                                    "max_candidate_folders_per_database" to config.maxCandidateFoldersPerDatabase.toString(),
-                                    "cutoff_time" to cutoffTime.toString(),
-                                    "active_table_locations" to activeTableLocations.joinToString("\n"),
-                                    "storage_folder_paths" to storageFolderPaths.joinToString("\n"),
-                                ),
-                                errorMessage = th.message,
-                                startTime = databaseStartTime,
-                                endTime = Instant.now(),
-                            )
-                        )
-
-                        return@forEach
-                    }
-
-                logger.info(
-                    "Detected ${candidateFolders.size} candidate untracked table folder(s) for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
-                )
-
-                val candidateFolderPaths = candidateFolders.map { it.path }.sorted()
-
-                candidateFolders.forEach { folder ->
                     logger.info(
-                        "Candidate untracked table folder selected for cleanup: path=${folder.path}, modifiedAt=${Instant.ofEpochMilli(folder.modificationTimeMillis)}"
+                        "Using storage scan location=$storageScanLocation for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, discoveredDatabaseLocation=${discoveredDatabase.location}"
                     )
-                }
 
-                val deletedFolders =
-                    if (config.dryRun) {
-                        emptyList()
-                    } else {
-                        candidateFolders
-                            .map { objectStorageDeletionService.deleteFolderRecursively(it.path) }
-                            .filter { it.deleted }
-                            .map { it.path }
-                            .sorted()
+                    val storageFolders =
+                        objectStorageDiscoveryService.listImmediateChildFolders(
+                            location = storageScanLocation,
+                        )
+                    logger.info(
+                        "Discovered ${storageFolders.size} immediate storage folder(s) under storage scan location=$storageScanLocation"
+                    )
+                    storageFolders.forEach { folder ->
+                        logger.info(
+                            "Storage folder discovered: path=${folder.path}, modifiedAt=${Instant.ofEpochMilli(folder.modificationTimeMillis)}"
+                        )
                     }
 
-                if (deletedFolders.isNotEmpty()) {
-                    logger.warn(
-                        "Deleted ${deletedFolders.size} untracked table folder(s) for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
+                    val cutoffTime = Instant.now().minus(Duration.ofHours(config.olderThanHours))
+
+                    val cutoffTimeMillis = cutoffTime.toEpochMilli()
+
+                    logger.info(
+                        "Applying older_than_hours=${config.olderThanHours}; candidate folders must have modification time at or before $cutoffTime"
                     )
-                    deletedFolders.forEach { deletedFolder ->
-                        logger.warn("Deleted untracked table folder: path=$deletedFolder")
+
+                    val activeTableLocations =
+                        discoveredDatabase.tables.mapNotNull { it.location }.sorted()
+
+                    val storageFolderPaths = storageFolders.map { it.path }.sorted()
+
+                    val candidateFolders =
+                        try {
+
+                            untrackedFolderCandidateDetector.detectCandidates(
+                                storageFolders = storageFolders,
+                                activeTableLocations =
+                                    discoveredDatabase.tables.mapNotNull { it.location },
+                                excludedPaths = config.excludePaths,
+                                cutoffTimeMillis = cutoffTimeMillis,
+                                maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
+                            )
+                        } catch (th: TooManyCandidateFoldersException) {
+
+                            logger.warn(
+                                "Refusing to continue for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}. Narrow the scope or increase the limit explicitly.",
+                                th,
+                            )
+
+                            cleanupAuditTableService.writeAuditRecord(
+                                CleanupAuditRecord(
+                                    sparkAppId = cleanupAuditTableService.currentSparkAppId(),
+                                    runId = runId,
+                                    initiatedBy = cleanupAuditTableService.currentSparkUser(),
+                                    catalogName = discoveredDatabase.catalog,
+                                    databaseName = discoveredDatabase.database,
+                                    operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
+                                    dryRun = config.dryRun,
+                                    deleteEnabled = config.deleteEnabled,
+                                    status = STATUS_SKIPPED,
+                                    discoveredDatabaseLocation = discoveredDatabase.location,
+                                    storageScanLocation = storageScanLocation,
+                                    activeTableCount = activeTableLocations.size.toLong(),
+                                    storageFolderCount = storageFolderPaths.size.toLong(),
+                                    candidateFolderCount = 0,
+                                    deletedFolderCount = 0,
+                                    candidateFolders = emptyList(),
+                                    deletedFolders = emptyList(),
+                                    excludedPaths = config.excludePaths.sorted(),
+                                    metrics =
+                                        mapOf(
+                                            "skip_reason" to "too_many_candidate_folders",
+                                            "older_than_hours" to config.olderThanHours.toString(),
+                                            "max_candidate_folders_per_database" to
+                                                    config.maxCandidateFoldersPerDatabase.toString(),
+                                            "cutoff_time" to cutoffTime.toString(),
+                                            "active_table_locations" to
+                                                    activeTableLocations.joinToString("\n"),
+                                            "storage_folder_paths" to
+                                                    storageFolderPaths.joinToString("\n"),
+                                        ),
+                                    errorMessage = th.message,
+                                    startTime = databaseStartTime,
+                                    endTime = Instant.now(),
+                                )
+                            )
+
+                            return@forEach
+                        }
+
+                    logger.info(
+                        "Detected ${candidateFolders.size} candidate untracked table folder(s) for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
+                    )
+
+                    val candidateFolderPaths = candidateFolders.map { it.path }.sorted()
+
+                    candidateFolders.forEach { folder ->
+                        logger.info(
+                            "Candidate untracked table folder selected for cleanup: path=${folder.path}, modifiedAt=${
+                                Instant.ofEpochMilli(
+                                    folder.modificationTimeMillis
+                                )
+                            }"
+                        )
                     }
-                }
 
-                logCleanupSummary(
-                    catalog = discoveredDatabase.catalog,
-                    database = discoveredDatabase.database,
-                    discoveredDatabaseLocation = discoveredDatabase.location,
-                    storageScanLocation = storageScanLocation,
-                    activeTableLocations = activeTableLocations,
-                    storageFolderPaths = storageFolderPaths,
-                    candidateFolderPaths = candidateFolderPaths,
-                    deletedFolderPaths = deletedFolders,
-                )
+                    val deletedFolders =
+                        if (config.dryRun) {
+                            emptyList()
+                        } else {
+                            candidateFolders
+                                .map {
+                                    objectStorageDeletionService.deleteFolderRecursively(it.path)
+                                }
+                                .filter { it.deleted }
+                                .map { it.path }
+                                .sorted()
+                        }
 
-                cleanupAuditTableService.writeAuditRecord(
-                    CleanupAuditRecord(
-                        sparkAppId = cleanupAuditTableService.currentSparkAppId(),
-                        runId = runId,
-                        initiatedBy = cleanupAuditTableService.currentSparkUser(),
-                        catalogName = discoveredDatabase.catalog,
-                        databaseName = discoveredDatabase.database,
-                        operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
-                        dryRun = config.dryRun,
-                        deleteEnabled = config.deleteEnabled,
-                        status = STATUS_SUCCESS,
+                    if (deletedFolders.isNotEmpty()) {
+                        logger.warn(
+                            "Deleted ${deletedFolders.size} untracked table folder(s) for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
+                        )
+                        deletedFolders.forEach { deletedFolder ->
+                            logger.warn("Deleted untracked table folder: path=$deletedFolder")
+                        }
+                    }
+
+                    logCleanupSummary(
+                        catalog = discoveredDatabase.catalog,
+                        database = discoveredDatabase.database,
                         discoveredDatabaseLocation = discoveredDatabase.location,
                         storageScanLocation = storageScanLocation,
-                        activeTableCount = activeTableLocations.size.toLong(),
-                        storageFolderCount = storageFolderPaths.size.toLong(),
-                        candidateFolderCount = candidateFolderPaths.size.toLong(),
-                        deletedFolderCount = deletedFolders.size.toLong(),
-                        candidateFolders = candidateFolderPaths,
-                        deletedFolders = deletedFolders,
-                        excludedPaths = config.excludePaths.sorted(),
-                        metrics =
-                            mapOf(
-                                "older_than_hours" to config.olderThanHours.toString(),
-                                "max_candidate_folders_per_database" to
-                                        config.maxCandidateFoldersPerDatabase.toString(),
-                                "cutoff_time" to cutoffTime.toString(),
-                                "active_table_locations" to activeTableLocations.joinToString("\n"),
-                                "storage_folder_paths" to storageFolderPaths.joinToString("\n"),
-                                "non_candidate_storage_folder_paths" to
-                                        storageFolderPaths
-                                            .filter { it !in candidateFolderPaths.toSet() }
-                                            .sorted()
-                                            .joinToString("\n"),
-                            ),
-                        errorMessage = null,
-                        startTime = databaseStartTime,
-                        endTime = Instant.now(),
+                        activeTableLocations = activeTableLocations,
+                        storageFolderPaths = storageFolderPaths,
+                        candidateFolderPaths = candidateFolderPaths,
+                        deletedFolderPaths = deletedFolders,
                     )
+
+                    cleanupAuditTableService.writeAuditRecord(
+                        CleanupAuditRecord(
+                            sparkAppId = cleanupAuditTableService.currentSparkAppId(),
+                            runId = runId,
+                            initiatedBy = cleanupAuditTableService.currentSparkUser(),
+                            catalogName = discoveredDatabase.catalog,
+                            databaseName = discoveredDatabase.database,
+                            operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
+                            dryRun = config.dryRun,
+                            deleteEnabled = config.deleteEnabled,
+                            status = STATUS_SUCCESS,
+                            discoveredDatabaseLocation = discoveredDatabase.location,
+                            storageScanLocation = storageScanLocation,
+                            activeTableCount = activeTableLocations.size.toLong(),
+                            storageFolderCount = storageFolderPaths.size.toLong(),
+                            candidateFolderCount = candidateFolderPaths.size.toLong(),
+                            deletedFolderCount = deletedFolders.size.toLong(),
+                            candidateFolders = candidateFolderPaths,
+                            deletedFolders = deletedFolders,
+                            excludedPaths = config.excludePaths.sorted(),
+                            metrics =
+                                mapOf(
+                                    "older_than_hours" to config.olderThanHours.toString(),
+                                    "max_candidate_folders_per_database" to
+                                            config.maxCandidateFoldersPerDatabase.toString(),
+                                    "cutoff_time" to cutoffTime.toString(),
+                                    "active_table_locations" to
+                                            activeTableLocations.joinToString("\n"),
+                                    "storage_folder_paths" to storageFolderPaths.joinToString("\n"),
+                                    "non_candidate_storage_folder_paths" to
+                                            storageFolderPaths
+                                                .filter { it !in candidateFolderPaths.toSet() }
+                                                .sorted()
+                                                .joinToString("\n"),
+                                ),
+                            errorMessage = null,
+                            startTime = databaseStartTime,
+                            endTime = Instant.now(),
+                        )
+                    )
+                }
+            } catch (th: Throwable) {
+                logger.error("Cleanup failed for catalog=${config.catalog}, database=$database", th)
+
+                writeFailedAuditRecord(
+                    runId = runId,
+                    database = database,
+                    databaseStartTime = databaseStartTime,
+                    error = th,
                 )
             }
         }
@@ -348,32 +380,90 @@ class CleanupUntrackedTableFoldersService {
         }
     }
 
+    private fun writeFailedAuditRecord(
+        runId: String,
+        database: String,
+        databaseStartTime: Instant,
+        error: Throwable,
+    ) {
+        cleanupAuditTableService.writeAuditRecord(
+            CleanupAuditRecord(
+                sparkAppId = cleanupAuditTableService.currentSparkAppId(),
+                runId = runId,
+                initiatedBy = cleanupAuditTableService.currentSparkUser(),
+                catalogName = config.catalog,
+                databaseName = database,
+                operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
+                dryRun = config.dryRun,
+                deleteEnabled = config.deleteEnabled,
+                status = STATUS_FAILED,
+                discoveredDatabaseLocation = null,
+                storageScanLocation = "",
+                activeTableCount = 0,
+                storageFolderCount = 0,
+                candidateFolderCount = 0,
+                deletedFolderCount = 0,
+                candidateFolders = emptyList(),
+                deletedFolders = emptyList(),
+                excludedPaths = config.excludePaths.sorted(),
+                metrics =
+                    mapOf(
+                        "failure_reason" to (error.message ?: error::class.java.name),
+                        "older_than_hours" to config.olderThanHours.toString(),
+                        "max_candidate_folders_per_database" to
+                                config.maxCandidateFoldersPerDatabase.toString(),
+                    ),
+                errorMessage = error.message ?: error::class.java.name,
+                startTime = databaseStartTime,
+                endTime = Instant.now(),
+            )
+        )
+    }
+
     private fun resolveStorageScanLocation(
         databaseLocation: String,
         activeTableLocations: List<String>,
     ): String {
-
         val inferredScanLocations =
             activeTableLocations.mapNotNull { parentLocation(it) }.distinct().sorted()
 
-        return when (inferredScanLocations.size) {
-            0 -> {
+        val resolvedScanLocation =
+            when (inferredScanLocations.size) {
+                0 -> {
+                    logger.warn(
+                        "No active table locations were discovered for databaseLocation=$databaseLocation. Falling back to discovered database location for storage scan. This may miss untracked folders if the database location differs from the actual table storage root."
+                    )
 
-                logger.warn(
-                    "No active table locations were discovered for databaseLocation=$databaseLocation. Falling back to discovered database location for storage scan. This may miss untracked folders if the database location differs from the actual table storage root."
-                )
+                    databaseLocation
+                }
+                1 -> inferredScanLocations.single()
+                else -> {
+                    logger.warn(
+                        "Multiple active table parent locations were discovered for databaseLocation=$databaseLocation: $inferredScanLocations. Falling back to database location."
+                    )
 
-                databaseLocation
+                    databaseLocation
+                }
             }
-            1 -> inferredScanLocations.single()
-            else -> {
 
-                logger.warn(
-                    "Multiple active table parent locations were discovered for databaseLocation=$databaseLocation: $inferredScanLocations. Falling back to database location."
-                )
+        validateStorageScanLocation(
+            databaseLocation = databaseLocation,
+            storageScanLocation = resolvedScanLocation,
+        )
 
-                databaseLocation
-            }
+        return resolvedScanLocation
+    }
+
+    private fun validateStorageScanLocation(
+        databaseLocation: String,
+        storageScanLocation: String,
+    ) {
+        val allowedRoots = StoragePathUtils.allowedDatabaseRoots(databaseLocation)
+
+        if (!StoragePathUtils.isInsideAnyRoot(storageScanLocation, allowedRoots)) {
+            throw IllegalStateException(
+                "Resolved storage scan location escapes database boundary. databaseLocation=$databaseLocation, storageScanLocation=$storageScanLocation, allowedRoots=$allowedRoots"
+            )
         }
     }
 
@@ -420,5 +510,7 @@ class CleanupUntrackedTableFoldersService {
         const val STATUS_SUCCESS = "SUCCESS"
 
         const val STATUS_SKIPPED = "SKIPPED"
+
+        const val STATUS_FAILED = "FAILED"
     }
 }

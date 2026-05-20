@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.candidate
 
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageFolder
+import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import jakarta.enterprise.context.ApplicationScoped
 
 class TooManyCandidateFoldersException(message: String) : RuntimeException(message)
@@ -19,16 +20,16 @@ class UntrackedFolderCandidateDetector {
         }
 
         val activeTableLocationSet = activeTableLocations
-            .map { normalizePath(it) }
+            .map { StoragePathUtils.normalizeLocation(it) }
             .toSet()
 
         val excludedPathSet = excludedPaths
-            .map { normalizePath(it) }
+            .map { StoragePathUtils.normalizeLocation(it) }
             .toSet()
 
         val candidateFolders = storageFolders
-            .filter { normalizePath(it.path) !in activeTableLocationSet }
-            .filter { normalizePath(it.path) !in excludedPathSet }
+            .filter { StoragePathUtils.normalizeLocation(it.path) !in activeTableLocationSet }
+            .filter { StoragePathUtils.normalizeLocation(it.path) !in excludedPathSet }
             .filter { it.modificationTimeMillis <= cutoffTimeMillis }
             .sortedBy { it.path }
 
@@ -40,7 +41,4 @@ class UntrackedFolderCandidateDetector {
 
         return candidateFolders
     }
-
-    private fun normalizePath(path: String): String =
-        path.trim().trimEnd('/')
 }

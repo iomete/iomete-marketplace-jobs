@@ -59,8 +59,10 @@ class CatalogDiscoveryService {
             try {
                 spark.sql("SHOW TABLES FROM `$catalog`.`$database`").collectAsList()
             } catch (th: Throwable) {
-                logger.warn("Failed to discover tables for catalog=$catalog database=$database", th)
-                return emptyList()
+                throw IllegalStateException(
+                    "Failed to discover tables for catalog=$catalog database=$database",
+                    th,
+                )
             }
 
         return rows.map { row ->
@@ -91,8 +93,10 @@ class CatalogDiscoveryService {
             try {
                 spark.sql("DESCRIBE DATABASE EXTENDED $qualifiedDatabaseName").collectAsList()
             } catch (th: Throwable) {
-                logger.warn("Failed to discover location for database=$qualifiedDatabaseName", th)
-                return null
+                throw IllegalStateException(
+                    "Failed to discover location for database=$qualifiedDatabaseName",
+                    th,
+                )
             }
 
         return rows
@@ -114,8 +118,10 @@ class CatalogDiscoveryService {
             try {
                 spark.sql("DESCRIBE EXTENDED $qualifiedTableName").collectAsList()
             } catch (th: Throwable) {
-                logger.warn("Failed to discover location for table=$qualifiedTableName", th)
-                return null
+                throw IllegalStateException(
+                    "Failed to discover location for table=$qualifiedTableName",
+                    th,
+                )
             }
 
         return rows

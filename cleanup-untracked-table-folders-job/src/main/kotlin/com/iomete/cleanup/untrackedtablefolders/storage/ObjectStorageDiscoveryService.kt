@@ -37,8 +37,10 @@ class ObjectStorageDiscoveryService {
                 }
                 .sortedBy { it.path }
         } catch (th: Throwable) {
-            logger.warn("Failed to list immediate child folders under location=$location", th)
-            emptyList()
+            throw IllegalStateException(
+                "Failed to list immediate child folders under location=$location",
+                th,
+            )
         }
     }
 }
