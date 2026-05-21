@@ -4,6 +4,7 @@ import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecord
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditTableService
 import com.iomete.cleanup.untrackedtablefolders.candidate.TooManyCandidateFoldersException
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
+import com.iomete.cleanup.untrackedtablefolders.catalog.DatabaseNotFoundException
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDeletionService
@@ -342,6 +343,18 @@ class CleanupUntrackedTableFoldersService {
                         )
                     )
                 }
+            } catch (th: DatabaseNotFoundException) {
+                logger.warn(
+                    "Configured database was not found; skipping cleanup for catalog=${config.catalog}, database=$database",
+                    th,
+                )
+
+                writeDatabaseNotFoundAuditRecord(
+                    runId = runId,
+                    database = database,
+                    databaseStartTime = databaseStartTime,
+                    error = th,
+                )
             } catch (th: Throwable) {
                 logger.error("Cleanup failed for catalog=${config.catalog}, database=$database", th)
 
@@ -454,10 +467,47 @@ class CleanupUntrackedTableFoldersService {
     private fun isAuditPathSampleTruncated(paths: List<String>): Boolean =
         paths.size > MAX_AUDIT_PATH_SAMPLE_SIZE
 
+    private fun writeDatabaseNotFoundAuditRecord(
+        runId: String,
+        database: String,
+        databaseStartTime: Instant,
+        error: Throwable,
+    ) {
+        writeUnsuccessfulAuditRecord(
+            runId = runId,
+            database = database,
+            databaseStartTime = databaseStartTime,
+            status = STATUS_SKIPPED,
+            reasonKey = "skip_reason",
+            reasonValue = "database_not_found",
+            error = error,
+        )
+    }
+
     private fun writeFailedAuditRecord(
         runId: String,
         database: String,
         databaseStartTime: Instant,
+        error: Throwable,
+    ) {
+        writeUnsuccessfulAuditRecord(
+            runId = runId,
+            database = database,
+            databaseStartTime = databaseStartTime,
+            status = STATUS_FAILED,
+            reasonKey = "failure_reason",
+            reasonValue = error.message ?: error::class.java.name,
+            error = error,
+        )
+    }
+
+    private fun writeUnsuccessfulAuditRecord(
+        runId: String,
+        database: String,
+        databaseStartTime: Instant,
+        status: String,
+        reasonKey: String,
+        reasonValue: String,
         error: Throwable,
     ) {
         cleanupAuditTableService.writeAuditRecord(
@@ -470,7 +520,7 @@ class CleanupUntrackedTableFoldersService {
                 operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
                 dryRun = config.dryRun,
                 deleteEnabled = config.deleteEnabled,
-                status = STATUS_FAILED,
+                status = status,
                 discoveredDatabaseLocation = null,
                 storageScanLocation = "",
                 activeTableCount = 0,
@@ -482,7 +532,7 @@ class CleanupUntrackedTableFoldersService {
                 excludedPaths = config.excludePaths.sorted(),
                 metrics =
                     mapOf(
-                        "failure_reason" to (error.message ?: error::class.java.name),
+                        reasonKey to reasonValue,
                         "older_than_hours" to config.olderThanHours.toString(),
                         "max_candidate_folders_per_database" to
                                 config.maxCandidateFoldersPerDatabase.toString(),
