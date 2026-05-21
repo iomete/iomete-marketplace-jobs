@@ -20,15 +20,21 @@ class CleanupAuditTableService {
         sparkSessionProvider.getOrCreate().sql(
             """
             CREATE TABLE IF NOT EXISTS $AUDIT_TABLE_NAME (
-              spark_app_id STRING,
               run_id STRING,
+              spark_app_id STRING,
               initiated_by STRING,
               catalog_name STRING,
               database_name STRING,
               operation STRING,
               dry_run BOOLEAN,
               delete_enabled BOOLEAN,
+              older_than_hours BIGINT,
+              cutoff_time TIMESTAMP,
+              max_candidate_folders_per_database INT,
+              excluded_paths ARRAY<STRING>,
               status STRING,
+              status_reason STRING,
+              error_message STRING,
               discovered_database_location STRING,
               storage_scan_location STRING,
               active_table_count BIGINT,
@@ -37,9 +43,7 @@ class CleanupAuditTableService {
               deleted_folder_count BIGINT,
               candidate_folders ARRAY<STRING>,
               deleted_folders ARRAY<STRING>,
-              excluded_paths ARRAY<STRING>,
-              metrics MAP<STRING, STRING>,
-              error_message STRING,
+              diagnostic_details MAP<STRING, STRING>,
               start_time TIMESTAMP,
               end_time TIMESTAMP
             )
@@ -56,17 +60,50 @@ class CleanupAuditTableService {
 
         sparkSessionProvider.getOrCreate().sql(
             """
-            INSERT INTO $AUDIT_TABLE_NAME
+            INSERT INTO $AUDIT_TABLE_NAME (
+              run_id,
+              spark_app_id,
+              initiated_by,
+              catalog_name,
+              database_name,
+              operation,
+              dry_run,
+              delete_enabled,
+              older_than_hours,
+              cutoff_time,
+              max_candidate_folders_per_database,
+              excluded_paths,
+              status,
+              status_reason,
+              error_message,
+              discovered_database_location,
+              storage_scan_location,
+              active_table_count,
+              storage_folder_count,
+              candidate_folder_count,
+              deleted_folder_count,
+              candidate_folders,
+              deleted_folders,
+              diagnostic_details,
+              start_time,
+              end_time
+            )
             SELECT
-              ${sqlNullableString(record.sparkAppId)} AS spark_app_id,
               ${sqlString(record.runId)} AS run_id,
+              ${sqlNullableString(record.sparkAppId)} AS spark_app_id,
               ${sqlNullableString(record.initiatedBy)} AS initiated_by,
               ${sqlString(record.catalogName)} AS catalog_name,
               ${sqlString(record.databaseName)} AS database_name,
               ${sqlString(record.operation)} AS operation,
               ${record.dryRun} AS dry_run,
               ${record.deleteEnabled} AS delete_enabled,
+              ${record.olderThanHours}L AS older_than_hours,
+              ${sqlNullableTimestamp(record.cutoffTime)} AS cutoff_time,
+              ${record.maxCandidateFoldersPerDatabase} AS max_candidate_folders_per_database,
+              ${sqlStringArray(record.excludedPaths)} AS excluded_paths,
               ${sqlString(record.status)} AS status,
+              ${sqlNullableString(record.statusReason)} AS status_reason,
+              ${sqlNullableString(record.errorMessage)} AS error_message,
               ${sqlNullableString(record.discoveredDatabaseLocation)} AS discovered_database_location,
               ${sqlString(record.storageScanLocation)} AS storage_scan_location,
               ${record.activeTableCount}L AS active_table_count,
@@ -75,9 +112,7 @@ class CleanupAuditTableService {
               ${record.deletedFolderCount}L AS deleted_folder_count,
               ${sqlStringArray(record.candidateFolders)} AS candidate_folders,
               ${sqlStringArray(record.deletedFolders)} AS deleted_folders,
-              ${sqlStringArray(record.excludedPaths)} AS excluded_paths,
-              ${sqlStringMap(record.metrics)} AS metrics,
-              ${sqlNullableString(record.errorMessage)} AS error_message,
+              ${sqlStringMap(record.diagnosticDetails)} AS diagnostic_details,
               ${sqlTimestamp(record.startTime)} AS start_time,
               ${sqlTimestamp(record.endTime)} AS end_time
             """.trimIndent()
@@ -121,6 +156,9 @@ class CleanupAuditTableService {
 
     private fun sqlTimestamp(value: Instant): String =
         "TIMESTAMP '${Timestamp.from(value)}'"
+
+    private fun sqlNullableTimestamp(value: Instant?): String =
+        value?.let { sqlTimestamp(it) } ?: "CAST(NULL AS TIMESTAMP)"
 
     companion object {
         const val AUDIT_TABLE_NAME =

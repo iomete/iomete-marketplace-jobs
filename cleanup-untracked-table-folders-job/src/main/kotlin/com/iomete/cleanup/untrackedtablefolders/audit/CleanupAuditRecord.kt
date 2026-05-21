@@ -3,15 +3,21 @@ package com.iomete.cleanup.untrackedtablefolders.audit
 import java.time.Instant
 
 data class CleanupAuditRecord(
-    val sparkAppId: String?,
     val runId: String,
+    val sparkAppId: String?,
     val initiatedBy: String?,
     val catalogName: String,
     val databaseName: String,
     val operation: String,
     val dryRun: Boolean,
     val deleteEnabled: Boolean,
+    val olderThanHours: Long,
+    val cutoffTime: Instant?,
+    val maxCandidateFoldersPerDatabase: Int,
+    val excludedPaths: List<String>,
     val status: String,
+    val statusReason: String?,
+    val errorMessage: String?,
     val discoveredDatabaseLocation: String?,
     val storageScanLocation: String,
     val activeTableCount: Long,
@@ -20,9 +26,7 @@ data class CleanupAuditRecord(
     val deletedFolderCount: Long,
     val candidateFolders: List<String>,
     val deletedFolders: List<String>,
-    val excludedPaths: List<String>,
-    val metrics: Map<String, String>,
-    val errorMessage: String?,
+    val diagnosticDetails: Map<String, String>,
     val startTime: Instant,
     val endTime: Instant,
 )
