@@ -60,7 +60,34 @@ class CleanupAuditTableService {
 
         sparkSessionProvider.getOrCreate().sql(
             """
-            INSERT INTO $AUDIT_TABLE_NAME
+            INSERT INTO $AUDIT_TABLE_NAME (
+              run_id,
+              spark_app_id,
+              initiated_by,
+              catalog_name,
+              database_name,
+              operation,
+              dry_run,
+              delete_enabled,
+              older_than_hours,
+              cutoff_time,
+              max_candidate_folders_per_database,
+              excluded_paths,
+              status,
+              status_reason,
+              error_message,
+              discovered_database_location,
+              storage_scan_location,
+              active_table_count,
+              storage_folder_count,
+              candidate_folder_count,
+              deleted_folder_count,
+              candidate_folders,
+              deleted_folders,
+              diagnostic_details,
+              start_time,
+              end_time
+            )
             SELECT
               ${sqlString(record.runId)} AS run_id,
               ${sqlNullableString(record.sparkAppId)} AS spark_app_id,
