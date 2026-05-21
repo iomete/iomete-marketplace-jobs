@@ -20,17 +20,11 @@ import org.jboss.logging.Logger
 class CleanupUntrackedTableFoldersService {
 
     private val logger = Logger.getLogger(CleanupUntrackedTableFoldersService::class.java)
-
     @Inject lateinit var config: ApplicationConfig
-
     @Inject lateinit var catalogDiscoveryService: CatalogDiscoveryService
-
     @Inject lateinit var objectStorageDiscoveryService: ObjectStorageDiscoveryService
-
     @Inject lateinit var objectStorageDeletionService: ObjectStorageDeletionService
-
     @Inject lateinit var untrackedFolderCandidateDetector: UntrackedFolderCandidateDetector
-
     @Inject lateinit var cleanupAuditTableService: CleanupAuditTableService
 
     fun run() {
@@ -66,50 +60,17 @@ class CleanupUntrackedTableFoldersService {
                         "Skipping storage folder discovery because database location is missing for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
                     )
 
-                    cleanupAuditTableService.writeAuditRecord(
-                        CleanupAuditRecord(
-                            sparkAppId = cleanupAuditTableService.currentSparkAppId(),
-                            runId = runId,
-                            initiatedBy = cleanupAuditTableService.currentSparkUser(),
-                            catalogName = discoveredDatabase.catalog,
-                            databaseName = discoveredDatabase.database,
-                            operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
-                            dryRun = config.dryRun,
-                            deleteEnabled = config.deleteEnabled,
-                            status = STATUS_SKIPPED,
-                            discoveredDatabaseLocation = discoveredDatabase.location,
-                            storageScanLocation = "",
-                            activeTableCount = discoveredDatabase.tables.size.toLong(),
-                            storageFolderCount = 0,
-                            candidateFolderCount = 0,
-                            deletedFolderCount = 0,
-                            candidateFolders = emptyList(),
-                            deletedFolders = emptyList(),
-                            excludedPaths = config.excludePaths.sorted(),
-                            metrics =
-                                mapOf(
-                                    "skip_reason" to "database_location_missing",
-                                    "older_than_hours" to config.olderThanHours.toString(),
-                                    "max_candidate_folders_per_database" to
-                                            config.maxCandidateFoldersPerDatabase.toString(),
-                                    "active_table_locations_sample" to
-                                            auditPathSample(
-                                                discoveredDatabase.tables
-                                                    .mapNotNull { it.location }
-                                                    .sorted()
-                                            ),
-                                    "active_table_locations_truncated" to
-                                            isAuditPathSampleTruncated(
-                                                discoveredDatabase.tables
-                                                    .mapNotNull { it.location }
-                                                    .sorted()
-                                            ).toString(),
-                                ),
-                            errorMessage =
-                                "Database location is missing; storage folder discovery was skipped.",
-                            startTime = databaseStartTime,
-                            endTime = Instant.now(),
-                        )
+                    writeDatabaseLocationMissingAuditRecord(
+                        runId = runId,
+                        databaseStartTime = databaseStartTime,
+                        catalogName = discoveredDatabase.catalog,
+                        databaseName = discoveredDatabase.database,
+                        discoveredDatabaseLocation = discoveredDatabase.location,
+                        activeTableCount = discoveredDatabase.tables.size.toLong(),
+                        activeTableLocations =
+                            discoveredDatabase.tables
+                                .mapNotNull { it.location }
+                                .sorted(),
                     )
                 } else {
                     val storageScanLocation =
@@ -150,7 +111,6 @@ class CleanupUntrackedTableFoldersService {
 
                     val candidateFolders =
                         try {
-
                             untrackedFolderCandidateDetector.detectCandidates(
                                 storageFolders = storageFolders,
                                 activeTableLocations =
@@ -167,47 +127,20 @@ class CleanupUntrackedTableFoldersService {
                             )
                             val candidateFolderPaths = th.candidateFolderPaths.sorted()
 
-                            cleanupAuditTableService.writeAuditRecord(
-                                CleanupAuditRecord(
-                                    sparkAppId = cleanupAuditTableService.currentSparkAppId(),
-                                    runId = runId,
-                                    initiatedBy = cleanupAuditTableService.currentSparkUser(),
-                                    catalogName = discoveredDatabase.catalog,
-                                    databaseName = discoveredDatabase.database,
-                                    operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
-                                    dryRun = config.dryRun,
-                                    deleteEnabled = config.deleteEnabled,
-                                    status = STATUS_SKIPPED,
-                                    discoveredDatabaseLocation = discoveredDatabase.location,
-                                    storageScanLocation = storageScanLocation,
-                                    activeTableCount = activeTableLocations.size.toLong(),
-                                    storageFolderCount = storageFolderPaths.size.toLong(),
-                                    candidateFolderCount = th.candidateCount.toLong(),
-                                    deletedFolderCount = 0,
-                                    candidateFolders = candidateFolderPaths.take(MAX_AUDIT_PATH_SAMPLE_SIZE),
-                                    deletedFolders = emptyList(),
-                                    excludedPaths = config.excludePaths.sorted(),
-                                    metrics =
-                                        mapOf(
-                                            "skip_reason" to "too_many_candidate_folders",
-                                            "older_than_hours" to config.olderThanHours.toString(),
-                                            "max_candidate_folders_per_database" to
-                                                    config.maxCandidateFoldersPerDatabase.toString(),
-                                            "cutoff_time" to cutoffTime.toString(),
-                                            "active_table_locations_sample" to auditPathSample(activeTableLocations),
-                                            "active_table_locations_truncated" to
-                                                    isAuditPathSampleTruncated(activeTableLocations).toString(),
-                                            "storage_folder_paths_sample" to auditPathSample(storageFolderPaths),
-                                            "storage_folder_paths_truncated" to
-                                                    isAuditPathSampleTruncated(storageFolderPaths).toString(),
-                                            "candidate_folder_paths_sample" to auditPathSample(candidateFolderPaths),
-                                            "candidate_folder_paths_truncated" to
-                                                    isAuditPathSampleTruncated(candidateFolderPaths).toString(),
-                                        ),
-                                    errorMessage = th.message,
-                                    startTime = databaseStartTime,
-                                    endTime = Instant.now(),
-                                )
+                            writeTooManyCandidateFoldersAuditRecord(
+                                runId = runId,
+                                databaseStartTime = databaseStartTime,
+                                catalogName = discoveredDatabase.catalog,
+                                databaseName = discoveredDatabase.database,
+                                discoveredDatabaseLocation = discoveredDatabase.location,
+                                storageScanLocation = storageScanLocation,
+                                activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                activeTableLocations = activeTableLocations,
+                                storageFolderPaths = storageFolderPaths,
+                                candidateFolderPaths = candidateFolderPaths,
+                                candidateCount = th.candidateCount.toLong(),
+                                cutoffTime = cutoffTime,
+                                errorMessage = th.message,
                             )
 
                             return@forEach
@@ -291,55 +224,19 @@ class CleanupUntrackedTableFoldersService {
                         deletedFolderPaths = deletedFolders,
                     )
 
-                    cleanupAuditTableService.writeAuditRecord(
-                        CleanupAuditRecord(
-                            sparkAppId = cleanupAuditTableService.currentSparkAppId(),
-                            runId = runId,
-                            initiatedBy = cleanupAuditTableService.currentSparkUser(),
-                            catalogName = discoveredDatabase.catalog,
-                            databaseName = discoveredDatabase.database,
-                            operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
-                            dryRun = config.dryRun,
-                            deleteEnabled = config.deleteEnabled,
-                            status = STATUS_SUCCESS,
-                            discoveredDatabaseLocation = discoveredDatabase.location,
-                            storageScanLocation = storageScanLocation,
-                            activeTableCount = activeTableLocations.size.toLong(),
-                            storageFolderCount = storageFolderPaths.size.toLong(),
-                            candidateFolderCount = candidateFolderPaths.size.toLong(),
-                            deletedFolderCount = deletedFolders.size.toLong(),
-                            candidateFolders = candidateFolderPaths,
-                            deletedFolders = deletedFolders,
-                            excludedPaths = config.excludePaths.sorted(),
-                            metrics =
-                                mapOf(
-                                    "older_than_hours" to config.olderThanHours.toString(),
-                                    "max_candidate_folders_per_database" to
-                                            config.maxCandidateFoldersPerDatabase.toString(),
-                                    "cutoff_time" to cutoffTime.toString(),
-                                    "active_table_locations_sample" to auditPathSample(activeTableLocations),
-                                    "active_table_locations_truncated" to
-                                            isAuditPathSampleTruncated(activeTableLocations).toString(),
-                                    "storage_folder_paths_sample" to auditPathSample(storageFolderPaths),
-                                    "storage_folder_paths_truncated" to
-                                            isAuditPathSampleTruncated(storageFolderPaths).toString(),
-                                    "non_candidate_storage_folder_paths_sample" to
-                                            auditPathSample(
-                                                storageFolderPaths
-                                                    .filter { it !in candidateFolderPaths.toSet() }
-                                                    .sorted()
-                                            ),
-                                    "non_candidate_storage_folder_paths_truncated" to
-                                            isAuditPathSampleTruncated(
-                                                storageFolderPaths
-                                                    .filter { it !in candidateFolderPaths.toSet() }
-                                                    .sorted()
-                                            ).toString(),
-                                ),
-                            errorMessage = null,
-                            startTime = databaseStartTime,
-                            endTime = Instant.now(),
-                        )
+                    writeSuccessAuditRecord(
+                        runId = runId,
+                        databaseStartTime = databaseStartTime,
+                        catalogName = discoveredDatabase.catalog,
+                        databaseName = discoveredDatabase.database,
+                        discoveredDatabaseLocation = discoveredDatabase.location,
+                        storageScanLocation = storageScanLocation,
+                        activeTableCount = discoveredDatabase.tables.size.toLong(),
+                        activeTableLocations = activeTableLocations,
+                        storageFolderPaths = storageFolderPaths,
+                        candidateFolderPaths = candidateFolderPaths,
+                        deletedFolderPaths = deletedFolders,
+                        cutoffTime = cutoffTime,
                     )
                 }
             } catch (th: Throwable) {
@@ -365,6 +262,10 @@ class CleanupUntrackedTableFoldersService {
         }
     }
 
+    private fun logBlankLines(count: Int) {
+        repeat(count) { logger.info("") }
+    }
+
     private fun logCleanupSummary(
         catalog: String,
         database: String,
@@ -375,63 +276,31 @@ class CleanupUntrackedTableFoldersService {
         candidateFolderPaths: List<String>,
         deletedFolderPaths: List<String>,
     ) {
-
         val candidateFolderSet = candidateFolderPaths.toSet()
-
         val protectedFolderPaths = activeTableLocations.toSet()
-
         val nonCandidateStorageFolderPaths =
             storageFolderPaths.filter { it !in candidateFolderSet }.sorted()
-        logger.info("")
-
-        logger.info("")
-
-        logger.info("")
-
+        logBlankLines(3)
         logger.info("========== Cleanup Untracked Table Folders Summary ==========")
-
         logger.info("Catalog: $catalog")
-
         logger.info("Configured database: $database")
-
         logger.info("Discovered database location: $discoveredDatabaseLocation")
-
         logger.info("Object storage scan root: $storageScanLocation")
-
-        logger.info("Catalog active table location count: ${activeTableLocations.size}")
-
+        logger.info("Protected catalog active table location count: ${activeTableLocations.size}")
         logger.info("Immediate child storage folders scanned: ${storageFolderPaths.size}")
-
         logger.info("Untracked candidate folder count: ${candidateFolderPaths.size}")
-
-        logger.info("Deleted folder count: ${deletedFolderPaths.size}")
-
+        logger.info("Deleted untracked folder count: ${deletedFolderPaths.size}")
         logger.info("Deletion performed: ${deletedFolderPaths.isNotEmpty()}")
-
         logger.info("Protected catalog active table locations:")
-
         logListOrNone(protectedFolderPaths.sorted())
-
         logger.info("Storage folders not selected as candidates:")
-
         logListOrNone(nonCandidateStorageFolderPaths)
-
         logger.info("Untracked candidate folders selected for cleanup:")
-
         logListOrNone(candidateFolderPaths)
-
         logger.info("Deleted folders:")
-
         logListOrNone(deletedFolderPaths)
-
         logger.info("============================================================")
-
-        logger.info("")
-
-        logger.info("")
-
-        logger.info("")
-
+        logBlankLines(3)
     }
 
     private fun logListOrNone(values: List<String>) {
@@ -454,43 +323,213 @@ class CleanupUntrackedTableFoldersService {
     private fun isAuditPathSampleTruncated(paths: List<String>): Boolean =
         paths.size > MAX_AUDIT_PATH_SAMPLE_SIZE
 
+    private fun writeDatabaseLocationMissingAuditRecord(
+        runId: String,
+        databaseStartTime: Instant,
+        catalogName: String,
+        databaseName: String,
+        discoveredDatabaseLocation: String?,
+        activeTableCount: Long,
+        activeTableLocations: List<String>,
+    ) {
+        writeAuditRecord(
+            runId = runId,
+            databaseStartTime = databaseStartTime,
+            catalogName = catalogName,
+            databaseName = databaseName,
+            status = STATUS_SKIPPED,
+            statusReason = "database_location_missing",
+            errorMessage = "Database location is missing; storage folder discovery was skipped.",
+            discoveredDatabaseLocation = discoveredDatabaseLocation,
+            activeTableCount = activeTableCount,
+            diagnosticDetails = diagnosticDetails(activeTableLocations = activeTableLocations),
+        )
+    }
+
+    private fun writeTooManyCandidateFoldersAuditRecord(
+        runId: String,
+        databaseStartTime: Instant,
+        catalogName: String,
+        databaseName: String,
+        discoveredDatabaseLocation: String?,
+        storageScanLocation: String,
+        activeTableCount: Long,
+        activeTableLocations: List<String>,
+        storageFolderPaths: List<String>,
+        candidateFolderPaths: List<String>,
+        candidateCount: Long,
+        cutoffTime: Instant,
+        errorMessage: String?,
+    ) {
+        writeAuditRecord(
+            runId = runId,
+            databaseStartTime = databaseStartTime,
+            catalogName = catalogName,
+            databaseName = databaseName,
+            status = STATUS_SKIPPED,
+            statusReason = "too_many_candidate_folders",
+            errorMessage = errorMessage,
+            discoveredDatabaseLocation = discoveredDatabaseLocation,
+            storageScanLocation = storageScanLocation,
+            activeTableCount = activeTableCount,
+            storageFolderCount = storageFolderPaths.size.toLong(),
+            candidateFolderCount = candidateCount,
+            candidateFolders = candidateFolderPaths.take(MAX_AUDIT_PATH_SAMPLE_SIZE),
+            cutoffTime = cutoffTime,
+            diagnosticDetails =
+                diagnosticDetails(
+                    activeTableLocations = activeTableLocations,
+                    storageFolderPaths = storageFolderPaths,
+                    candidateFolderPaths = candidateFolderPaths,
+                ),
+        )
+    }
+
+    private fun writeSuccessAuditRecord(
+        runId: String,
+        databaseStartTime: Instant,
+        catalogName: String,
+        databaseName: String,
+        discoveredDatabaseLocation: String?,
+        storageScanLocation: String,
+        activeTableCount: Long,
+        activeTableLocations: List<String>,
+        storageFolderPaths: List<String>,
+        candidateFolderPaths: List<String>,
+        deletedFolderPaths: List<String>,
+        cutoffTime: Instant,
+    ) {
+        writeAuditRecord(
+            runId = runId,
+            databaseStartTime = databaseStartTime,
+            catalogName = catalogName,
+            databaseName = databaseName,
+            status = STATUS_SUCCESS,
+            statusReason = null,
+            errorMessage = null,
+            discoveredDatabaseLocation = discoveredDatabaseLocation,
+            storageScanLocation = storageScanLocation,
+            activeTableCount = activeTableCount,
+            storageFolderCount = storageFolderPaths.size.toLong(),
+            candidateFolderCount = candidateFolderPaths.size.toLong(),
+            deletedFolderCount = deletedFolderPaths.size.toLong(),
+            candidateFolders = candidateFolderPaths,
+            deletedFolders = deletedFolderPaths,
+            cutoffTime = cutoffTime,
+            diagnosticDetails =
+                diagnosticDetails(
+                    activeTableLocations = activeTableLocations,
+                    storageFolderPaths = storageFolderPaths,
+                    candidateFolderPaths = candidateFolderPaths,
+                    includeNonCandidateStorageFolders = true,
+                ),
+        )
+    }
+
+    private fun diagnosticDetails(
+        activeTableLocations: List<String>,
+        storageFolderPaths: List<String> = emptyList(),
+        candidateFolderPaths: List<String> = emptyList(),
+        includeNonCandidateStorageFolders: Boolean = false,
+    ): Map<String, String> {
+        val details =
+            mutableMapOf(
+                "active_table_locations_sample" to auditPathSample(activeTableLocations),
+                "active_table_locations_truncated" to
+                        isAuditPathSampleTruncated(activeTableLocations).toString(),
+            )
+
+        if (storageFolderPaths.isNotEmpty()) {
+            details["storage_folder_paths_sample"] = auditPathSample(storageFolderPaths)
+            details["storage_folder_paths_truncated"] =
+                isAuditPathSampleTruncated(storageFolderPaths).toString()
+        }
+
+        if (candidateFolderPaths.isNotEmpty()) {
+            details["candidate_folder_paths_sample"] = auditPathSample(candidateFolderPaths)
+            details["candidate_folder_paths_truncated"] =
+                isAuditPathSampleTruncated(candidateFolderPaths).toString()
+        }
+
+        if (includeNonCandidateStorageFolders) {
+            val candidateFolderSet = candidateFolderPaths.toSet()
+            val nonCandidateStorageFolderPaths =
+                storageFolderPaths.filter { it !in candidateFolderSet }.sorted()
+
+            details["non_candidate_storage_folder_paths_sample"] =
+                auditPathSample(nonCandidateStorageFolderPaths)
+            details["non_candidate_storage_folder_paths_truncated"] =
+                isAuditPathSampleTruncated(nonCandidateStorageFolderPaths).toString()
+        }
+
+        return details
+    }
+
+    private fun writeAuditRecord(
+        runId: String,
+        databaseStartTime: Instant,
+        catalogName: String,
+        databaseName: String,
+        status: String,
+        statusReason: String?,
+        errorMessage: String?,
+        discoveredDatabaseLocation: String? = null,
+        storageScanLocation: String = "",
+        activeTableCount: Long = 0,
+        storageFolderCount: Long = 0,
+        candidateFolderCount: Long = 0,
+        deletedFolderCount: Long = 0,
+        candidateFolders: List<String> = emptyList(),
+        deletedFolders: List<String> = emptyList(),
+        cutoffTime: Instant? = null,
+        diagnosticDetails: Map<String, String> = emptyMap(),
+    ) {
+        cleanupAuditTableService.writeAuditRecord(
+            CleanupAuditRecord(
+                runId = runId,
+                sparkAppId = cleanupAuditTableService.currentSparkAppId(),
+                initiatedBy = cleanupAuditTableService.currentSparkUser(),
+                catalogName = catalogName,
+                databaseName = databaseName,
+                operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
+                dryRun = config.dryRun,
+                deleteEnabled = config.deleteEnabled,
+                olderThanHours = config.olderThanHours,
+                cutoffTime = cutoffTime,
+                maxCandidateFoldersPerDatabase = config.maxCandidateFoldersPerDatabase,
+                excludedPaths = config.excludePaths.sorted(),
+                status = status,
+                statusReason = statusReason,
+                errorMessage = errorMessage,
+                discoveredDatabaseLocation = discoveredDatabaseLocation,
+                storageScanLocation = storageScanLocation,
+                activeTableCount = activeTableCount,
+                storageFolderCount = storageFolderCount,
+                candidateFolderCount = candidateFolderCount,
+                deletedFolderCount = deletedFolderCount,
+                candidateFolders = candidateFolders,
+                deletedFolders = deletedFolders,
+                diagnosticDetails = diagnosticDetails,
+                startTime = databaseStartTime,
+                endTime = Instant.now(),
+            )
+        )
+    }
+
     private fun writeFailedAuditRecord(
         runId: String,
         database: String,
         databaseStartTime: Instant,
         error: Throwable,
     ) {
-        cleanupAuditTableService.writeAuditRecord(
-            CleanupAuditRecord(
-                sparkAppId = cleanupAuditTableService.currentSparkAppId(),
-                runId = runId,
-                initiatedBy = cleanupAuditTableService.currentSparkUser(),
-                catalogName = config.catalog,
-                databaseName = database,
-                operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
-                dryRun = config.dryRun,
-                deleteEnabled = config.deleteEnabled,
-                status = STATUS_FAILED,
-                discoveredDatabaseLocation = null,
-                storageScanLocation = "",
-                activeTableCount = 0,
-                storageFolderCount = 0,
-                candidateFolderCount = 0,
-                deletedFolderCount = 0,
-                candidateFolders = emptyList(),
-                deletedFolders = emptyList(),
-                excludedPaths = config.excludePaths.sorted(),
-                metrics =
-                    mapOf(
-                        "failure_reason" to (error.message ?: error::class.java.name),
-                        "older_than_hours" to config.olderThanHours.toString(),
-                        "max_candidate_folders_per_database" to
-                                config.maxCandidateFoldersPerDatabase.toString(),
-                    ),
-                errorMessage = error.message ?: error::class.java.name,
-                startTime = databaseStartTime,
-                endTime = Instant.now(),
-            )
+        writeAuditRecord(
+            runId = runId,
+            databaseStartTime = databaseStartTime,
+            catalogName = config.catalog,
+            databaseName = database,
+            status = STATUS_FAILED,
+            statusReason = "unexpected_error",
+            errorMessage = error.message ?: error::class.java.name,
         )
     }
 
@@ -507,7 +546,6 @@ class CleanupUntrackedTableFoldersService {
                     logger.warn(
                         "No active table locations were discovered for databaseLocation=$databaseLocation. Falling back to discovered database location for storage scan. This may miss untracked folders if the database location differs from the actual table storage root."
                     )
-
                     databaseLocation
                 }
                 1 -> inferredScanLocations.single()
@@ -515,7 +553,6 @@ class CleanupUntrackedTableFoldersService {
                     logger.warn(
                         "Multiple active table parent locations were discovered for databaseLocation=$databaseLocation: $inferredScanLocations. Falling back to database location."
                     )
-
                     databaseLocation
                 }
             }
@@ -542,16 +579,12 @@ class CleanupUntrackedTableFoldersService {
     }
 
     private fun parentLocation(location: String): String? {
-
         val normalizedLocation = location.trim().trimEnd('/')
-
         val lastSlashIndex = normalizedLocation.lastIndexOf('/')
 
         return if (lastSlashIndex <= 0) {
-
             null
         } else {
-
             normalizedLocation.substring(0, lastSlashIndex)
         }
     }
@@ -559,13 +592,9 @@ class CleanupUntrackedTableFoldersService {
     private companion object {
 
         const val OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS = "DISCOVER_UNTRACKED_TABLE_FOLDERS"
-
         const val STATUS_SUCCESS = "SUCCESS"
-
         const val STATUS_SKIPPED = "SKIPPED"
-
         const val STATUS_FAILED = "FAILED"
-
         const val MAX_AUDIT_PATH_SAMPLE_SIZE = 100
     }
 }
