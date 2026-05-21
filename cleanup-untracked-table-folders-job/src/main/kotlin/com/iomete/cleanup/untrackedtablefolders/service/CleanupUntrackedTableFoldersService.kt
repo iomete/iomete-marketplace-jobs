@@ -4,6 +4,7 @@ import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecord
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditTableService
 import com.iomete.cleanup.untrackedtablefolders.candidate.TooManyCandidateFoldersException
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
+import com.iomete.cleanup.untrackedtablefolders.catalog.DatabaseNotFoundException
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDeletionService
@@ -239,6 +240,18 @@ class CleanupUntrackedTableFoldersService {
                         cutoffTime = cutoffTime,
                     )
                 }
+            } catch (th: DatabaseNotFoundException) {
+                logger.warn(
+                    "Configured database was not found; skipping cleanup for catalog=${config.catalog}, database=$database",
+                    th,
+                )
+
+                writeDatabaseNotFoundAuditRecord(
+                    runId = runId,
+                    database = database,
+                    databaseStartTime = databaseStartTime,
+                    error = th,
+                )
             } catch (th: Throwable) {
                 logger.error("Cleanup failed for catalog=${config.catalog}, database=$database", th)
 
@@ -513,6 +526,23 @@ class CleanupUntrackedTableFoldersService {
                 startTime = databaseStartTime,
                 endTime = Instant.now(),
             )
+        )
+    }
+
+    private fun writeDatabaseNotFoundAuditRecord(
+        runId: String,
+        database: String,
+        databaseStartTime: Instant,
+        error: Throwable,
+    ) {
+        writeAuditRecord(
+            runId = runId,
+            databaseStartTime = databaseStartTime,
+            catalogName = config.catalog,
+            databaseName = database,
+            status = STATUS_SKIPPED,
+            statusReason = "database_not_found",
+            errorMessage = error.message ?: error::class.java.name,
         )
     }
 
