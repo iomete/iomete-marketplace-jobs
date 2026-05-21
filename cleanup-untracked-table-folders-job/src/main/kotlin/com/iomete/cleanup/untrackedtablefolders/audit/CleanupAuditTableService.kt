@@ -58,66 +58,67 @@ class CleanupAuditTableService {
             "Writing cleanup audit record for runId=${record.runId}, catalog=${record.catalogName}, database=${record.databaseName}, status=${record.status}"
         )
 
-        sparkSessionProvider.getOrCreate().sql(
-            """
-            INSERT INTO $AUDIT_TABLE_NAME (
-              run_id,
-              spark_app_id,
-              initiated_by,
-              catalog_name,
-              database_name,
-              operation,
-              dry_run,
-              delete_enabled,
-              older_than_hours,
-              cutoff_time,
-              max_candidate_folders_per_database,
-              excluded_paths,
-              status,
-              status_reason,
-              error_message,
-              discovered_database_location,
-              storage_scan_location,
-              active_table_count,
-              storage_folder_count,
-              candidate_folder_count,
-              deleted_folder_count,
-              candidate_folders,
-              deleted_folders,
-              diagnostic_details,
-              start_time,
-              end_time
-            )
-            SELECT
-              ${sqlString(record.runId)} AS run_id,
-              ${sqlNullableString(record.sparkAppId)} AS spark_app_id,
-              ${sqlNullableString(record.initiatedBy)} AS initiated_by,
-              ${sqlString(record.catalogName)} AS catalog_name,
-              ${sqlString(record.databaseName)} AS database_name,
-              ${sqlString(record.operation)} AS operation,
-              ${record.dryRun} AS dry_run,
-              ${record.deleteEnabled} AS delete_enabled,
-              ${record.olderThanHours}L AS older_than_hours,
-              ${sqlNullableTimestamp(record.cutoffTime)} AS cutoff_time,
-              ${record.maxCandidateFoldersPerDatabase} AS max_candidate_folders_per_database,
-              ${sqlStringArray(record.excludedPaths)} AS excluded_paths,
-              ${sqlString(record.status)} AS status,
-              ${sqlNullableString(record.statusReason)} AS status_reason,
-              ${sqlNullableString(record.errorMessage)} AS error_message,
-              ${sqlNullableString(record.discoveredDatabaseLocation)} AS discovered_database_location,
-              ${sqlString(record.storageScanLocation)} AS storage_scan_location,
-              ${record.activeTableCount}L AS active_table_count,
-              ${record.storageFolderCount}L AS storage_folder_count,
-              ${record.candidateFolderCount}L AS candidate_folder_count,
-              ${record.deletedFolderCount}L AS deleted_folder_count,
-              ${sqlStringArray(record.candidateFolders)} AS candidate_folders,
-              ${sqlStringArray(record.deletedFolders)} AS deleted_folders,
-              ${sqlStringMap(record.diagnosticDetails)} AS diagnostic_details,
-              ${sqlTimestamp(record.startTime)} AS start_time,
-              ${sqlTimestamp(record.endTime)} AS end_time
-            """.trimIndent()
-        )
+        sparkSessionProvider.getOrCreate().sql(buildInsertAuditRecordSql(record))
     }
+
+    internal fun buildInsertAuditRecordSql(record: CleanupAuditRecord): String =
+        """
+        INSERT INTO $AUDIT_TABLE_NAME (
+          run_id,
+          spark_app_id,
+          initiated_by,
+          catalog_name,
+          database_name,
+          operation,
+          dry_run,
+          delete_enabled,
+          older_than_hours,
+          cutoff_time,
+          max_candidate_folders_per_database,
+          excluded_paths,
+          status,
+          status_reason,
+          error_message,
+          discovered_database_location,
+          storage_scan_location,
+          active_table_count,
+          storage_folder_count,
+          candidate_folder_count,
+          deleted_folder_count,
+          candidate_folders,
+          deleted_folders,
+          diagnostic_details,
+          start_time,
+          end_time
+        )
+        SELECT
+          ${sqlString(record.runId)} AS run_id,
+          ${sqlNullableString(record.sparkAppId)} AS spark_app_id,
+          ${sqlNullableString(record.initiatedBy)} AS initiated_by,
+          ${sqlString(record.catalogName)} AS catalog_name,
+          ${sqlString(record.databaseName)} AS database_name,
+          ${sqlString(record.operation)} AS operation,
+          ${record.dryRun} AS dry_run,
+          ${record.deleteEnabled} AS delete_enabled,
+          ${record.olderThanHours}L AS older_than_hours,
+          ${sqlNullableTimestamp(record.cutoffTime)} AS cutoff_time,
+          ${record.maxCandidateFoldersPerDatabase} AS max_candidate_folders_per_database,
+          ${sqlStringArray(record.excludedPaths)} AS excluded_paths,
+          ${sqlString(record.status)} AS status,
+          ${sqlNullableString(record.statusReason)} AS status_reason,
+          ${sqlNullableString(record.errorMessage)} AS error_message,
+          ${sqlNullableString(record.discoveredDatabaseLocation)} AS discovered_database_location,
+          ${sqlString(record.storageScanLocation)} AS storage_scan_location,
+          ${record.activeTableCount}L AS active_table_count,
+          ${record.storageFolderCount}L AS storage_folder_count,
+          ${record.candidateFolderCount}L AS candidate_folder_count,
+          ${record.deletedFolderCount}L AS deleted_folder_count,
+          ${sqlStringArray(record.candidateFolders)} AS candidate_folders,
+          ${sqlStringArray(record.deletedFolders)} AS deleted_folders,
+          ${sqlStringMap(record.diagnosticDetails)} AS diagnostic_details,
+          ${sqlTimestamp(record.startTime)} AS start_time,
+          ${sqlTimestamp(record.endTime)} AS end_time
+        """.trimIndent()
 
     fun currentSparkAppId(): String? =
         sparkSessionProvider.getOrCreate().sparkContext().applicationId()
