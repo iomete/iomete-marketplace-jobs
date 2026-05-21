@@ -56,7 +56,9 @@ spark.hadoop.fs.s3a.connection.timeout=5000
 ```
 
 **Pros:** Simple config change, no code modification.
-**Cons:** Only helps with S3-specific failures. Doesn't cover timeouts from other sources (REST catalog, network issues).
+**Cons:**
+- Only helps with S3-specific failures. Doesn't cover timeouts from other sources (REST catalog, network issues).
+- **Reduces resilience for transient errors.** Legitimate retryable S3 errors (throttling/429, temporary 500s, network blips) that would succeed on a second attempt will now fail immediately. This can increase false failures in production, especially under high S3 load.
 
 ### Option 2: Per-table processing timeout (recommended)
 
@@ -80,12 +82,14 @@ A `TimeoutException` would be caught by the existing `catch (th: Throwable)` blo
 **Pros:** Protects against any type of slow failure (S3, network, catalog service). Configurable per deployment.
 **Cons:** Requires code change. Must choose a default timeout that doesn't kill legitimately slow large tables.
 
-### Option 3: Both (recommended)
+### ~~Option 3: Both~~
 
-Apply Option 1 to reduce unnecessary S3 retries on non-retryable errors, and Option 2 as a safety net for any unexpected slowness regardless of source.
+~~Apply Option 1 to reduce unnecessary S3 retries on non-retryable errors, and Option 2 as a safety net for any unexpected slowness regardless of source.~~
+
+Option 1 is **not recommended** because reducing S3 retries globally hurts resilience for transient errors that are legitimately retryable. The retry behavior is correct for 429s, 500s, and network issues — we only want to avoid wasting time on non-retryable errors like 403.
 
 ## Recommendation
 
-Implement **Option 3** (both). The S3 config change is low-risk and immediately reduces wasted time on 403 errors. The per-table timeout provides a general-purpose safeguard for the job as a whole.
+Implement **Option 2 only** (per-table timeout). It solves the fail-fast requirement without sacrificing retry resilience for transient S3 errors. The S3 SDK will still retry where retries make sense, but the overall wall-clock time per table is capped.
 
 Suggested default timeout: **30 seconds** — long enough for large Iceberg tables with many snapshots, short enough to prevent a single bad table from stalling the pipeline.
