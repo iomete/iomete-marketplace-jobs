@@ -20,6 +20,32 @@ data class DiscoveredTable(
     val location: String?,
 )
 
+class DatabaseNotFoundException(
+    val catalog: String,
+    val database: String,
+    cause: Throwable,
+) : RuntimeException(
+    "Database not found: catalog=$catalog, database=$database",
+    cause,
+)
+
+private fun isDatabaseNotFoundError(error: Throwable): Boolean {
+    var current: Throwable? = error
+
+    while (current != null) {
+        val className = current::class.qualifiedName.orEmpty()
+        val message = current.message.orEmpty()
+
+        if (className.endsWith("NoSuchNamespaceException") || message.contains("SCHEMA_NOT_FOUND")) {
+            return true
+        }
+
+        current = current.cause
+    }
+
+    return false
+}
+
 @ApplicationScoped
 class CatalogDiscoveryService {
     private val logger = Logger.getLogger(CatalogDiscoveryService::class.java)
@@ -59,6 +85,14 @@ class CatalogDiscoveryService {
             try {
                 spark.sql("SHOW TABLES FROM `$catalog`.`$database`").collectAsList()
             } catch (th: Throwable) {
+                if (isDatabaseNotFoundError(th)) {
+                    throw DatabaseNotFoundException(
+                        catalog = catalog,
+                        database = database,
+                        cause = th,
+                    )
+                }
+
                 throw IllegalStateException(
                     "Failed to discover tables for catalog=$catalog database=$database",
                     th,
@@ -93,6 +127,14 @@ class CatalogDiscoveryService {
             try {
                 spark.sql("DESCRIBE DATABASE EXTENDED $qualifiedDatabaseName").collectAsList()
             } catch (th: Throwable) {
+                if (isDatabaseNotFoundError(th)) {
+                    throw DatabaseNotFoundException(
+                        catalog = catalog,
+                        database = database,
+                        cause = th,
+                    )
+                }
+
                 throw IllegalStateException(
                     "Failed to discover location for database=$qualifiedDatabaseName",
                     th,
