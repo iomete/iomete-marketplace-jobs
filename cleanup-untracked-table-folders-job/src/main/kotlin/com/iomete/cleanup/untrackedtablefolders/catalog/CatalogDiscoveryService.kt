@@ -33,10 +33,10 @@ private fun isDatabaseNotFoundError(error: Throwable): Boolean {
     var current: Throwable? = error
 
     while (current != null) {
-        val className = current::class.qualifiedName.orEmpty()
+        val className = current.javaClass.name
         val message = current.message.orEmpty()
 
-        if (className.endsWith("NoSuchNamespaceException") || message.contains("SCHEMA_NOT_FOUND")) {
+        if (className.endsWith("NoSuchNamespaceException") || message.contains("SCHEMA_NOT_FOUND", ignoreCase = true)) {
             return true
         }
 
