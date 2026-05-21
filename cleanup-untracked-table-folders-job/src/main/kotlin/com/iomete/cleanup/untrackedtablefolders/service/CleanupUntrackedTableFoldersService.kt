@@ -242,7 +242,10 @@ class CleanupUntrackedTableFoldersService {
                 }
             } catch (th: DatabaseNotFoundException) {
                 logger.warn(
-                    "Configured database was not found; skipping cleanup for catalog=${config.catalog}, database=$database",
+                    "Configured database was not found; skipping cleanup for catalog=${config.catalog}, database=$database"
+                )
+                logger.debug(
+                    "Configured database was not found details for catalog=${config.catalog}, database=$database",
                     th,
                 )
 
