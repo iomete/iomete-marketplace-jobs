@@ -126,7 +126,8 @@ Example:
   "older_than_hours": 24,
   "dry_run": true,
   "delete_enabled": false,
-  "max_candidate_folders_per_database": 10
+  "max_candidate_folders_per_database": 10,
+  "collect_size_statistics": true
 }
 ```
 
@@ -342,6 +343,26 @@ For example, with this setting:
 Use a conservative value first. Increase it only after reviewing dry-run output and confirming the candidate folders are expected.
 
 ---
+### `collect_size_statistics`
+
+Whether to estimate object count and total size for candidate folders.
+
+When enabled, the job recursively lists objects under the final candidate folders and sums object count and size. This happens only after candidate detection and safety checks, so the job does not recursively scan the whole database.
+
+This can take time for folders with many objects. If size estimation adds too much overhead, set:
+
+```json
+"collect_size_statistics": false
+```
+
+Audit rows store raw byte values:
+
+- `candidate_object_count`
+- `candidate_total_size_bytes`
+- `deleted_object_count`
+- `deleted_total_size_bytes`
+
+Logs display the same values in a human-readable format such as MB, GB, or TB.
 
 ## Safety model
 
@@ -451,7 +472,9 @@ Audit rows include:
 - Active table count
 - Storage folder count
 - Candidate folder count
+- Candidate object count and estimated size in bytes
 - Deleted folder count
+- Deleted object count and size in bytes
 - Candidate folders
 - Deleted folders
 - Diagnostic details
@@ -473,6 +496,10 @@ Audit rows include:
 | `older_than_hours` | Configured age threshold used for candidate detection. |
 | `cutoff_time` | Calculated timestamp used to decide whether a folder is old enough to be considered. |
 | `max_candidate_folders_per_database` | Configured per-database candidate-folder safety limit. |
+| `candidate_object_count` | Number of objects found under candidate folders when `collect_size_statistics=true`; otherwise `0`. |
+| `candidate_total_size_bytes` | Total size in bytes under candidate folders when size statistics are collected. |
+| `deleted_object_count` | Number of objects under folders that were actually deleted. |
+| `deleted_total_size_bytes` | Total size in bytes under folders that were actually deleted. |
 | `diagnostic_details` | Job-specific diagnostic/debug details such as path samples and truncation flags. This is not Spark metrics and not Iceberg metrics. |
 
 ### Diagnostic details field
@@ -524,7 +551,8 @@ Example:
   "older_than_hours": 24,
   "dry_run": true,
   "delete_enabled": false,
-  "max_candidate_folders_per_database": 10
+  "max_candidate_folders_per_database": 10,
+  "collect_size_statistics": true
 }
 ```
 
@@ -552,7 +580,8 @@ The missing database is logged as a warning, not as a cleanup failure. Unexpecte
   "older_than_hours": 24,
   "dry_run": true,
   "delete_enabled": false,
-  "max_candidate_folders_per_database": 10
+  "max_candidate_folders_per_database": 10,
+  "collect_size_statistics": true
 }
 ```
 
@@ -560,6 +589,7 @@ Review:
 
 - Summary logs
 - Candidate folders
+- Estimated candidate object count and size, when `collect_size_statistics=true`
 - Audit rows
 - Storage scan root
 - Active table locations
@@ -587,7 +617,8 @@ Before enabling deletion, verify that each candidate folder:
   "older_than_hours": 24,
   "dry_run": false,
   "delete_enabled": true,
-  "max_candidate_folders_per_database": 10
+  "max_candidate_folders_per_database": 10,
+  "collect_size_statistics": true
 }
 ```
 
@@ -616,6 +647,8 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T12 | Table is dropped then recreated at different location | Old untracked folder can become a candidate |
 | T13 | Candidate becomes active between detection and deletion | Deletion is skipped for that folder |
 | T14 | Unexpected catalog/storage error | `FAILED` |
+| T15 | `collect_size_statistics=true` with candidate folders | Candidate object count and size are collected and logged |
+| T16 | `collect_size_statistics=false` with candidate folders | Candidate and deleted size audit fields remain `0` and size collection is skipped |
 
 ---
 
@@ -715,3 +748,4 @@ Any old unreferenced files inside that active table folder should be handled by 
 - When a selected candidate folder is deleted, the full object-storage prefix under that folder is deleted, including nested data and metadata objects.
 - The job relies on Spark catalog discovery for active table locations.
 - The job is intended for controlled cleanup workflows, not blind automatic deletion.
+- Size statistics require recursively listing objects under final candidate folders. This can add overhead for folders with many objects and can be disabled with `collect_size_statistics=false`.

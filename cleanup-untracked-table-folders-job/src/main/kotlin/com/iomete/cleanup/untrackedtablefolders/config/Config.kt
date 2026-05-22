@@ -34,6 +34,9 @@ data class ApplicationConfig(
 
     @field:JsonProperty("max_candidate_folders_per_database")
     val maxCandidateFoldersPerDatabase: Int = 10,
+
+    @field:JsonProperty("collect_size_statistics")
+    val collectSizeStatistics: Boolean = true,
 ) {
     fun validate() {
         require(catalog.isNotBlank()) { "catalog must not be blank" }
