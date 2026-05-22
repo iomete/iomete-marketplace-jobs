@@ -122,6 +122,7 @@ Example:
   "catalog": "spark_catalog",
   "databases": ["example_database"],
   "exclude_paths": [],
+  "exclude_database_folders": [],
   "older_than_hours": 24,
   "dry_run": true,
   "delete_enabled": false,
@@ -189,17 +190,72 @@ Exact physical object-storage folder paths that should be protected from cleanup
 ]
 ```
 
-`exclude_paths` is intentionally path-based. It does **not** accept table names, catalog identifiers, partial paths, or substring matches in this version.
+`exclude_paths` is intentionally path-based. It does **not** accept table names, catalog identifiers, partial paths, or substring matches.
+
+For a shorter database-scoped exclusion format, use `exclude_database_folders`.
 
 | Input | Supported? | Notes |
 |---|---:|---|
 | `s3a://bucket/data/analytics/customer_events` | Yes | Exact physical storage path |
 | `s3a://bucket/data/analytics/customer_events/` | Yes | Trailing slash is normalized |
 | `customer_events` | No | Table/folder name alone is ambiguous across databases |
-| `analytics.customer_events` | No | This job protects physical folders, not catalog identifiers |
+| `analytics.customer_events` | No for `exclude_paths` | Use `exclude_database_folders` for this database-scoped folder format |
 | `customer` as a substring | No | Substring matching is intentionally not supported |
 
-This is intentional. Full paths are explicit and avoid ambiguous behavior when multiple configured databases contain folders with the same table or folder name.
+Full paths are the most explicit option and avoid ambiguity when multiple configured databases contain folders with the same table or folder name.
+
+---
+
+### `exclude_database_folders`
+
+Database-scoped immediate child folders that should be protected from cleanup.
+
+```json
+"exclude_database_folders": [
+  "analytics.customer_events"
+]
+```
+
+Each entry uses this format:
+
+```text
+<database>.<folder>
+```
+
+For example, if the resolved scan root for database `analytics` is:
+
+```text
+s3a://bucket/data/analytics
+```
+
+then this config:
+
+```json
+"exclude_database_folders": ["analytics.customer_events"]
+```
+
+is internally resolved to this protected physical path:
+
+```text
+s3a://bucket/data/analytics/customer_events
+```
+
+This is useful when operators know the database and folder name but do not want to provide the full object-storage path.
+
+Rules:
+
+- The database part must be listed in `databases`.
+- The folder part must be an immediate child folder name.
+- The folder part must not contain `/`.
+- Catalog prefixes are not supported in this field.
+- The entry is converted to a full physical path internally and then handled together with `exclude_paths`.
+
+| Input | Supported? | Notes |
+|---|---:|---|
+| `analytics.customer_events` | Yes | Protects the `customer_events` folder under the resolved scan root for database `analytics` |
+| `spark_catalog.analytics.customer_events` | No | Catalog prefix is not supported; `catalog` is already configured separately |
+| `customer_events` | No | Database name is required to avoid ambiguity |
+| `analytics.customer_events/nested` | No | Only immediate child folders are supported |
 
 ---
 
@@ -295,6 +351,7 @@ The job has several independent fail-safe layers. These are intentionally redund
 - Deletion requires both `dry_run=false` and `delete_enabled=true`; changing only one flag cannot delete data.
 - Only immediate child folders under the resolved scan root are considered.
 - Active catalog table locations are protected.
+- Configured `exclude_paths` and `exclude_database_folders` are protected.
 - Candidate folders must satisfy `older_than_hours`.
 - Candidate count is capped by `max_candidate_folders_per_database`.
 - Candidate folders are revalidated against active catalog table locations before deletion.
@@ -313,6 +370,7 @@ The main safety principle is **fail closed**: if the job cannot prove that a fol
 | Immediate-child-folder scan only | Recursive scanning of arbitrary nested files |
 | Scan-root boundary validation | Scanning outside the intended database storage area |
 | Active table location protection | Deleting folders still claimed by the catalog |
+| Configured exclusions | Deleting folders explicitly protected through `exclude_paths` or `exclude_database_folders` |
 | `older_than_hours` cutoff | Selecting very recent folders too quickly |
 | `max_candidate_folders_per_database` | Broad accidental deletion when too many candidates appear |
 | Pre-delete catalog revalidation | Deleting a folder that became active after initial discovery |
@@ -454,6 +512,7 @@ Example:
   "catalog": "spark_catalog",
   "databases": ["valid_database", "this_does_not_exist"],
   "exclude_paths": [],
+  "exclude_database_folders": [],
   "older_than_hours": 24,
   "dry_run": true,
   "delete_enabled": false,
@@ -481,6 +540,7 @@ The missing database is logged as a warning, not as a cleanup failure. Unexpecte
   "catalog": "spark_catalog",
   "databases": ["analytics"],
   "exclude_paths": [],
+  "exclude_database_folders": [],
   "older_than_hours": 24,
   "dry_run": true,
   "delete_enabled": false,
@@ -504,6 +564,7 @@ Before enabling deletion, verify that each candidate folder:
 - Is no longer claimed by the catalog.
 - Is older than the configured cutoff.
 - Is not in `exclude_paths`.
+- Is not protected by `exclude_database_folders`.
 - Is expected to be removed.
 - Is not an active table folder recreated at the same location.
 
@@ -514,6 +575,7 @@ Before enabling deletion, verify that each candidate folder:
   "catalog": "spark_catalog",
   "databases": ["analytics"],
   "exclude_paths": [],
+  "exclude_database_folders": [],
   "older_than_hours": 24,
   "dry_run": false,
   "delete_enabled": true,
@@ -540,6 +602,7 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T07 | `dry_run=false`, `delete_enabled=false` | Fails safe, no deletion |
 | T08 | Candidate count exceeds max limit | `SKIPPED`, no deletion |
 | T09 | Candidate is listed in `exclude_paths` by full path | Candidate is protected |
+| T09b | Candidate is listed in `exclude_database_folders` as `database.folder` | Candidate is protected |
 | T10 | Loose file directly under scan root | Ignored, not deleted |
 | T11 | Table is dropped then recreated at same location | Folder is protected because it is active again |
 | T12 | Table is dropped then recreated at different location | Old untracked folder can become a candidate |
@@ -636,8 +699,10 @@ Any old unreferenced files inside that active table folder should be handled by 
 ## Known limitations
 
 - `exclude_paths` supports full physical storage paths only.
-- Table names or folder names alone are not supported in `exclude_paths`.
+- `exclude_database_folders` supports database-scoped immediate child folder names in `database.folder` format.
+- Table names or folder names alone are not supported because they can be ambiguous across databases.
 - The job deletes whole untracked table folders, not individual orphan files inside active Iceberg table folders.
-- The job lists immediate child folders under the resolved scan root, not a recursive file tree.
+- Candidate discovery is table-folder-level: the job only selects immediate child folders under the resolved scan root as cleanup candidates.
+- When a selected candidate folder is deleted, the full object-storage prefix under that folder is deleted, including nested data and metadata objects.
 - The job relies on Spark catalog discovery for active table locations.
 - The job is intended for controlled cleanup workflows, not blind automatic deletion.

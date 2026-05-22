@@ -20,6 +20,9 @@ data class ApplicationConfig(
     @field:JsonProperty("exclude_paths")
     val excludePaths: List<String> = emptyList(),
 
+    @field:JsonProperty("exclude_database_folders")
+    val excludeDatabaseFolders: List<String> = emptyList(),
+
     @field:JsonProperty("older_than_hours")
     val olderThanHours: Long = 24,
 
@@ -37,6 +40,27 @@ data class ApplicationConfig(
 
         require(databases.isNotEmpty()) {
             "databases must contain at least one database name"
+        }
+
+        val configuredDatabaseSet = databases.toSet()
+
+        excludeDatabaseFolders.forEach { excludedDatabaseFolder ->
+            val parts = excludedDatabaseFolder.split(".")
+
+            require(parts.size == 2 && parts[0].isNotBlank() && parts[1].isNotBlank()) {
+                "exclude_database_folders entries must use database.folder format: $excludedDatabaseFolder"
+            }
+
+            val database = parts[0]
+            val folder = parts[1]
+
+            require(database in configuredDatabaseSet) {
+                "exclude_database_folders database must be listed in databases: $excludedDatabaseFolder"
+            }
+
+            require('/' !in folder) {
+                "exclude_database_folders folder must be an immediate child folder name without '/': $excludedDatabaseFolder"
+            }
         }
 
         require(olderThanHours >= 0) {
