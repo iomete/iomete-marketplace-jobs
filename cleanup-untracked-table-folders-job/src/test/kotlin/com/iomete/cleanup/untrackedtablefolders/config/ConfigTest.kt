@@ -1,6 +1,8 @@
 package com.iomete.cleanup.untrackedtablefolders.config
 
 import org.junit.jupiter.api.Assertions.assertDoesNotThrow
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 
@@ -58,5 +60,28 @@ class ConfigTest {
         assertThrows(IllegalArgumentException::class.java) {
             config.validate()
         }
+    }
+
+    @Test
+    fun `collect size statistics defaults to true`() {
+        val config =
+            ApplicationConfig(
+                catalog = "spark_catalog",
+                databases = listOf("analytics"),
+            )
+
+        assertTrue(config.collectSizeStatistics)
+    }
+
+    @Test
+    fun `collect size statistics can be disabled`() {
+        val config =
+            ApplicationConfig(
+                catalog = "spark_catalog",
+                databases = listOf("analytics"),
+                collectSizeStatistics = false,
+            )
+
+        assertFalse(config.collectSizeStatistics)
     }
 }

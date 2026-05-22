@@ -376,11 +376,19 @@ class CleanupUntrackedTableFoldersService {
         logger.info("Immediate child storage folders scanned: ${storageFolderPaths.size}")
         logger.info("Untracked candidate folder count: ${candidateFolderPaths.size}")
         logger.info(
-            "Estimated candidate size: ${formatBytes(candidateSizeStats.totalSizeBytes)} across ${candidateSizeStats.objectCount} object(s)"
+            if (config.collectSizeStatistics) {
+                "Estimated candidate size: ${formatBytes(candidateSizeStats.totalSizeBytes)} across ${candidateSizeStats.objectCount} object(s)"
+            } else {
+                "Estimated candidate size: skipped because collect_size_statistics=false"
+            }
         )
         logger.info("Deleted untracked folder count: ${deletedFolderPaths.size}")
         logger.info(
-            "Deleted size: ${formatBytes(deletedSizeStats.totalSizeBytes)} across ${deletedSizeStats.objectCount} object(s)"
+            if (config.collectSizeStatistics) {
+                "Deleted size: ${formatBytes(deletedSizeStats.totalSizeBytes)} across ${deletedSizeStats.objectCount} object(s)"
+            } else {
+                "Deleted size: skipped because collect_size_statistics=false"
+            }
         )
         logger.info("Deletion performed: ${deletedFolderPaths.isNotEmpty()}")
         logger.info("Protected catalog active table locations:")
