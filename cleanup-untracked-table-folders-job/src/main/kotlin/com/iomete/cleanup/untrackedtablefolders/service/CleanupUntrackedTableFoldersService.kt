@@ -37,7 +37,7 @@ class CleanupUntrackedTableFoldersService {
 
         config.databases.forEach { database ->
             val databaseStartTime = Instant.now()
-
+            var effectiveExcludedPathsForAudit = normalizedConfiguredExcludePaths()
             try {
                 val discoveredDatabase =
                     catalogDiscoveryService.discoverDatabase(
@@ -108,6 +108,23 @@ class CleanupUntrackedTableFoldersService {
                     val activeTableLocations =
                         discoveredDatabase.tables.mapNotNull { it.location }.sorted()
 
+                    val effectiveExcludedPaths =
+                        effectiveExcludedPaths(
+                            database = discoveredDatabase.database,
+                            storageScanLocation = storageScanLocation,
+                        )
+
+                    effectiveExcludedPathsForAudit = effectiveExcludedPaths
+
+                    if (effectiveExcludedPaths.isNotEmpty()) {
+                        logger.info(
+                            "Using ${effectiveExcludedPaths.size} effective excluded path(s) for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
+                        )
+                        effectiveExcludedPaths.forEach { excludedPath ->
+                            logger.info("Effective excluded path: $excludedPath")
+                        }
+                    }
+
                     val storageFolderPaths = storageFolders.map { it.path }.sorted()
 
                     val candidateFolders =
@@ -116,7 +133,7 @@ class CleanupUntrackedTableFoldersService {
                                 storageFolders = storageFolders,
                                 activeTableLocations =
                                     discoveredDatabase.tables.mapNotNull { it.location },
-                                excludedPaths = config.excludePaths,
+                                excludedPaths = effectiveExcludedPaths,
                                 cutoffTimeMillis = cutoffTimeMillis,
                                 maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
                             )
@@ -141,6 +158,7 @@ class CleanupUntrackedTableFoldersService {
                                 candidateFolderPaths = candidateFolderPaths,
                                 candidateCount = th.candidateCount.toLong(),
                                 cutoffTime = cutoffTime,
+                                excludedPaths = effectiveExcludedPaths,
                                 errorMessage = th.message,
                             )
 
@@ -221,6 +239,7 @@ class CleanupUntrackedTableFoldersService {
                         storageScanLocation = storageScanLocation,
                         activeTableLocations = activeTableLocations,
                         storageFolderPaths = storageFolderPaths,
+                        excludedPaths = effectiveExcludedPaths,
                         candidateFolderPaths = candidateFolderPaths,
                         deletedFolderPaths = deletedFolders,
                     )
@@ -238,6 +257,7 @@ class CleanupUntrackedTableFoldersService {
                         candidateFolderPaths = candidateFolderPaths,
                         deletedFolderPaths = deletedFolders,
                         cutoffTime = cutoffTime,
+                        excludedPaths = effectiveExcludedPaths,
                     )
                 }
             } catch (th: DatabaseNotFoundException) {
@@ -262,6 +282,7 @@ class CleanupUntrackedTableFoldersService {
                     runId = runId,
                     database = database,
                     databaseStartTime = databaseStartTime,
+                    excludedPaths = effectiveExcludedPathsForAudit,
                     error = th,
                 )
             }
@@ -289,6 +310,7 @@ class CleanupUntrackedTableFoldersService {
         storageScanLocation: String,
         activeTableLocations: List<String>,
         storageFolderPaths: List<String>,
+        excludedPaths: List<String>,
         candidateFolderPaths: List<String>,
         deletedFolderPaths: List<String>,
     ) {
@@ -309,6 +331,8 @@ class CleanupUntrackedTableFoldersService {
         logger.info("Deletion performed: ${deletedFolderPaths.isNotEmpty()}")
         logger.info("Protected catalog active table locations:")
         logListOrNone(protectedFolderPaths.sorted())
+        logger.info("Effective excluded paths:")
+        logListOrNone(excludedPaths.sorted())
         logger.info("Storage folders not selected as candidates:")
         logListOrNone(nonCandidateStorageFolderPaths)
         logger.info("Untracked candidate folders selected for cleanup:")
@@ -375,6 +399,7 @@ class CleanupUntrackedTableFoldersService {
         candidateFolderPaths: List<String>,
         candidateCount: Long,
         cutoffTime: Instant,
+        excludedPaths: List<String>,
         errorMessage: String?,
     ) {
         writeAuditRecord(
@@ -392,6 +417,7 @@ class CleanupUntrackedTableFoldersService {
             candidateFolderCount = candidateCount,
             candidateFolders = candidateFolderPaths.take(MAX_AUDIT_PATH_SAMPLE_SIZE),
             cutoffTime = cutoffTime,
+            excludedPaths = excludedPaths,
             diagnosticDetails =
                 diagnosticDetails(
                     activeTableLocations = activeTableLocations,
@@ -414,6 +440,7 @@ class CleanupUntrackedTableFoldersService {
         candidateFolderPaths: List<String>,
         deletedFolderPaths: List<String>,
         cutoffTime: Instant,
+        excludedPaths: List<String>,
     ) {
         writeAuditRecord(
             runId = runId,
@@ -432,6 +459,7 @@ class CleanupUntrackedTableFoldersService {
             candidateFolders = candidateFolderPaths,
             deletedFolders = deletedFolderPaths,
             cutoffTime = cutoffTime,
+            excludedPaths = excludedPaths,
             diagnosticDetails =
                 diagnosticDetails(
                     activeTableLocations = activeTableLocations,
@@ -498,6 +526,7 @@ class CleanupUntrackedTableFoldersService {
         candidateFolders: List<String> = emptyList(),
         deletedFolders: List<String> = emptyList(),
         cutoffTime: Instant? = null,
+        excludedPaths: List<String> = config.excludePaths,
         diagnosticDetails: Map<String, String> = emptyMap(),
     ) {
         cleanupAuditTableService.writeAuditRecord(
@@ -513,7 +542,7 @@ class CleanupUntrackedTableFoldersService {
                 olderThanHours = config.olderThanHours,
                 cutoffTime = cutoffTime,
                 maxCandidateFoldersPerDatabase = config.maxCandidateFoldersPerDatabase,
-                excludedPaths = config.excludePaths.sorted(),
+                excludedPaths = excludedPaths.sorted(),
                 status = status,
                 statusReason = statusReason,
                 errorMessage = errorMessage,
@@ -553,6 +582,7 @@ class CleanupUntrackedTableFoldersService {
         runId: String,
         database: String,
         databaseStartTime: Instant,
+        excludedPaths: List<String> = normalizedConfiguredExcludePaths(),
         error: Throwable,
     ) {
         writeAuditRecord(
@@ -563,8 +593,40 @@ class CleanupUntrackedTableFoldersService {
             status = STATUS_FAILED,
             statusReason = "unexpected_error",
             errorMessage = error.message ?: error::class.java.name,
+            excludedPaths = excludedPaths,
         )
     }
+
+    private fun normalizedConfiguredExcludePaths(): List<String> =
+        config.excludePaths
+            .map { StoragePathUtils.normalizeLocation(it) }
+            .distinct()
+            .sorted()
+
+    private fun effectiveExcludedPaths(
+        database: String,
+        storageScanLocation: String,
+    ): List<String> =
+        (normalizedConfiguredExcludePaths() + resolvedExcludeDatabaseFolderPaths(database, storageScanLocation))
+            .map { StoragePathUtils.normalizeLocation(it) }
+            .distinct()
+            .sorted()
+
+    private fun resolvedExcludeDatabaseFolderPaths(
+        database: String,
+        storageScanLocation: String,
+    ): List<String> =
+        config.excludeDatabaseFolders.mapNotNull { excludedDatabaseFolder ->
+            val parts = excludedDatabaseFolder.split(".")
+            val excludedDatabase = parts[0]
+            val excludedFolder = parts[1]
+
+            if (excludedDatabase == database) {
+                StoragePathUtils.normalizeLocation("$storageScanLocation/$excludedFolder")
+            } else {
+                null
+            }
+        }
 
     private fun resolveStorageScanLocation(
         databaseLocation: String,

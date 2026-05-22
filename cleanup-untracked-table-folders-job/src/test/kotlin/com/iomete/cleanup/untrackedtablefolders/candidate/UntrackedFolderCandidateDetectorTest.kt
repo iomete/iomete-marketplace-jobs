@@ -47,6 +47,27 @@ class UntrackedFolderCandidateDetectorTest {
     }
 
     @Test
+    fun `excludes resolved database folder paths from candidates`() {
+        val resolvedDatabaseFolderExclusion = "s3a://bucket/db/customer_events"
+
+        val candidates = detector.detectCandidates(
+            storageFolders = listOf(
+                storageFolder("s3a://bucket/db/customer_events", modificationTimeMillis = 100),
+                storageFolder("s3a://bucket/db/deleted_table", modificationTimeMillis = 100),
+            ),
+            activeTableLocations = emptyList(),
+            excludedPaths = listOf(resolvedDatabaseFolderExclusion),
+            cutoffTimeMillis = 200,
+            maxCandidateFolders = 10,
+        )
+
+        assertEquals(
+            listOf("s3a://bucket/db/deleted_table"),
+            candidates.map { it.path },
+        )
+    }
+
+    @Test
     fun `normalizes trailing slashes before comparing paths`() {
         val candidates = detector.detectCandidates(
             storageFolders = listOf(
