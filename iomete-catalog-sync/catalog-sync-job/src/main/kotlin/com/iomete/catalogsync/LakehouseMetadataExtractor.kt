@@ -100,11 +100,12 @@ class LakehouseMetadataExtractor(
         val syncTimeout = config
             .getOptionalValue("SYNC_TIMEOUT_SECONDS", Long::class.java)
             .orElse(60L)
-        val pool = ForkJoinPool(parallelism)
-        val timeoutExecutor = java.util.concurrent.Executors.newFixedThreadPool(parallelism)
-        logger.info("Using ForkJoinPool with parallelism={}, tableProcessTimeout={}s", parallelism, tableProcessTimeout)
 
+        val pool = ForkJoinPool(parallelism)
         try {
+            val timeoutExecutor = java.util.concurrent.Executors.newFixedThreadPool(parallelism)
+            try {
+                logger.info("Using ForkJoinPool with parallelism={}, tableProcessTimeout={}s", parallelism, tableProcessTimeout)
             // Phase 1: Discover all schemas and tables (parallel, flat — no nesting)
             val catalogDiscoveryFailed = mutableSetOf<String>()
             val allSchemaEntries = catalogs.flatMap { catalog ->
@@ -311,11 +312,13 @@ class LakehouseMetadataExtractor(
                 schemaBatches.size, totalDiscovered, totalProcessed, totalSynced,
                 totalProcessFailed, totalSyncFailed, totalDiscoveryFailed, catalogDiscoveryFailed.size
             )
+            } finally {
+                timeoutExecutor.shutdown()
+                timeoutExecutor.awaitTermination(30, TimeUnit.SECONDS)
+            }
         } finally {
             pool.shutdown()
-            timeoutExecutor.shutdown()
             pool.awaitTermination(30, TimeUnit.SECONDS)
-            timeoutExecutor.awaitTermination(30, TimeUnit.SECONDS)
         }
 
         printMetrics()
