@@ -11,7 +11,9 @@ import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.function.Supplier
 import jakarta.inject.Singleton
 import org.eclipse.microprofile.rest.client.inject.RestClient
@@ -59,13 +61,21 @@ class LakehouseMetadataExtractor(
     private data class SchemaBatch(
         val catalog: CoreServiceClient.CatalogDetails,
         val schema: String,
-        val tables: List<Row>
+        val tables: List<Row>,
+        val discoveryFailed: Boolean = false
     )
 
     private data class TableWorkItem(
         val catalog: CoreServiceClient.CatalogDetails,
         val schema: String,
         val tableRow: Row
+    )
+
+    private data class SyncResult(
+        val catalogName: String,
+        val schema: String,
+        val tableName: String,
+        val failed: Boolean
     )
 
     private data class TableResult(
@@ -80,27 +90,47 @@ class LakehouseMetadataExtractor(
         val catalogs = getCatalog(appConfig)
         logger.info("Catalogs: {}", catalogs)
 
-        val parallelism = ConfigProvider.getConfig()
+        val config = ConfigProvider.getConfig()
+        val parallelism = config
             .getOptionalValue("HTTP_PARALLELISM", Int::class.java)
             .orElse(Runtime.getRuntime().availableProcessors().coerceAtLeast(4))
+        val tableProcessTimeout = config
+            .getOptionalValue("TABLE_PROCESS_TIMEOUT_SECONDS", Long::class.java)
+            .orElse(60L)
+        val syncTimeout = config
+            .getOptionalValue("SYNC_TIMEOUT_SECONDS", Long::class.java)
+            .orElse(60L)
         val pool = ForkJoinPool(parallelism)
-        logger.info("Using ForkJoinPool with parallelism={}", parallelism)
+        val timeoutExecutor = java.util.concurrent.Executors.newFixedThreadPool(parallelism)
+        logger.info("Using ForkJoinPool with parallelism={}, tableProcessTimeout={}s", parallelism, tableProcessTimeout)
 
         try {
             // Phase 1: Discover all schemas and tables (parallel, flat — no nesting)
+            val catalogDiscoveryFailed = mutableSetOf<String>()
             val allSchemaEntries = catalogs.flatMap { catalog ->
                 logger.info("Fetching schemas for catalog: {}", catalog.name)
-                val schemas = getSchemas(catalog.name)
-                logger.info("Catalog {} has {} schemas", catalog.name, schemas.size)
-                schemas.map { schema -> catalog to schema }
+                try {
+                    val schemas = getSchemas(catalog.name)
+                    logger.info("Catalog {} has {} schemas", catalog.name, schemas.size)
+                    schemas.map { schema -> catalog to schema }
+                } catch (th: Throwable) {
+                    logger.error("Failed to discover schemas in catalog {}: {}", catalog.name, th.message, th)
+                    catalogDiscoveryFailed.add(catalog.name)
+                    emptyList()
+                }
             }
 
             val schemaBatches = Collections.synchronizedList(mutableListOf<SchemaBatch>())
             pool.submit {
                 allSchemaEntries.parallelStream().forEach { (catalog, schema) ->
-                    logger.info("Discovering tables in {}.{}", catalog.name, schema)
-                    val tables = getTables(catalog.name, schema, catalog.type)
-                    schemaBatches.add(SchemaBatch(catalog, schema, tables))
+                    try {
+                        logger.info("Discovering tables in {}.{}", catalog.name, schema)
+                        val tables = getTables(catalog.name, schema, catalog.type)
+                        schemaBatches.add(SchemaBatch(catalog, schema, tables))
+                    } catch (th: Throwable) {
+                        logger.error("Failed to discover tables in {}.{}: {}", catalog.name, schema, th.message, th)
+                        schemaBatches.add(SchemaBatch(catalog, schema, emptyList(), discoveryFailed = true))
+                    }
                 }
             }.get()
 
@@ -117,18 +147,27 @@ class LakehouseMetadataExtractor(
             val results = Collections.synchronizedList(mutableListOf<TableResult>())
             pool.submit {
                 allWorkItems.parallelStream().forEach { work ->
-                    val tableName = work.tableRow.getString(1)
-                    val isTemp = work.tableRow.getBoolean(2)
                     val catalogName = work.catalog.name
-
-                    logger.info("Processing table: {}.{}.{}", catalogName, work.schema, tableName)
-
+                    var tableName = "unknown"
                     try {
+                        tableName = work.tableRow.getString(1)
+                        val isTemp = work.tableRow.getBoolean(2)
+
+                        logger.info("Processing table: {}.{}.{}", catalogName, work.schema, tableName)
+
                         val tableProcessMetric = getTimer(
                             name = METRIC_NAME_TABLE_PROCESS, catalog = catalogName, schema = work.schema, tableName = tableName
                         )
                         val scrapedData = tableProcessMetric.recordCallable {
-                            scrapeTable(catalog = catalogName, schema = work.schema, tableName = tableName, isTemp = isTemp)
+                            val future = CompletableFuture.supplyAsync({
+                                scrapeTable(catalog = catalogName, schema = work.schema, tableName = tableName, isTemp = isTemp)
+                            }, timeoutExecutor)
+                            try {
+                                future.get(tableProcessTimeout, TimeUnit.SECONDS)
+                            } catch (te: TimeoutException) {
+                                future.cancel(true)
+                                throw te
+                            }
                         }
 
                         logger.info(
@@ -149,23 +188,39 @@ class LakehouseMetadataExtractor(
             }.get()
 
             // Phase 3: Sync table data (parallel, flat — no nesting)
-            val successfulResults = results.filter { it.metadata != null }
+            val finalResults = ArrayList(results)
+            val successfulResults = finalResults.filter { it.metadata != null }
+            val syncResults = Collections.synchronizedList(mutableListOf<SyncResult>())
             pool.submit {
                 successfulResults.parallelStream().forEach { result ->
                     try {
                         val dataSyncMetric = getTimer(
                             name = METRIC_NAME_DATA_SYNC, catalog = result.catalogName, schema = result.schema, tableName = result.tableName
                         )
-                        dataSyncMetric.record<Unit> { dataSync.syncTableData(result.metadata!!) }
+                        dataSyncMetric.record<Unit> {
+                            val future = CompletableFuture.supplyAsync({
+                                dataSync.syncTableData(result.metadata!!)
+                            }, timeoutExecutor)
+                            try {
+                                future.get(syncTimeout, TimeUnit.SECONDS)
+                            } catch (te: TimeoutException) {
+                                future.cancel(true)
+                                throw te
+                            }
+                        }
+                        syncResults.add(SyncResult(result.catalogName, result.schema, result.tableName, failed = false))
                     } catch (th: Throwable) {
                         logger.error("Failed to sync table {}.{}.{}: {}", result.catalogName, result.schema, result.tableName, th.message, th)
                         registry.counter(METRIC_NAME_DATA_SYNC_FAILURES, "catalog", result.catalogName, "schema", result.schema, "table", result.tableName).increment()
+                        syncResults.add(SyncResult(result.catalogName, result.schema, result.tableName, failed = true))
                     }
                 }
             }.get()
 
             // Phase 4: Aggregate and sync schema/catalog metadata (sequential, fast)
-            val resultsBySchema = results.groupBy { "${it.catalogName}/${it.schema}" }
+            val finalSyncResults = ArrayList(syncResults)
+            val resultsBySchema = finalResults.groupBy { "${it.catalogName}/${it.schema}" }
+            val syncResultsBySchema = finalSyncResults.groupBy { "${it.catalogName}/${it.schema}" }
             val schemasByCatalog = schemaBatches.groupBy { it.catalog.name }
 
             catalogs.forEach { catalog ->
@@ -178,8 +233,10 @@ class LakehouseMetadataExtractor(
                     catalogSchemas.forEach { batch ->
                         val key = "${catalog.name}/${batch.schema}"
                         val schemaResults = resultsBySchema[key] ?: emptyList()
+                        val schemaSyncResults = syncResultsBySchema[key] ?: emptyList()
                         val successful = schemaResults.mapNotNull { it.metadata }
                         val failedCount = schemaResults.count { it.error != null }
+                        val syncFailedCount = schemaSyncResults.count { it.failed }
 
                         if (failedCount > 0) {
                             logger.warn("Failed to process {} tables in schema {}.{}", failedCount, catalog.name, batch.schema)
@@ -202,7 +259,9 @@ class LakehouseMetadataExtractor(
                             totalSizeInBytes = schemaSizeInBytes,
                             totalDbSizeInBytes = schemaDbSizeInBytes,
                             totalFiles = schemaFiles,
-                            failedTableCount = failedCount
+                            failedTableCount = failedCount,
+                            syncFailedCount = syncFailedCount,
+                            discoveryFailed = batch.discoveryFailed
                         )
                         dataSync.syncSchemaData(schemaMetadata)
 
@@ -225,7 +284,8 @@ class LakehouseMetadataExtractor(
                         totalTableCount = totalTableCount,
                         totalSizeInBytes = totalSizeInBytes,
                         totalFiles = totalFiles,
-                        domainsAllowed = catalog.domainsAllowed.toSet()
+                        domainsAllowed = catalog.domainsAllowed.toSet(),
+                        discoveryFailed = catalog.name in catalogDiscoveryFailed
                     )
                     dataSync.syncCatalogData(catalogMetadata)
 
@@ -237,9 +297,25 @@ class LakehouseMetadataExtractor(
                     logger.error("Failed to sync metadata for catalog {}: {}", catalog.name, th.message, th)
                 }
             }
+
+            // Summary log
+            val totalDiscovered = allWorkItems.size
+            val totalProcessed = finalResults.count { it.metadata != null }
+            val totalProcessFailed = finalResults.count { it.error != null }
+            val totalSyncFailed = finalSyncResults.count { it.failed }
+            val totalSynced = totalProcessed - totalSyncFailed
+            val totalDiscoveryFailed = schemaBatches.count { it.discoveryFailed }
+
+            logger.info(
+                "Catalog sync summary: schemasDiscovered={} tablesDiscovered={} tablesProcessed={} tablesSynced={} processFailures={} syncFailures={} discoveryFailures={} catalogDiscoveryFailures={}",
+                schemaBatches.size, totalDiscovered, totalProcessed, totalSynced,
+                totalProcessFailed, totalSyncFailed, totalDiscoveryFailed, catalogDiscoveryFailed.size
+            )
         } finally {
             pool.shutdown()
+            timeoutExecutor.shutdown()
             pool.awaitTermination(30, TimeUnit.SECONDS)
+            timeoutExecutor.awaitTermination(30, TimeUnit.SECONDS)
         }
 
         printMetrics()
@@ -385,16 +461,10 @@ class LakehouseMetadataExtractor(
     private fun getSchemas(catalog: String): List<String> {
         logger.info("Fetching schemas in catalog: {}... excludeSchemas: {}", catalog, excludeSchemas)
 
-        try {
-            return spark.sql("show databases in `$catalog`")
-                .collectAsList().map { it.getString(0) }
-                .filter { schemaName -> schemaName.isNotBlank() } // filter out empty schema names
-                .filter { schemaName -> !excludeSchemas.contains(schemaName) }
-
-        } catch (th: Throwable) {
-            logger.warn("Couldn't fetch schemas in catalog: {}", catalog, th)
-            return emptyList()
-        }
+        return spark.sql("show databases in `$catalog`")
+            .collectAsList().map { it.getString(0) }
+            .filter { schemaName -> schemaName.isNotBlank() }
+            .filter { schemaName -> !excludeSchemas.contains(schemaName) }
     }
 
     fun getTables(catalog: String, schema: String, catalogType: List<String>): List<Row> {

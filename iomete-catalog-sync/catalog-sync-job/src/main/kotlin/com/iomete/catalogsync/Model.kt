@@ -11,7 +11,8 @@ data class CatalogMetadata(
     val totalTableCount: Int,
     val totalSizeInBytes: Long,
     val totalFiles: Long,
-    val domainsAllowed: Set<String> = setOf()
+    val domainsAllowed: Set<String> = setOf(),
+    val discoveryFailed: Boolean = false,
 )
 
 data class SchemaMetadata(
@@ -23,6 +24,8 @@ data class SchemaMetadata(
     val totalDbSizeInBytes: Long,
     val totalFiles: Long,
     val failedTableCount: Int,
+    val syncFailedCount: Int = 0,
+    val discoveryFailed: Boolean = false,
 )
 
 data class TableMetadata(
