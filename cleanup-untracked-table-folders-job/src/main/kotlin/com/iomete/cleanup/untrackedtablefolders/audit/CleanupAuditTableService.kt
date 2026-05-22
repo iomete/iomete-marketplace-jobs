@@ -23,6 +23,10 @@ class CleanupAuditTableService {
               run_id STRING,
               spark_app_id STRING,
               initiated_by STRING,
+              runtime_compute_id STRING,
+              runtime_compute_namespace STRING,
+              runtime_domain STRING,
+              runtime_user STRING,
               catalog_name STRING,
               database_name STRING,
               operation STRING,
@@ -57,7 +61,6 @@ class CleanupAuditTableService {
         logger.info(
             "Writing cleanup audit record for runId=${record.runId}, catalog=${record.catalogName}, database=${record.databaseName}, status=${record.status}"
         )
-
         sparkSessionProvider.getOrCreate().sql(buildInsertAuditRecordSql(record))
     }
 
@@ -67,6 +70,10 @@ class CleanupAuditTableService {
           run_id,
           spark_app_id,
           initiated_by,
+          runtime_compute_id,
+          runtime_compute_namespace,
+          runtime_domain,
+          runtime_user,
           catalog_name,
           database_name,
           operation,
@@ -95,6 +102,10 @@ class CleanupAuditTableService {
           ${sqlString(record.runId)} AS run_id,
           ${sqlNullableString(record.sparkAppId)} AS spark_app_id,
           ${sqlNullableString(record.initiatedBy)} AS initiated_by,
+          ${sqlNullableString(record.runtimeComputeId)} AS runtime_compute_id,
+          ${sqlNullableString(record.runtimeComputeNamespace)} AS runtime_compute_namespace,
+          ${sqlNullableString(record.runtimeDomain)} AS runtime_domain,
+          ${sqlNullableString(record.runtimeUser)} AS runtime_user,
           ${sqlString(record.catalogName)} AS catalog_name,
           ${sqlString(record.databaseName)} AS database_name,
           ${sqlString(record.operation)} AS operation,
@@ -125,6 +136,21 @@ class CleanupAuditTableService {
 
     fun currentSparkUser(): String? =
         sparkSessionProvider.getOrCreate().sparkContext().sparkUser()
+
+    fun currentRuntimeComputeId(): String? =
+        env("IOMETE_COMPUTE_ID")
+
+    fun currentRuntimeComputeNamespace(): String? =
+        env("IOMETE_COMPUTE_NAMESPACE")
+
+    fun currentRuntimeDomain(): String? =
+        env("IOMETE_DOMAIN")
+
+    fun currentRuntimeUser(): String? =
+        env("SPARK_USER")
+
+    private fun env(name: String): String? =
+        System.getenv(name)?.takeIf { it.isNotBlank() }
 
     private fun sqlNullableString(value: String?): String =
         value?.let { sqlString(it) } ?: "CAST(NULL AS STRING)"
