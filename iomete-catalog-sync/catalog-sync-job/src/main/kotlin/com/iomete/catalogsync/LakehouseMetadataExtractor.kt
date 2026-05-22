@@ -107,7 +107,7 @@ class LakehouseMetadataExtractor(
             try {
                 logger.info("Using ForkJoinPool with parallelism={}, tableProcessTimeout={}s", parallelism, tableProcessTimeout)
             // Phase 1: Discover all schemas and tables (parallel, flat — no nesting)
-            val catalogDiscoveryFailed = mutableSetOf<String>()
+            val catalogDiscoveryFailed = ConcurrentHashMap.newKeySet<String>()
             val allSchemaEntries = catalogs.flatMap { catalog ->
                 logger.info("Fetching schemas for catalog: {}", catalog.name)
                 try {
@@ -166,6 +166,7 @@ class LakehouseMetadataExtractor(
                             try {
                                 future.get(tableProcessTimeout, TimeUnit.SECONDS)
                             } catch (te: TimeoutException) {
+                                // Best-effort: cancel(true) doesn't reliably interrupt Spark/JDBC operations
                                 future.cancel(true)
                                 throw te
                             }
@@ -528,7 +529,7 @@ class LakehouseMetadataExtractor(
         // Parse from Table Properties: "[key1=val1, key2=val2, ...]"
         val tableProperties = metadata["Table Properties"] ?: return null
         val match = SNAPSHOT_ID_REGEX.find(tableProperties)
-        return match?.groupValues?.get(1) ?: "none"
+        return match?.groupValues?.get(1) ?: null
     }
 
     private fun describeTable(catalog: String, schema: String, tableName: String): TableDescription {
