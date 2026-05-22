@@ -382,7 +382,7 @@ class ScrapeOrchestratorTest {
         val catalog = CoreServiceClient.CatalogDetails("cat1", listOf("iceberg"), null, null, listOf())
         every { mockCoreServiceClient.catalogs() } returns listOf(catalog)
 
-        // getSchemas throws internally and returns emptyList — catalog has no schemas
+        // getSchemas throws, caught by scrape's try-catch which marks catalog as discoveryFailed
         every { mockSparkSession.sql("show databases in `cat1`") } throws RuntimeException("Connection refused")
 
         val extractor = spyk(buildExtractor())

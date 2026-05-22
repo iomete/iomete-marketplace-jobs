@@ -168,7 +168,15 @@ class LakehouseMetadataExtractor(
                             } catch (te: TimeoutException) {
                                 // Best-effort: cancel(true) doesn't reliably interrupt Spark/JDBC operations
                                 future.cancel(true)
-                                throw te
+                                throw RuntimeException(
+                                    "Table processing timed out after ${tableProcessTimeout}s for $catalogName.${ work.schema}.$tableName", te
+                                )
+                            } catch (ie: InterruptedException) {
+                                future.cancel(true)
+                                Thread.currentThread().interrupt()
+                                throw RuntimeException(
+                                    "Table processing interrupted for $catalogName.${work.schema}.$tableName", ie
+                                )
                             }
                         }
 
@@ -207,7 +215,15 @@ class LakehouseMetadataExtractor(
                                 future.get(syncTimeout, TimeUnit.SECONDS)
                             } catch (te: TimeoutException) {
                                 future.cancel(true)
-                                throw te
+                                throw RuntimeException(
+                                    "Sync timed out after ${syncTimeout}s for ${result.catalogName}.${result.schema}.${result.tableName}", te
+                                )
+                            } catch (ie: InterruptedException) {
+                                future.cancel(true)
+                                Thread.currentThread().interrupt()
+                                throw RuntimeException(
+                                    "Sync interrupted for ${result.catalogName}.${result.schema}.${result.tableName}", ie
+                                )
                             }
                         }
                         syncResults.add(SyncResult(result.catalogName, result.schema, result.tableName, failed = false))
@@ -315,7 +331,10 @@ class LakehouseMetadataExtractor(
             )
             } finally {
                 timeoutExecutor.shutdown()
-                timeoutExecutor.awaitTermination(30, TimeUnit.SECONDS)
+                if (!timeoutExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+                    logger.warn("timeoutExecutor did not terminate gracefully, forcing shutdownNow()")
+                    timeoutExecutor.shutdownNow()
+                }
             }
         } finally {
             pool.shutdown()
@@ -520,7 +539,8 @@ class LakehouseMetadataExtractor(
      * Extracts the current-snapshot-id from DESCRIBE EXTENDED metadata.
      * Iceberg stores this inside the "Table Properties" value as a bracketed key-value list,
      * e.g. "[current-snapshot-id=1234567890, format-version=2, ...]".
-     * Returns "none" if the table has no snapshot, null if the key is not found.
+     * Returns the snapshot ID string (which may be "none" for tables with no snapshot),
+     * or null if the key is not found in the metadata.
      */
     private fun extractCurrentSnapshotId(metadata: Map<String, String>): String? {
         // Try direct key first (in case Spark version exposes it directly)
