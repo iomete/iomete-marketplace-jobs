@@ -10,6 +10,7 @@ import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDeletionService
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
+import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.time.Duration
@@ -170,6 +171,9 @@ class CleanupUntrackedTableFoldersService {
                     )
 
                     val candidateFolderPaths = candidateFolders.map { it.path }.sorted()
+                    val candidateSizeStatsByFolder =
+                        collectCandidateSizeStatsByFolder(candidateFolderPaths)
+                    val candidateSizeStats = sumSizeStats(candidateSizeStatsByFolder.values)
 
                     candidateFolders.forEach { folder ->
                         logger.info(
@@ -223,6 +227,13 @@ class CleanupUntrackedTableFoldersService {
                             }
                         }
 
+                    val deletedSizeStats =
+                        if (config.collectSizeStatistics) {
+                            sumSizeStats(deletedFolders.mapNotNull { candidateSizeStatsByFolder[it] })
+                        } else {
+                            StorageSizeStats.ZERO
+                        }
+
                     if (deletedFolders.isNotEmpty()) {
                         logger.warn(
                             "Deleted ${deletedFolders.size} untracked table folder(s) for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
@@ -241,7 +252,9 @@ class CleanupUntrackedTableFoldersService {
                         storageFolderPaths = storageFolderPaths,
                         excludedPaths = effectiveExcludedPaths,
                         candidateFolderPaths = candidateFolderPaths,
+                        candidateSizeStats = candidateSizeStats,
                         deletedFolderPaths = deletedFolders,
+                        deletedSizeStats = deletedSizeStats,
                     )
 
                     writeSuccessAuditRecord(
@@ -255,7 +268,9 @@ class CleanupUntrackedTableFoldersService {
                         activeTableLocations = activeTableLocations,
                         storageFolderPaths = storageFolderPaths,
                         candidateFolderPaths = candidateFolderPaths,
+                        candidateSizeStats = candidateSizeStats,
                         deletedFolderPaths = deletedFolders,
+                        deletedSizeStats = deletedSizeStats,
                         cutoffTime = cutoffTime,
                         excludedPaths = effectiveExcludedPaths,
                     )
@@ -299,6 +314,37 @@ class CleanupUntrackedTableFoldersService {
         }
     }
 
+    private fun collectCandidateSizeStatsByFolder(
+        candidateFolderPaths: List<String>,
+    ): Map<String, StorageSizeStats> {
+        if (candidateFolderPaths.isEmpty()) {
+            return emptyMap()
+        }
+
+        if (!config.collectSizeStatistics) {
+            logger.info(
+                "Skipping size statistics because collect_size_statistics=false. Candidate and deleted size audit fields will be zero."
+            )
+            return emptyMap()
+        }
+
+        logger.info(
+            "Collecting size statistics for ${candidateFolderPaths.size} candidate folder(s). This may take time for folders with many objects. To skip this step, set collect_size_statistics=false."
+        )
+
+        return candidateFolderPaths.associateWith { candidateFolderPath ->
+            objectStorageDiscoveryService.collectSizeStats(listOf(candidateFolderPath))
+        }
+    }
+
+    private fun sumSizeStats(stats: Iterable<StorageSizeStats>): StorageSizeStats =
+        stats.fold(StorageSizeStats.ZERO) { total, current ->
+            StorageSizeStats(
+                objectCount = total.objectCount + current.objectCount,
+                totalSizeBytes = total.totalSizeBytes + current.totalSizeBytes,
+            )
+        }
+
     private fun logBlankLines(count: Int) {
         repeat(count) { logger.info("") }
     }
@@ -312,7 +358,9 @@ class CleanupUntrackedTableFoldersService {
         storageFolderPaths: List<String>,
         excludedPaths: List<String>,
         candidateFolderPaths: List<String>,
+        candidateSizeStats: StorageSizeStats,
         deletedFolderPaths: List<String>,
+        deletedSizeStats: StorageSizeStats,
     ) {
         val candidateFolderSet = candidateFolderPaths.toSet()
         val protectedFolderPaths = activeTableLocations.toSet()
@@ -327,7 +375,13 @@ class CleanupUntrackedTableFoldersService {
         logger.info("Protected catalog active table location count: ${activeTableLocations.size}")
         logger.info("Immediate child storage folders scanned: ${storageFolderPaths.size}")
         logger.info("Untracked candidate folder count: ${candidateFolderPaths.size}")
+        logger.info(
+            "Estimated candidate size: ${formatBytes(candidateSizeStats.totalSizeBytes)} across ${candidateSizeStats.objectCount} object(s)"
+        )
         logger.info("Deleted untracked folder count: ${deletedFolderPaths.size}")
+        logger.info(
+            "Deleted size: ${formatBytes(deletedSizeStats.totalSizeBytes)} across ${deletedSizeStats.objectCount} object(s)"
+        )
         logger.info("Deletion performed: ${deletedFolderPaths.isNotEmpty()}")
         logger.info("Protected catalog active table locations:")
         logListOrNone(protectedFolderPaths.sorted())
@@ -341,6 +395,23 @@ class CleanupUntrackedTableFoldersService {
         logListOrNone(deletedFolderPaths)
         logger.info("============================================================")
         logBlankLines(3)
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        val units = listOf("B", "KB", "MB", "GB", "TB", "PB")
+        var value = bytes.toDouble()
+        var unitIndex = 0
+
+        while (value >= 1024 && unitIndex < units.lastIndex) {
+            value /= 1024
+            unitIndex += 1
+        }
+
+        return if (unitIndex == 0) {
+            "$bytes ${units[unitIndex]}"
+        } else {
+            "%.2f %s".format(value, units[unitIndex])
+        }
     }
 
     private fun logListOrNone(values: List<String>) {
@@ -438,7 +509,9 @@ class CleanupUntrackedTableFoldersService {
         activeTableLocations: List<String>,
         storageFolderPaths: List<String>,
         candidateFolderPaths: List<String>,
+        candidateSizeStats: StorageSizeStats,
         deletedFolderPaths: List<String>,
+        deletedSizeStats: StorageSizeStats,
         cutoffTime: Instant,
         excludedPaths: List<String>,
     ) {
@@ -455,7 +528,11 @@ class CleanupUntrackedTableFoldersService {
             activeTableCount = activeTableCount,
             storageFolderCount = storageFolderPaths.size.toLong(),
             candidateFolderCount = candidateFolderPaths.size.toLong(),
+            candidateObjectCount = candidateSizeStats.objectCount,
+            candidateTotalSizeBytes = candidateSizeStats.totalSizeBytes,
             deletedFolderCount = deletedFolderPaths.size.toLong(),
+            deletedObjectCount = deletedSizeStats.objectCount,
+            deletedTotalSizeBytes = deletedSizeStats.totalSizeBytes,
             candidateFolders = candidateFolderPaths,
             deletedFolders = deletedFolderPaths,
             cutoffTime = cutoffTime,
@@ -522,7 +599,11 @@ class CleanupUntrackedTableFoldersService {
         activeTableCount: Long = 0,
         storageFolderCount: Long = 0,
         candidateFolderCount: Long = 0,
+        candidateObjectCount: Long = 0,
+        candidateTotalSizeBytes: Long = 0,
         deletedFolderCount: Long = 0,
+        deletedObjectCount: Long = 0,
+        deletedTotalSizeBytes: Long = 0,
         candidateFolders: List<String> = emptyList(),
         deletedFolders: List<String> = emptyList(),
         cutoffTime: Instant? = null,
@@ -555,7 +636,11 @@ class CleanupUntrackedTableFoldersService {
                 activeTableCount = activeTableCount,
                 storageFolderCount = storageFolderCount,
                 candidateFolderCount = candidateFolderCount,
+                candidateObjectCount = candidateObjectCount,
+                candidateTotalSizeBytes = candidateTotalSizeBytes,
                 deletedFolderCount = deletedFolderCount,
+                deletedObjectCount = deletedObjectCount,
+                deletedTotalSizeBytes = deletedTotalSizeBytes,
                 candidateFolders = candidateFolders,
                 deletedFolders = deletedFolders,
                 diagnosticDetails = diagnosticDetails,

@@ -11,6 +11,15 @@ data class StorageFolder(
     val modificationTimeMillis: Long,
 )
 
+data class StorageSizeStats(
+    val objectCount: Long,
+    val totalSizeBytes: Long,
+) {
+    companion object {
+        val ZERO = StorageSizeStats(objectCount = 0, totalSizeBytes = 0)
+    }
+}
+
 @ApplicationScoped
 class ObjectStorageDiscoveryService {
     private val logger = Logger.getLogger(ObjectStorageDiscoveryService::class.java)
@@ -42,5 +51,51 @@ class ObjectStorageDiscoveryService {
                 th,
             )
         }
+    }
+
+    fun collectSizeStats(folderPaths: List<String>): StorageSizeStats {
+        if (folderPaths.isEmpty()) {
+            return StorageSizeStats.ZERO
+        }
+
+        val spark = sparkSessionProvider.getOrCreate()
+        var objectCount = 0L
+        var totalSizeBytes = 0L
+
+        folderPaths.sorted().forEach { folderPath ->
+            logger.info("Collecting size statistics for candidate folder: $folderPath")
+
+            try {
+                val path = Path(folderPath)
+                val fileSystem = path.getFileSystem(spark.sparkContext().hadoopConfiguration())
+                val files = fileSystem.listFiles(path, true)
+
+                var folderObjectCount = 0L
+                var folderSizeBytes = 0L
+
+                while (files.hasNext()) {
+                    val fileStatus = files.next()
+                    folderObjectCount += 1
+                    folderSizeBytes += fileStatus.len
+                }
+
+                logger.info(
+                    "Collected size statistics for candidate folder=$folderPath: objectCount=$folderObjectCount, totalSizeBytes=$folderSizeBytes"
+                )
+
+                objectCount += folderObjectCount
+                totalSizeBytes += folderSizeBytes
+            } catch (th: Throwable) {
+                throw IllegalStateException(
+                    "Failed to collect size statistics for candidate folder=$folderPath",
+                    th,
+                )
+            }
+        }
+
+        return StorageSizeStats(
+            objectCount = objectCount,
+            totalSizeBytes = totalSizeBytes,
+        )
     }
 }
