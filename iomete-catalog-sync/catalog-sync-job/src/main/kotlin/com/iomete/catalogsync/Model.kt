@@ -52,7 +52,7 @@ data class TableMetadata(
     val totalRecords: Long? = null,
 
     val columns: List<ColumnMetadata>,
-    var tags: List<String> = listOf(),
+    val tags: List<String> = listOf(),
 
     val syncTime: Long
 )
@@ -62,9 +62,9 @@ data class ColumnMetadata(
     val dataType: String,
     val description: String?,
     val sortOrder: Int,
-    var isPartitionKey: Boolean,
-    var stats: List<ColumnStat> = listOf(),
-    var tags: List<String> = listOf()
+    val isPartitionKey: Boolean,
+    val stats: List<ColumnStat> = listOf(),
+    val tags: List<String> = listOf()
 )
 
 enum class TableColumnSection {

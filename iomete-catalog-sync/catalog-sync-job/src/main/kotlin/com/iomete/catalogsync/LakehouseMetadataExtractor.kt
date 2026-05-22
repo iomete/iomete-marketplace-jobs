@@ -19,6 +19,8 @@ import jakarta.inject.Singleton
 import org.eclipse.microprofile.rest.client.inject.RestClient
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.ForkJoinPool
 import kotlin.collections.set
 import org.eclipse.microprofile.config.ConfigProvider
@@ -86,6 +88,11 @@ class LakehouseMetadataExtractor(
         val error: String?
     )
 
+    private data class DiscoveryResult(
+        val schemaBatches: List<SchemaBatch>,
+        val catalogDiscoveryFailed: Set<String>
+    )
+
     fun scrape(appConfig: AppConfig) {
         val catalogs = getCatalog(appConfig)
         logger.info("Catalogs: {}", catalogs)
@@ -103,232 +110,19 @@ class LakehouseMetadataExtractor(
 
         val pool = ForkJoinPool(parallelism)
         try {
-            val timeoutExecutor = java.util.concurrent.Executors.newFixedThreadPool(parallelism)
+            // Cached+daemon pool: timed-out Spark/JDBC threads that ignore interruption won't
+            // block new work (new threads are created) and won't prevent JVM exit (daemon).
+            // The ForkJoinPool already limits concurrency to `parallelism`.
+            val timeoutExecutor = java.util.concurrent.Executors.newCachedThreadPool { r ->
+                Thread(r).apply { isDaemon = true; name = "timeout-worker-${threadCount.incrementAndGet()}" }
+            }
             try {
                 logger.info("Using ForkJoinPool with parallelism={}, tableProcessTimeout={}s", parallelism, tableProcessTimeout)
-            // Phase 1: Discover all schemas and tables (parallel, flat — no nesting)
-            val catalogDiscoveryFailed = ConcurrentHashMap.newKeySet<String>()
-            val allSchemaEntries = catalogs.flatMap { catalog ->
-                logger.info("Fetching schemas for catalog: {}", catalog.name)
-                try {
-                    val schemas = getSchemas(catalog.name)
-                    logger.info("Catalog {} has {} schemas", catalog.name, schemas.size)
-                    schemas.map { schema -> catalog to schema }
-                } catch (th: Throwable) {
-                    logger.error("Failed to discover schemas in catalog {}: {}", catalog.name, th.message, th)
-                    catalogDiscoveryFailed.add(catalog.name)
-                    emptyList()
-                }
-            }
 
-            val schemaBatches = Collections.synchronizedList(mutableListOf<SchemaBatch>())
-            pool.submit {
-                allSchemaEntries.parallelStream().forEach { (catalog, schema) ->
-                    try {
-                        logger.info("Discovering tables in {}.{}", catalog.name, schema)
-                        val tables = getTables(catalog.name, schema, catalog.type)
-                        schemaBatches.add(SchemaBatch(catalog, schema, tables))
-                    } catch (th: Throwable) {
-                        logger.error("Failed to discover tables in {}.{}: {}", catalog.name, schema, th.message, th)
-                        schemaBatches.add(SchemaBatch(catalog, schema, emptyList(), discoveryFailed = true))
-                    }
-                }
-            }.get()
-
-            logger.info("Discovery complete: {} schemas, {} tables total",
-                schemaBatches.size,
-                schemaBatches.sumOf { it.tables.size }
-            )
-
-            // Phase 2: Process all tables (parallel, flat — no nesting)
-            val allWorkItems = schemaBatches.flatMap { batch ->
-                batch.tables.map { tableRow -> TableWorkItem(batch.catalog, batch.schema, tableRow) }
-            }
-
-            val results = Collections.synchronizedList(mutableListOf<TableResult>())
-            pool.submit {
-                allWorkItems.parallelStream().forEach { work ->
-                    val catalogName = work.catalog.name
-                    var tableName = "unknown"
-                    try {
-                        tableName = work.tableRow.getString(1)
-                        val isTemp = work.tableRow.getBoolean(2)
-
-                        logger.info("Processing table: {}.{}.{}", catalogName, work.schema, tableName)
-
-                        val tableProcessMetric = getTimer(
-                            name = METRIC_NAME_TABLE_PROCESS, catalog = catalogName, schema = work.schema, tableName = tableName
-                        )
-                        val scrapedData = tableProcessMetric.recordCallable {
-                            val future = CompletableFuture.supplyAsync({
-                                scrapeTable(catalog = catalogName, schema = work.schema, tableName = tableName, isTemp = isTemp)
-                            }, timeoutExecutor)
-                            try {
-                                future.get(tableProcessTimeout, TimeUnit.SECONDS)
-                            } catch (te: TimeoutException) {
-                                // Best-effort: cancel(true) doesn't reliably interrupt Spark/JDBC operations
-                                future.cancel(true)
-                                throw RuntimeException(
-                                    "Table processing timed out after ${tableProcessTimeout}s for $catalogName.${ work.schema}.$tableName", te
-                                )
-                            } catch (ie: InterruptedException) {
-                                future.cancel(true)
-                                Thread.currentThread().interrupt()
-                                throw RuntimeException(
-                                    "Table processing interrupted for $catalogName.${work.schema}.$tableName", ie
-                                )
-                            }
-                        }
-
-                        logger.info(
-                            "Processing finished in {} ms for schema: {}.{}, table: {}",
-                            tableProcessMetric.totalTime(TimeUnit.MILLISECONDS),
-                            catalogName,
-                            work.schema,
-                            tableName,
-                        )
-
-                        results.add(TableResult(catalogName, work.schema, tableName, scrapedData, null))
-                    } catch (th: Throwable) {
-                        logger.error("Failed to process table {}.{}.{}: {}", catalogName, work.schema, tableName, th.message, th)
-                        registry.counter(METRIC_NAME_TABLE_PROCESS_FAILURES, "catalog", catalogName, "schema", work.schema, "table", tableName).increment()
-                        results.add(TableResult(catalogName, work.schema, tableName, null, th.message ?: "Unknown error"))
-                    }
-                }
-            }.get()
-
-            // Phase 3: Sync table data (parallel, flat — no nesting)
-            val finalResults = ArrayList(results)
-            val successfulResults = finalResults.filter { it.metadata != null }
-            val syncResults = Collections.synchronizedList(mutableListOf<SyncResult>())
-            pool.submit {
-                successfulResults.parallelStream().forEach { result ->
-                    try {
-                        val dataSyncMetric = getTimer(
-                            name = METRIC_NAME_DATA_SYNC, catalog = result.catalogName, schema = result.schema, tableName = result.tableName
-                        )
-                        dataSyncMetric.record<Unit> {
-                            val future = CompletableFuture.supplyAsync({
-                                dataSync.syncTableData(result.metadata!!)
-                            }, timeoutExecutor)
-                            try {
-                                future.get(syncTimeout, TimeUnit.SECONDS)
-                            } catch (te: TimeoutException) {
-                                future.cancel(true)
-                                throw RuntimeException(
-                                    "Sync timed out after ${syncTimeout}s for ${result.catalogName}.${result.schema}.${result.tableName}", te
-                                )
-                            } catch (ie: InterruptedException) {
-                                future.cancel(true)
-                                Thread.currentThread().interrupt()
-                                throw RuntimeException(
-                                    "Sync interrupted for ${result.catalogName}.${result.schema}.${result.tableName}", ie
-                                )
-                            }
-                        }
-                        syncResults.add(SyncResult(result.catalogName, result.schema, result.tableName, failed = false))
-                    } catch (th: Throwable) {
-                        logger.error("Failed to sync table {}.{}.{}: {}", result.catalogName, result.schema, result.tableName, th.message, th)
-                        registry.counter(METRIC_NAME_DATA_SYNC_FAILURES, "catalog", result.catalogName, "schema", result.schema, "table", result.tableName).increment()
-                        syncResults.add(SyncResult(result.catalogName, result.schema, result.tableName, failed = true))
-                    }
-                }
-            }.get()
-
-            // Phase 4: Aggregate and sync schema/catalog metadata (sequential, fast)
-            val finalSyncResults = ArrayList(syncResults)
-            val resultsBySchema = finalResults.groupBy { "${it.catalogName}/${it.schema}" }
-            val syncResultsBySchema = finalSyncResults.groupBy { "${it.catalogName}/${it.schema}" }
-            val schemasByCatalog = schemaBatches.groupBy { it.catalog.name }
-
-            catalogs.forEach { catalog ->
-                try {
-                    val catalogSchemas = schemasByCatalog[catalog.name] ?: emptyList()
-                    var totalTableCount = 0
-                    var totalSizeInBytes = 0L
-                    var totalFiles = 0L
-
-                    catalogSchemas.forEach { batch ->
-                        val key = "${catalog.name}/${batch.schema}"
-                        val schemaResults = resultsBySchema[key] ?: emptyList()
-                        val schemaSyncResults = syncResultsBySchema[key] ?: emptyList()
-                        val successful = schemaResults.mapNotNull { it.metadata }
-                        val failedCount = schemaResults.count { it.error != null }
-                        val syncFailedCount = schemaSyncResults.count { it.failed }
-
-                        if (failedCount > 0) {
-                            logger.warn("Failed to process {} tables in schema {}.{}", failedCount, catalog.name, batch.schema)
-                            schemaResults.filter { it.error != null }.forEach {
-                                logger.warn("Table {}.{}.{} failed: {}", catalog.name, batch.schema, it.tableName, it.error)
-                            }
-                        }
-
-                        val schemaTableCount = batch.tables.size
-                        val viewCount = successful.count { it.isView }
-                        val schemaSizeInBytes = successful.sumOf { it.sizeInBytes ?: 0L }
-                        val schemaDbSizeInBytes = successful.sumOf { it.totalTableSizeInBytes ?: 0L }
-                        val schemaFiles = successful.sumOf { it.numFiles ?: 0L }
-
-                        val schemaMetadata = SchemaMetadata(
-                            catalog = catalog.name,
-                            schema = batch.schema,
-                            totalTableCount = schemaTableCount,
-                            totalViewCount = viewCount,
-                            totalSizeInBytes = schemaSizeInBytes,
-                            totalDbSizeInBytes = schemaDbSizeInBytes,
-                            totalFiles = schemaFiles,
-                            failedTableCount = failedCount,
-                            syncFailedCount = syncFailedCount,
-                            discoveryFailed = batch.discoveryFailed
-                        )
-                        dataSync.syncSchemaData(schemaMetadata)
-
-                        totalTableCount += schemaTableCount
-                        totalSizeInBytes += schemaSizeInBytes
-                        totalFiles += schemaFiles
-
-                        logger.info(
-                            "Processing schema: {} finished! Total Tables: {}, Views: {}, Total Size: {} bytes, Total Files: {}, Failed Tables: {}",
-                            batch.schema, schemaTableCount, viewCount, schemaSizeInBytes, schemaFiles, failedCount
-                        )
-                    }
-
-                    val catalogMetadata = CatalogMetadata(
-                        catalog = catalog.name,
-                        type = catalog.type.toSet(),
-                        location = catalog.location,
-                        storageEndpoint = catalog.storageEndpoint,
-                        totalSchemaCount = catalogSchemas.size,
-                        totalTableCount = totalTableCount,
-                        totalSizeInBytes = totalSizeInBytes,
-                        totalFiles = totalFiles,
-                        domainsAllowed = catalog.domainsAllowed.toSet(),
-                        discoveryFailed = catalog.name in catalogDiscoveryFailed
-                    )
-                    dataSync.syncCatalogData(catalogMetadata)
-
-                    logger.info(
-                        "Processing catalog: {} finished! Total Schemas: {}, Total Tables: {}, Total Size: {} bytes, Total Files: {}",
-                        catalog, catalogSchemas.size, totalTableCount, totalSizeInBytes, totalFiles
-                    )
-                } catch (th: Throwable) {
-                    logger.error("Failed to sync metadata for catalog {}: {}", catalog.name, th.message, th)
-                }
-            }
-
-            // Summary log
-            val totalDiscovered = allWorkItems.size
-            val totalProcessed = finalResults.count { it.metadata != null }
-            val totalProcessFailed = finalResults.count { it.error != null }
-            val totalSyncFailed = finalSyncResults.count { it.failed }
-            val totalSynced = totalProcessed - totalSyncFailed
-            val totalDiscoveryFailed = schemaBatches.count { it.discoveryFailed }
-
-            logger.info(
-                "Catalog sync summary: schemasDiscovered={} tablesDiscovered={} tablesProcessed={} tablesSynced={} processFailures={} syncFailures={} discoveryFailures={} catalogDiscoveryFailures={}",
-                schemaBatches.size, totalDiscovered, totalProcessed, totalSynced,
-                totalProcessFailed, totalSyncFailed, totalDiscoveryFailed, catalogDiscoveryFailed.size
-            )
+                val discovery = discoverSchemasAndTables(catalogs, pool)
+                val tableResults = processTables(discovery.schemaBatches, pool, timeoutExecutor, tableProcessTimeout)
+                val syncResults = syncTableResults(tableResults, pool, timeoutExecutor, syncTimeout)
+                aggregateAndSyncMetadata(catalogs, discovery, tableResults, syncResults)
             } finally {
                 timeoutExecutor.shutdown()
                 if (!timeoutExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
@@ -342,6 +136,265 @@ class LakehouseMetadataExtractor(
         }
 
         printMetrics()
+    }
+
+    private fun discoverSchemasAndTables(
+        catalogs: List<CoreServiceClient.CatalogDetails>,
+        pool: ForkJoinPool
+    ): DiscoveryResult {
+        val catalogDiscoveryFailed = ConcurrentHashMap.newKeySet<String>()
+        val allSchemaEntries = catalogs.flatMap { catalog ->
+            logger.info("Fetching schemas for catalog: {}", catalog.name)
+            try {
+                val schemas = getSchemas(catalog.name)
+                logger.info("Catalog {} has {} schemas", catalog.name, schemas.size)
+                schemas.map { schema -> catalog to schema }
+            } catch (th: Throwable) {
+                logger.error("Failed to discover schemas in catalog {}: {}", catalog.name, th.message, th)
+                catalogDiscoveryFailed.add(catalog.name)
+                emptyList()
+            }
+        }
+
+        val schemaBatches = Collections.synchronizedList(mutableListOf<SchemaBatch>())
+        val discoveryFutures = allSchemaEntries.map { (catalog, schema) ->
+            pool.submit(Callable {
+                try {
+                    logger.info("Discovering tables in {}.{}", catalog.name, schema)
+                    val tables = getTables(catalog.name, schema, catalog.type)
+                    schemaBatches.add(SchemaBatch(catalog, schema, tables))
+                } catch (th: Throwable) {
+                    logger.error("Failed to discover tables in {}.{}: {}", catalog.name, schema, th.message, th)
+                    schemaBatches.add(SchemaBatch(catalog, schema, emptyList(), discoveryFailed = true))
+                }
+            })
+        }
+        discoveryFutures.forEach { it.get() }
+
+        logger.info("Discovery complete: {} schemas, {} tables total",
+            schemaBatches.size,
+            schemaBatches.sumOf { it.tables.size }
+        )
+
+        return DiscoveryResult(ArrayList(schemaBatches), catalogDiscoveryFailed)
+    }
+
+    // Timer metrics measure wall-clock time from the caller's perspective (including queue wait),
+    // not the CPU time of the async work itself. This is intentional: it captures the end-to-end
+    // latency each table adds to the overall sync job.
+    private fun processTables(
+        schemaBatches: List<SchemaBatch>,
+        pool: ForkJoinPool,
+        timeoutExecutor: ExecutorService,
+        tableProcessTimeout: Long
+    ): List<TableResult> {
+        val allWorkItems = schemaBatches.flatMap { batch ->
+            batch.tables.map { tableRow -> TableWorkItem(batch.catalog, batch.schema, tableRow) }
+        }
+
+        val results = Collections.synchronizedList(mutableListOf<TableResult>())
+        val processFutures = allWorkItems.map { work ->
+            pool.submit(Callable {
+                val catalogName = work.catalog.name
+                var tableName = "unknown"
+                try {
+                    tableName = work.tableRow.getString(1)
+                    val isTemp = work.tableRow.getBoolean(2)
+
+                    logger.info("Processing table: {}.{}.{}", catalogName, work.schema, tableName)
+
+                    val tableProcessMetric = getTimer(
+                        name = METRIC_NAME_TABLE_PROCESS, catalog = catalogName, schema = work.schema, tableName = tableName
+                    )
+                    val scrapedData = tableProcessMetric.recordCallable {
+                        val future = CompletableFuture.supplyAsync({
+                            scrapeTable(catalog = catalogName, schema = work.schema, tableName = tableName, isTemp = isTemp)
+                        }, timeoutExecutor)
+                        try {
+                            future.get(tableProcessTimeout, TimeUnit.SECONDS)
+                        } catch (te: TimeoutException) {
+                            future.cancel(true)
+                            logger.warn("Table processing timed out after {}s for {}.{}.{} — cancelled thread may remain active (Spark/JDBC ignores interruption)",
+                                tableProcessTimeout, catalogName, work.schema, tableName)
+                            throw RuntimeException(
+                                "Table processing timed out after ${tableProcessTimeout}s for $catalogName.${work.schema}.$tableName", te
+                            )
+                        } catch (ie: InterruptedException) {
+                            future.cancel(true)
+                            Thread.currentThread().interrupt()
+                            throw RuntimeException(
+                                "Table processing interrupted for $catalogName.${work.schema}.$tableName", ie
+                            )
+                        }
+                    }
+
+                    logger.info(
+                        "Processing finished in {} ms for schema: {}.{}, table: {}",
+                        tableProcessMetric.totalTime(TimeUnit.MILLISECONDS),
+                        catalogName,
+                        work.schema,
+                        tableName,
+                    )
+
+                    results.add(TableResult(catalogName, work.schema, tableName, scrapedData, null))
+                } catch (th: Throwable) {
+                    logger.error("Failed to process table {}.{}.{}: {}", catalogName, work.schema, tableName, th.message, th)
+                    registry.counter(METRIC_NAME_TABLE_PROCESS_FAILURES, "catalog", catalogName, "schema", work.schema, "table", tableName).increment()
+                    results.add(TableResult(catalogName, work.schema, tableName, null, th.message ?: "Unknown error"))
+                }
+            })
+        }
+        processFutures.forEach { it.get() }
+
+        return ArrayList(results)
+    }
+
+    private fun syncTableResults(
+        tableResults: List<TableResult>,
+        pool: ForkJoinPool,
+        timeoutExecutor: ExecutorService,
+        syncTimeout: Long
+    ): List<SyncResult> {
+        val successfulResults = tableResults.filter { it.metadata != null }
+        val syncResults = Collections.synchronizedList(mutableListOf<SyncResult>())
+        val syncFutures = successfulResults.map { result ->
+            pool.submit(Callable {
+                try {
+                    val dataSyncMetric = getTimer(
+                        name = METRIC_NAME_DATA_SYNC, catalog = result.catalogName, schema = result.schema, tableName = result.tableName
+                    )
+                    dataSyncMetric.record<Unit> {
+                        val future = CompletableFuture.supplyAsync({
+                            dataSync.syncTableData(result.metadata!!)
+                        }, timeoutExecutor)
+                        try {
+                            future.get(syncTimeout, TimeUnit.SECONDS)
+                        } catch (te: TimeoutException) {
+                            future.cancel(true)
+                            logger.warn("Sync timed out after {}s for {}.{}.{} — cancelled thread may remain active",
+                                syncTimeout, result.catalogName, result.schema, result.tableName)
+                            throw RuntimeException(
+                                "Sync timed out after ${syncTimeout}s for ${result.catalogName}.${result.schema}.${result.tableName}", te
+                            )
+                        } catch (ie: InterruptedException) {
+                            future.cancel(true)
+                            Thread.currentThread().interrupt()
+                            throw RuntimeException(
+                                "Sync interrupted for ${result.catalogName}.${result.schema}.${result.tableName}", ie
+                            )
+                        }
+                    }
+                    syncResults.add(SyncResult(result.catalogName, result.schema, result.tableName, failed = false))
+                } catch (th: Throwable) {
+                    logger.error("Failed to sync table {}.{}.{}: {}", result.catalogName, result.schema, result.tableName, th.message, th)
+                    registry.counter(METRIC_NAME_DATA_SYNC_FAILURES, "catalog", result.catalogName, "schema", result.schema, "table", result.tableName).increment()
+                    syncResults.add(SyncResult(result.catalogName, result.schema, result.tableName, failed = true))
+                }
+            })
+        }
+        syncFutures.forEach { it.get() }
+
+        return ArrayList(syncResults)
+    }
+
+    private fun aggregateAndSyncMetadata(
+        catalogs: List<CoreServiceClient.CatalogDetails>,
+        discovery: DiscoveryResult,
+        tableResults: List<TableResult>,
+        syncResults: List<SyncResult>
+    ) {
+        val resultsBySchema = tableResults.groupBy { "${it.catalogName}/${it.schema}" }
+        val syncResultsBySchema = syncResults.groupBy { "${it.catalogName}/${it.schema}" }
+        val schemasByCatalog = discovery.schemaBatches.groupBy { it.catalog.name }
+
+        catalogs.forEach { catalog ->
+            try {
+                val catalogSchemas = schemasByCatalog[catalog.name] ?: emptyList()
+                var totalTableCount = 0
+                var totalSizeInBytes = 0L
+                var totalFiles = 0L
+
+                catalogSchemas.forEach { batch ->
+                    val key = "${catalog.name}/${batch.schema}"
+                    val schemaResults = resultsBySchema[key] ?: emptyList()
+                    val schemaSyncResults = syncResultsBySchema[key] ?: emptyList()
+                    val successful = schemaResults.mapNotNull { it.metadata }
+                    val failedCount = schemaResults.count { it.error != null }
+                    val syncFailedCount = schemaSyncResults.count { it.failed }
+
+                    if (failedCount > 0) {
+                        logger.warn("Failed to process {} tables in schema {}.{}", failedCount, catalog.name, batch.schema)
+                        schemaResults.filter { it.error != null }.forEach {
+                            logger.warn("Table {}.{}.{} failed: {}", catalog.name, batch.schema, it.tableName, it.error)
+                        }
+                    }
+
+                    val schemaTableCount = batch.tables.size
+                    val viewCount = successful.count { it.isView }
+                    val schemaSizeInBytes = successful.sumOf { it.sizeInBytes ?: 0L }
+                    val schemaDbSizeInBytes = successful.sumOf { it.totalTableSizeInBytes ?: 0L }
+                    val schemaFiles = successful.sumOf { it.numFiles ?: 0L }
+
+                    val schemaMetadata = SchemaMetadata(
+                        catalog = catalog.name,
+                        schema = batch.schema,
+                        totalTableCount = schemaTableCount,
+                        totalViewCount = viewCount,
+                        totalSizeInBytes = schemaSizeInBytes,
+                        totalDbSizeInBytes = schemaDbSizeInBytes,
+                        totalFiles = schemaFiles,
+                        failedTableCount = failedCount,
+                        syncFailedCount = syncFailedCount,
+                        discoveryFailed = batch.discoveryFailed
+                    )
+                    dataSync.syncSchemaData(schemaMetadata)
+
+                    totalTableCount += schemaTableCount
+                    totalSizeInBytes += schemaSizeInBytes
+                    totalFiles += schemaFiles
+
+                    logger.info(
+                        "Processing schema: {} finished! Total Tables: {}, Views: {}, Total Size: {} bytes, Total Files: {}, Failed Tables: {}",
+                        batch.schema, schemaTableCount, viewCount, schemaSizeInBytes, schemaFiles, failedCount
+                    )
+                }
+
+                val catalogMetadata = CatalogMetadata(
+                    catalog = catalog.name,
+                    type = catalog.type.toSet(),
+                    location = catalog.location,
+                    storageEndpoint = catalog.storageEndpoint,
+                    totalSchemaCount = catalogSchemas.size,
+                    totalTableCount = totalTableCount,
+                    totalSizeInBytes = totalSizeInBytes,
+                    totalFiles = totalFiles,
+                    domainsAllowed = catalog.domainsAllowed.toSet(),
+                    discoveryFailed = catalog.name in discovery.catalogDiscoveryFailed
+                )
+                dataSync.syncCatalogData(catalogMetadata)
+
+                logger.info(
+                    "Processing catalog: {} finished! Total Schemas: {}, Total Tables: {}, Total Size: {} bytes, Total Files: {}",
+                    catalog, catalogSchemas.size, totalTableCount, totalSizeInBytes, totalFiles
+                )
+            } catch (th: Throwable) {
+                logger.error("Failed to sync metadata for catalog {}: {}", catalog.name, th.message, th)
+            }
+        }
+
+        // Summary log
+        val totalDiscovered = tableResults.size
+        val totalProcessed = tableResults.count { it.metadata != null }
+        val totalProcessFailed = tableResults.count { it.error != null }
+        val totalSyncFailed = syncResults.count { it.failed }
+        val totalSynced = totalProcessed - totalSyncFailed
+        val totalDiscoveryFailed = discovery.schemaBatches.count { it.discoveryFailed }
+
+        logger.info(
+            "Catalog sync summary: schemasDiscovered={} tablesDiscovered={} tablesProcessed={} tablesSynced={} processFailures={} syncFailures={} discoveryFailures={} catalogDiscoveryFailures={}",
+            discovery.schemaBatches.size, totalDiscovered, totalProcessed, totalSynced,
+            totalProcessFailed, totalSyncFailed, totalDiscoveryFailed, discovery.catalogDiscoveryFailed.size
+        )
     }
 
     private fun scrapeTable(catalog: String, schema: String, tableName: String, isTemp: Boolean): TableMetadata? {
@@ -394,25 +447,30 @@ class LakehouseMetadataExtractor(
             }
         }
 
-        val columnMetadataList: List<ColumnMetadata> = table.columns
+        val rawColumns: List<ColumnMetadata> = table.columns
+        val columnNames = rawColumns.map { it.name }
 
-        if (tableExtractor is SupportColumnTags) {
-            val columnTags = record(extractTagsMetric) {
-                tableExtractor.extractColumnTags(columns = columnMetadataList.map { it.name })
+        val columnTags: Map<String, List<String>> = if (tableExtractor is SupportColumnTags) {
+            record(extractTagsMetric) {
+                tableExtractor.extractColumnTags(columns = columnNames)
             }
-
-            columnMetadataList.forEach { columnMetadata ->
-                columnMetadata.tags = columnTags[columnMetadata.name] ?: listOf()
-            }
+        } else {
+            emptyMap()
         }
 
-        if (tableExtractor is SupportColumnStatistics) {
-            val columnStatistics = record(extractColumnsStatisticsMetric) {
-                tableExtractor.extractColumnStatistics(columns = columnMetadataList.map { it.name })
+        val columnStatistics: Map<String, List<ColumnStat>> = if (tableExtractor is SupportColumnStatistics) {
+            record(extractColumnsStatisticsMetric) {
+                tableExtractor.extractColumnStatistics(columns = columnNames)
             }
-            columnMetadataList.forEach { columnMetadata ->
-                columnMetadata.stats = columnStatistics[columnMetadata.name] ?: listOf()
-            }
+        } else {
+            emptyMap()
+        }
+
+        val columnMetadataList = rawColumns.map { col ->
+            col.copy(
+                tags = columnTags[col.name] ?: listOf(),
+                stats = columnStatistics[col.name] ?: listOf()
+            )
         }
 
         val tableTags = columnMetadataList.flatMap { it.tags }
@@ -577,10 +635,8 @@ class LakehouseMetadataExtractor(
                 )
             }
             .groupBy { it.tag }
-            .toList()
-            .sortedBy { (_, value) -> value.maxOf { it.totalTime ?: 0.0 } }
-            .toList().toMap()
-            .toMap()
+            .entries.sortedBy { (_, value) -> value.maxOf { it.totalTime ?: 0.0 } }
+            .associate { it.toPair() }
 
 
         val report = StringBuilder()
@@ -610,7 +666,10 @@ class LakehouseMetadataExtractor(
             "# Detailed View Information" to TableColumnSection.VIEW_INFO
         )
 
-        val columnsMap = mutableMapOf<String, ColumnMetadata>()
+        data class RawColumn(val name: String, val dataType: String, val description: String?, val sortOrder: Int)
+
+        val columnsMap = mutableMapOf<String, RawColumn>()
+        val partitionKeys = mutableSetOf<String>()
         val metadataMap = mutableMapOf<String, String>()
         for (row in rawColumns) {
             val columnName = row.getString(0).orEmpty()
@@ -624,7 +683,7 @@ class LakehouseMetadataExtractor(
 
                 if (matchedSection != null) {
                     currentSection = matchedSection
-                    
+
                     if (currentSection == TableColumnSection.VIEW_INFO) {
                         metadataMap["Type"] = "view"
                     }
@@ -635,14 +694,7 @@ class LakehouseMetadataExtractor(
 
             when (currentSection) {
                 TableColumnSection.COLUMNS -> {
-                    val columnMetadata = ColumnMetadata(
-                        name = columnName,
-                        description = comment,
-                        dataType = dataType,
-                        sortOrder = sortOrder,
-                        isPartitionKey = false,
-                    )
-                    columnsMap[columnName] = columnMetadata
+                    columnsMap[columnName] = RawColumn(columnName, dataType, comment, sortOrder)
                     sortOrder += 1
                 }
                 TableColumnSection.PARTITIONS -> {
@@ -652,7 +704,7 @@ class LakehouseMetadataExtractor(
                             dataType
                         else
                             columnName
-                    columnsMap[partitionColName]?.isPartitionKey = true
+                    partitionKeys.add(partitionColName)
                 }
                 TableColumnSection.TABLE_INFO, TableColumnSection.VIEW_INFO -> {
                     metadataMap[columnName] = dataType
@@ -663,8 +715,18 @@ class LakehouseMetadataExtractor(
             }
         }
 
+        val columns = columnsMap.values.map { raw ->
+            ColumnMetadata(
+                name = raw.name,
+                dataType = raw.dataType,
+                description = raw.description,
+                sortOrder = raw.sortOrder,
+                isPartitionKey = raw.name in partitionKeys
+            )
+        }
+
         return TableDescription(
-            columns = columnsMap.values.toList(),
+            columns = columns,
             metadata = metadataMap
         )
     }
@@ -675,5 +737,6 @@ class LakehouseMetadataExtractor(
 
     companion object {
         private val SNAPSHOT_ID_REGEX = Regex("""current-snapshot-id\s*=\s*([^,\]\s]+)""")
+        private val threadCount = java.util.concurrent.atomic.AtomicInteger(0)
     }
 }

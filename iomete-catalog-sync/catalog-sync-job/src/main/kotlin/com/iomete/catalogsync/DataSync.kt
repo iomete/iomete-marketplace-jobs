@@ -1,6 +1,7 @@
 package com.iomete.catalogsync
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import jakarta.annotation.PreDestroy
 import jakarta.inject.Singleton
 import jakarta.ws.rs.client.Client
 import jakarta.ws.rs.client.Entity
@@ -10,6 +11,7 @@ import org.jboss.resteasy.client.jaxrs.internal.ResteasyClientBuilderImpl
 import org.slf4j.LoggerFactory
 import java.util.*
 import java.util.concurrent.Executors
+import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
 
 
@@ -20,12 +22,20 @@ class DataSync(
 ) {
     private val logger = LoggerFactory.getLogger(this::class.java)
 
-    private val executorService = Executors.newCachedThreadPool()
+    private val executorService = Executors.newCachedThreadPool(ThreadFactory { r ->
+        Thread(r).apply { isDaemon = true }
+    })
 
     private val client: Client = ResteasyClientBuilderImpl()
         .connectionTTL(2, TimeUnit.MINUTES)
         .executorService(executorService)
         .build()
+
+    @PreDestroy
+    fun shutdown() {
+        executorService.shutdown()
+        client.close()
+    }
 
     private fun <T> sync(endpointPath: String, metadata: T): Boolean {
         val endpoint = "${applicationConfig.catalogEndpoint()}/internal/v2/$endpointPath"

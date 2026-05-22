@@ -85,7 +85,9 @@ class ColumnTagExtractor(
         private val httpParallelism = ConfigProvider.getConfig()
             .getOptionalValue("HTTP_PARALLELISM", Int::class.java)
             .orElse(16)
-        private val presidioExecutor = Executors.newFixedThreadPool(httpParallelism)
+        private val presidioExecutor = Executors.newFixedThreadPool(httpParallelism) { r ->
+            Thread(r).apply { isDaemon = true }
+        }
     }
 
     private fun isPiiDetectionEnabled(): Boolean {
