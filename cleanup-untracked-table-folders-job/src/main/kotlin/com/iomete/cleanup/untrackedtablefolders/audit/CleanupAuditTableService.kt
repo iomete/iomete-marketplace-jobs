@@ -60,6 +60,23 @@ class CleanupAuditTableService {
             PARTITIONED BY (days(start_time))
             """.trimIndent()
         )
+
+        ensureAuditTableSchemaIsCurrent()
+    }
+
+    private fun ensureAuditTableSchemaIsCurrent() {
+        val spark = sparkSessionProvider.getOrCreate()
+        val existingColumns = spark.table(AUDIT_TABLE_NAME).schema().fieldNames().toSet()
+
+        if (!existingColumns.contains("external_job_id")) {
+            logger.info("Adding missing cleanup audit column: external_job_id")
+            spark.sql("ALTER TABLE $AUDIT_TABLE_NAME ADD COLUMN external_job_id STRING")
+        }
+
+        if (!existingColumns.contains("platform_started_by")) {
+            logger.info("Adding missing cleanup audit column: platform_started_by")
+            spark.sql("ALTER TABLE $AUDIT_TABLE_NAME ADD COLUMN platform_started_by STRING")
+        }
     }
 
     fun writeAuditRecord(record: CleanupAuditRecord) {
@@ -148,9 +165,6 @@ class CleanupAuditTableService {
 
     fun currentSparkAppId(): String? =
         sparkSessionProvider.getOrCreate().sparkContext().applicationId()
-
-    fun currentSparkUser(): String? =
-        sparkSessionProvider.getOrCreate().sparkContext().sparkUser()
 
     fun currentRuntimeComputeId(): String? =
         env("IOMETE_COMPUTE_ID")
