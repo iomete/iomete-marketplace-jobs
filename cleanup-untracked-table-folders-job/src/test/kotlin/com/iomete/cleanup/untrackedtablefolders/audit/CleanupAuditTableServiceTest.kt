@@ -50,10 +50,42 @@ class CleanupAuditTableServiceTest {
         assertTrue(sql.contains("'can''t find schema' AS error_message"))
     }
 
+    @Test
+    fun `escapes backslashes in audit insert sql`() {
+        val sql =
+            service.buildInsertAuditRecordSql(
+                auditRecord(errorMessage = "path\\with\\backslashes")
+            )
+
+        assertTrue(sql.contains("'path\\\\with\\\\backslashes' AS error_message"))
+    }
+
+    @Test
+    fun `emits CAST NULL for size columns when size statistics are unavailable`() {
+        val sql =
+            service.buildInsertAuditRecordSql(
+                auditRecord(
+                    candidateObjectCount = null,
+                    candidateTotalSizeBytes = null,
+                    deletedObjectCount = null,
+                    deletedTotalSizeBytes = null,
+                )
+            )
+
+        assertTrue(sql.contains("CAST(NULL AS BIGINT) AS candidate_object_count"))
+        assertTrue(sql.contains("CAST(NULL AS BIGINT) AS candidate_total_size_bytes"))
+        assertTrue(sql.contains("CAST(NULL AS BIGINT) AS deleted_object_count"))
+        assertTrue(sql.contains("CAST(NULL AS BIGINT) AS deleted_total_size_bytes"))
+    }
+
     private fun auditRecord(
         cutoffTime: Instant? = null,
         databaseName: String = "test_db",
         errorMessage: String? = null,
+        candidateObjectCount: Long? = 5,
+        candidateTotalSizeBytes: Long? = 12345,
+        deletedObjectCount: Long? = 0,
+        deletedTotalSizeBytes: Long? = 0,
     ): CleanupAuditRecord =
         CleanupAuditRecord(
             runId = "run-1",
@@ -81,11 +113,11 @@ class CleanupAuditTableServiceTest {
             activeTableCount = 1,
             storageFolderCount = 2,
             candidateFolderCount = 1,
-            candidateObjectCount = 5,
-            candidateTotalSizeBytes = 12345,
+            candidateObjectCount = candidateObjectCount,
+            candidateTotalSizeBytes = candidateTotalSizeBytes,
             deletedFolderCount = 0,
-            deletedObjectCount = 0,
-            deletedTotalSizeBytes = 0,
+            deletedObjectCount = deletedObjectCount,
+            deletedTotalSizeBytes = deletedTotalSizeBytes,
             candidateFolders = listOf("s3a://bucket/db/orphan"),
             deletedFolders = emptyList(),
             diagnosticDetails = mapOf("candidate_folder_paths_truncated" to "false"),

@@ -3,6 +3,7 @@ package com.iomete.cleanup.untrackedtablefolders.candidate
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageFolder
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import jakarta.enterprise.context.ApplicationScoped
+import org.jboss.logging.Logger
 
 class TooManyCandidateFoldersException(
     val candidateCount: Int,
@@ -14,6 +15,8 @@ class TooManyCandidateFoldersException(
 
 @ApplicationScoped
 class UntrackedFolderCandidateDetector {
+    private val logger = Logger.getLogger(UntrackedFolderCandidateDetector::class.java)
+
     fun detectCandidates(
         storageFolders: List<StorageFolder>,
         activeTableLocations: List<String>,
@@ -25,16 +28,37 @@ class UntrackedFolderCandidateDetector {
             "maxCandidateFolders must be greater than or equal to 0"
         }
 
-        val activeTableLocationSet = activeTableLocations
+        val normalizedActiveTableLocations = activeTableLocations
             .map { StoragePathUtils.normalizeLocation(it) }
-            .toSet()
 
         val excludedPathSet = excludedPaths
             .map { StoragePathUtils.normalizeLocation(it) }
             .toSet()
 
         val candidateFolders = storageFolders
-            .filter { StoragePathUtils.normalizeLocation(it.path) !in activeTableLocationSet }
+            .filter { storageFolder ->
+                val normalizedFolder = StoragePathUtils.normalizeLocation(storageFolder.path)
+                val finalSegment = normalizedFolder.substringAfterLast('/')
+                val matchedSentinelPrefix = SENTINEL_FOLDER_PREFIXES.firstOrNull { prefix ->
+                    finalSegment.startsWith(prefix)
+                }
+                if (matchedSentinelPrefix != null) {
+                    logger.info(
+                        "Skipping framework sentinel folder (never selected as cleanup candidate): path=${storageFolder.path}, matchedPrefix=$matchedSentinelPrefix"
+                    )
+                }
+                matchedSentinelPrefix == null
+            }
+            .filter { storageFolder ->
+                val normalizedFolder = StoragePathUtils.normalizeLocation(storageFolder.path)
+                val claimedByActiveTable = normalizedActiveTableLocations.any { activeLocation ->
+                    StoragePathUtils.isSameOrChildLocation(
+                        candidateLocation = activeLocation,
+                        rootLocation = normalizedFolder,
+                    )
+                }
+                !claimedByActiveTable
+            }
             .filter { StoragePathUtils.normalizeLocation(it.path) !in excludedPathSet }
             .filter { it.modificationTimeMillis <= cutoffTimeMillis }
             .sortedBy { it.path }
@@ -48,5 +72,16 @@ class UntrackedFolderCandidateDetector {
         }
 
         return candidateFolders
+    }
+
+    private companion object {
+        val SENTINEL_FOLDER_PREFIXES = setOf(
+            "_temporary",
+            "_committed_",
+            "_started_",
+            ".spark-staging",
+            ".hive-staging",
+            "__magic",
+        )
     }
 }

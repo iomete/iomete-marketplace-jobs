@@ -396,6 +396,8 @@ The main safety principle is **fail closed**: if the job cannot prove that a fol
 | `max_candidate_folders_per_database` | Broad accidental deletion when too many candidates appear |
 | Pre-delete catalog revalidation | Deleting a folder that became active after initial discovery |
 | Audit row per database | Clear outcome tracking when a run scans multiple databases |
+| Empty-database guard | Deleting every folder in a database whose catalog has no active table locations (likely misconfiguration) |
+| Framework sentinel folder protection | Deleting `_temporary`, `.spark-staging-*`, `.hive-staging_*`, `__magic`, and similar working folders left by in-flight Hadoop, Spark, or Hive writes |
 
 ---
 
@@ -491,7 +493,7 @@ Audit rows include:
 | `runtime_compute_id` | Runtime compute/application ID exposed to the driver container through `IOMETE_COMPUTE_ID`. This maps to the application/activity ID visible in the platform UI. |
 | `runtime_compute_namespace` | Runtime Kubernetes namespace exposed through `IOMETE_COMPUTE_NAMESPACE`, for example `spark-resources-1`. |
 | `runtime_domain` | Runtime IOMETE domain exposed through `IOMETE_DOMAIN`, for example `fde`. |
-| `runtime_user` | Runtime Spark user exposed through `SPARK_USER`. This is useful for comparing the audit row with the run-as user shown in the platform UI. |
+| `runtime_user` | Runtime Spark user exposed through `SPARK_USER`. This is useful for comparing the audit row with the run-as user shown in the platform UI. Read from the env var rather than `SparkContext.sparkUser()` so the value remains the run-as identity even when Spark is configured with proxy-user impersonation. |
 | `status` | High-level outcome: `SUCCESS`, `SKIPPED`, or `FAILED`. |
 | `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, or `unexpected_error`. |
 | `older_than_hours` | Configured age threshold used for candidate detection. |
