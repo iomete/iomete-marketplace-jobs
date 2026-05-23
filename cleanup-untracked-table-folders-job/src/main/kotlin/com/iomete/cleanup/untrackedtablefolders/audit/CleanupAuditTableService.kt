@@ -22,11 +22,12 @@ class CleanupAuditTableService {
             CREATE TABLE IF NOT EXISTS $AUDIT_TABLE_NAME (
               run_id STRING,
               spark_app_id STRING,
-              initiated_by STRING,
               runtime_compute_id STRING,
               runtime_compute_namespace STRING,
               runtime_domain STRING,
               runtime_user STRING,
+              external_job_id STRING,
+              platform_started_by STRING,
               catalog_name STRING,
               database_name STRING,
               operation STRING,
@@ -73,11 +74,12 @@ class CleanupAuditTableService {
         INSERT INTO $AUDIT_TABLE_NAME (
           run_id,
           spark_app_id,
-          initiated_by,
           runtime_compute_id,
           runtime_compute_namespace,
           runtime_domain,
           runtime_user,
+          external_job_id,
+          platform_started_by,
           catalog_name,
           database_name,
           operation,
@@ -109,11 +111,12 @@ class CleanupAuditTableService {
         SELECT
           ${sqlString(record.runId)} AS run_id,
           ${sqlNullableString(record.sparkAppId)} AS spark_app_id,
-          ${sqlNullableString(record.initiatedBy)} AS initiated_by,
           ${sqlNullableString(record.runtimeComputeId)} AS runtime_compute_id,
           ${sqlNullableString(record.runtimeComputeNamespace)} AS runtime_compute_namespace,
           ${sqlNullableString(record.runtimeDomain)} AS runtime_domain,
           ${sqlNullableString(record.runtimeUser)} AS runtime_user,
+          ${sqlNullableString(record.externalJobId)} AS external_job_id,
+          ${sqlNullableString(record.platformStartedBy)} AS platform_started_by,
           ${sqlString(record.catalogName)} AS catalog_name,
           ${sqlString(record.databaseName)} AS database_name,
           ${sqlString(record.operation)} AS operation,
@@ -160,6 +163,12 @@ class CleanupAuditTableService {
 
     fun currentRuntimeUser(): String? =
         env("SPARK_USER")
+
+    fun currentExternalJobId(): String? =
+        env("IOMETE_EXTERNAL_JOB_ID")
+
+    fun currentPlatformStartedBy(): String? =
+        env("IOMETE_JOB_STARTED_BY")
 
     private fun env(name: String): String? =
         System.getenv(name)?.takeIf { it.isNotBlank() }

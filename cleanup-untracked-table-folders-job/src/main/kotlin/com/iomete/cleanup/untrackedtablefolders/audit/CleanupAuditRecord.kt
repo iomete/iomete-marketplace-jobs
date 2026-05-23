@@ -5,11 +5,12 @@ import java.time.Instant
 data class CleanupAuditRecord(
     val runId: String,
     val sparkAppId: String?,
-    val initiatedBy: String?,
     val runtimeComputeId: String?,
     val runtimeComputeNamespace: String?,
     val runtimeDomain: String?,
     val runtimeUser: String?,
+    val externalJobId: String?,
+    val platformStartedBy: String?,
     val catalogName: String,
     val databaseName: String,
     val operation: String,

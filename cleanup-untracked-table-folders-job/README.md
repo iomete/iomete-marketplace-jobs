@@ -486,7 +486,8 @@ Audit rows include:
 |---|---|
 | `run_id` | Cleanup-job-generated UUID. Groups all database audit rows from one cleanup run. |
 | `spark_app_id` | Spark application ID from the runtime Spark context. This is different from the platform job ID shown in the UI. |
-| `initiated_by` | Spark user/proxy user from the runtime Spark context. This may not always be the same as the UI user who created the job template. |
+| `external_job_id` | Stable platform Job ID shown in the UI for the job definition. |
+| `platform_started_by` | Platform user who started this specific job run, when exposed by the platform runtime. |
 | `runtime_compute_id` | Runtime compute/application ID exposed to the driver container through `IOMETE_COMPUTE_ID`. This maps to the application/activity ID visible in the platform UI. |
 | `runtime_compute_namespace` | Runtime Kubernetes namespace exposed through `IOMETE_COMPUTE_NAMESPACE`, for example `spark-resources-1`. |
 | `runtime_domain` | Runtime IOMETE domain exposed through `IOMETE_DOMAIN`, for example `fde`. |

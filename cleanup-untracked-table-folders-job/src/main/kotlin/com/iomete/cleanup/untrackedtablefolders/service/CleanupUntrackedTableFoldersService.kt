@@ -622,11 +622,12 @@ class CleanupUntrackedTableFoldersService {
             CleanupAuditRecord(
                 runId = runId,
                 sparkAppId = cleanupAuditTableService.currentSparkAppId(),
-                initiatedBy = cleanupAuditTableService.currentSparkUser(),
                 runtimeComputeId = cleanupAuditTableService.currentRuntimeComputeId(),
                 runtimeComputeNamespace = cleanupAuditTableService.currentRuntimeComputeNamespace(),
                 runtimeDomain = cleanupAuditTableService.currentRuntimeDomain(),
                 runtimeUser = cleanupAuditTableService.currentRuntimeUser(),
+                externalJobId = cleanupAuditTableService.currentExternalJobId(),
+                platformStartedBy = cleanupAuditTableService.currentPlatformStartedBy(),
                 catalogName = catalogName,
                 databaseName = databaseName,
                 operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
