@@ -122,6 +122,63 @@ class UntrackedFolderCandidateDetectorTest {
         }
     }
 
+    @Test
+    fun `skips Hadoop temporary sentinel folder from candidates`() {
+        val candidates = detector.detectCandidates(
+            storageFolders = listOf(
+                storageFolder("s3a://bucket/db/_temporary", modificationTimeMillis = 100),
+                storageFolder("s3a://bucket/db/orphan_table", modificationTimeMillis = 100),
+            ),
+            activeTableLocations = emptyList(),
+            excludedPaths = emptyList(),
+            cutoffTimeMillis = 200,
+            maxCandidateFolders = 10,
+        )
+
+        assertEquals(
+            listOf("s3a://bucket/db/orphan_table"),
+            candidates.map { it.path },
+        )
+    }
+
+    @Test
+    fun `skips Spark staging sentinel folder from candidates`() {
+        val candidates = detector.detectCandidates(
+            storageFolders = listOf(
+                storageFolder("s3a://bucket/db/.spark-staging-application_123", modificationTimeMillis = 100),
+                storageFolder("s3a://bucket/db/orphan_table", modificationTimeMillis = 100),
+            ),
+            activeTableLocations = emptyList(),
+            excludedPaths = emptyList(),
+            cutoffTimeMillis = 200,
+            maxCandidateFolders = 10,
+        )
+
+        assertEquals(
+            listOf("s3a://bucket/db/orphan_table"),
+            candidates.map { it.path },
+        )
+    }
+
+    @Test
+    fun `skips Hive staging sentinel folder from candidates`() {
+        val candidates = detector.detectCandidates(
+            storageFolders = listOf(
+                storageFolder("s3a://bucket/db/.hive-staging_hive_2026-05-23_10-30-00", modificationTimeMillis = 100),
+                storageFolder("s3a://bucket/db/orphan_table", modificationTimeMillis = 100),
+            ),
+            activeTableLocations = emptyList(),
+            excludedPaths = emptyList(),
+            cutoffTimeMillis = 200,
+            maxCandidateFolders = 10,
+        )
+
+        assertEquals(
+            listOf("s3a://bucket/db/orphan_table"),
+            candidates.map { it.path },
+        )
+    }
+
     private fun storageFolder(
         path: String,
         modificationTimeMillis: Long,
@@ -130,4 +187,45 @@ class UntrackedFolderCandidateDetectorTest {
             path = path,
             modificationTimeMillis = modificationTimeMillis,
         )
+
+    @Test
+    fun `protects candidate that contains an active table location nested below it`() {
+        val candidates = detector.detectCandidates(
+            storageFolders = listOf(
+                storageFolder("s3a://bucket/db/team_a", modificationTimeMillis = 100),
+                storageFolder("s3a://bucket/db/team_b", modificationTimeMillis = 100),
+                storageFolder("s3a://bucket/db/abandoned", modificationTimeMillis = 100),
+            ),
+            activeTableLocations = listOf(
+                "s3a://bucket/db/team_a/orders",
+                "s3a://bucket/db/team_b/sales",
+            ),
+            excludedPaths = emptyList(),
+            cutoffTimeMillis = 200,
+            maxCandidateFolders = 10,
+        )
+
+        assertEquals(
+            listOf("s3a://bucket/db/abandoned"),
+            candidates.map { it.path },
+        )
+    }
+
+    @Test
+    fun `protects candidate when active table location has trailing slash`() {
+        val candidates = detector.detectCandidates(
+            storageFolders = listOf(
+                storageFolder("s3a://bucket/db/team_a", modificationTimeMillis = 100),
+            ),
+            activeTableLocations = listOf("s3a://bucket/db/team_a/orders/"),
+            excludedPaths = emptyList(),
+            cutoffTimeMillis = 200,
+            maxCandidateFolders = 10,
+        )
+
+        assertEquals(
+            emptyList<String>(),
+            candidates.map { it.path },
+        )
+    }
 }

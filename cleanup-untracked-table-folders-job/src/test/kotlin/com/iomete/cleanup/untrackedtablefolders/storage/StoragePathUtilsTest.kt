@@ -81,4 +81,30 @@ class StoragePathUtilsTest {
             )
         )
     }
+
+    @Test
+    fun `canonicalizes s3 scheme alias to s3a`() {
+        assertEquals(
+            "s3a://bucket/data/db",
+            StoragePathUtils.normalizeLocation("s3://bucket/data/db"),
+        )
+    }
+
+    @Test
+    fun `canonicalizes s3n scheme alias to s3a`() {
+        assertEquals(
+            "s3a://bucket/data/db",
+            StoragePathUtils.normalizeLocation("s3n://bucket/data/db"),
+        )
+    }
+
+    @Test
+    fun `treats mixed scheme aliases as same location for containment`() {
+        assertTrue(
+            StoragePathUtils.isSameOrChildLocation(
+                candidateLocation = "s3://bucket/data/db/table",
+                rootLocation = "s3a://bucket/data/db",
+            )
+        )
+    }
 }

@@ -34,6 +34,7 @@ class CleanupUntrackedTableFoldersService {
         logger.info("Loaded cleanup config: $config")
         val runId = UUID.randomUUID().toString()
         logger.info("Cleanup run id: $runId")
+        cleanupAuditTableService.logRuntimeIdentityEnvVars()
         cleanupAuditTableService.ensureAuditTableExists()
 
         config.databases.forEach { database ->
@@ -55,6 +56,24 @@ class CleanupUntrackedTableFoldersService {
                     logger.info(
                         "Active table discovered: catalog=${table.catalog}, database=${table.database}, table=${table.table}, isTemporary=${table.isTemporary}, location=${table.location}"
                     )
+                }
+
+                if (discoveredDatabase.tables.mapNotNull { it.location }.isEmpty()) {
+                    logger.warn(
+                        "Skipping cleanup because database has no active tables with discoverable locations in the catalog. " +
+                                "Cleanup requires at least one active table location to anchor the safety check. " +
+                                "catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, totalCatalogTables=${discoveredDatabase.tables.size}"
+                    )
+
+                    writeNoActiveTablesAuditRecord(
+                        runId = runId,
+                        databaseStartTime = databaseStartTime,
+                        catalogName = discoveredDatabase.catalog,
+                        databaseName = discoveredDatabase.database,
+                        discoveredDatabaseLocation = discoveredDatabase.location,
+                    )
+
+                    return@forEach
                 }
 
                 if (discoveredDatabase.location.isNullOrBlank()) {
@@ -173,7 +192,12 @@ class CleanupUntrackedTableFoldersService {
                     val candidateFolderPaths = candidateFolders.map { it.path }.sorted()
                     val candidateSizeStatsByFolder =
                         collectCandidateSizeStatsByFolder(candidateFolderPaths)
-                    val candidateSizeStats = sumSizeStats(candidateSizeStatsByFolder.values)
+                    val candidateSizeStats: StorageSizeStats? =
+                        if (config.collectSizeStatistics) {
+                            sumSizeStats(candidateSizeStatsByFolder.values)
+                        } else {
+                            null
+                        }
 
                     candidateFolders.forEach { folder ->
                         logger.info(
@@ -195,7 +219,7 @@ class CleanupUntrackedTableFoldersService {
                                 )
 
                             else -> {
-                                val currentActiveTableLocationSet =
+                                val currentActiveTableLocations =
                                     catalogDiscoveryService
                                         .discoverDatabase(
                                             catalog = discoveredDatabase.catalog,
@@ -204,16 +228,23 @@ class CleanupUntrackedTableFoldersService {
                                         .tables
                                         .mapNotNull { it.location }
                                         .map { StoragePathUtils.normalizeLocation(it) }
-                                        .toSet()
 
                                 candidateFolders
                                     .mapNotNull { candidateFolder ->
                                         val normalizedCandidatePath =
                                             StoragePathUtils.normalizeLocation(candidateFolder.path)
 
-                                        if (normalizedCandidatePath in currentActiveTableLocationSet) {
+                                        val claimedByActiveTable =
+                                            currentActiveTableLocations.any { activeLocation ->
+                                                StoragePathUtils.isSameOrChildLocation(
+                                                    candidateLocation = activeLocation,
+                                                    rootLocation = normalizedCandidatePath,
+                                                )
+                                            }
+
+                                        if (claimedByActiveTable) {
                                             logger.warn(
-                                                "Skipping deletion because candidate folder became active before deletion: path=${candidateFolder.path}"
+                                                "Skipping deletion because candidate folder is or contains an active table location: path=${candidateFolder.path}"
                                             )
                                             null
                                         } else {
@@ -227,11 +258,11 @@ class CleanupUntrackedTableFoldersService {
                             }
                         }
 
-                    val deletedSizeStats =
+                    val deletedSizeStats: StorageSizeStats? =
                         if (config.collectSizeStatistics) {
                             sumSizeStats(deletedFolders.mapNotNull { candidateSizeStatsByFolder[it] })
                         } else {
-                            StorageSizeStats.ZERO
+                            null
                         }
 
                     if (deletedFolders.isNotEmpty()) {
@@ -323,7 +354,7 @@ class CleanupUntrackedTableFoldersService {
 
         if (!config.collectSizeStatistics) {
             logger.info(
-                "Skipping size statistics because collect_size_statistics=false. Candidate and deleted size audit fields will be zero."
+                "Skipping size statistics because collect_size_statistics=false. Candidate and deleted size audit fields will be NULL."
             )
             return emptyMap()
         }
@@ -332,9 +363,29 @@ class CleanupUntrackedTableFoldersService {
             "Collecting size statistics for ${candidateFolderPaths.size} candidate folder(s). This may take time for folders with many objects. To skip this step, set collect_size_statistics=false."
         )
 
-        return candidateFolderPaths.associateWith { candidateFolderPath ->
-            objectStorageDiscoveryService.collectSizeStats(listOf(candidateFolderPath))
+        val result = mutableMapOf<String, StorageSizeStats>()
+        var failedFolderCount = 0
+
+        candidateFolderPaths.forEach { candidateFolderPath ->
+            try {
+                result[candidateFolderPath] =
+                    objectStorageDiscoveryService.collectSizeStats(listOf(candidateFolderPath))
+            } catch (th: Throwable) {
+                failedFolderCount += 1
+                logger.warn(
+                    "Failed to collect size statistics for candidate folder; recording unknown size and continuing without aborting cleanup: path=$candidateFolderPath",
+                    th,
+                )
+            }
         }
+
+        if (failedFolderCount > 0) {
+            logger.warn(
+                "Size statistics collection failed for $failedFolderCount of ${candidateFolderPaths.size} candidate folder(s). Candidate and deleted size audit fields exclude the failed folders."
+            )
+        }
+
+        return result
     }
 
     private fun sumSizeStats(stats: Iterable<StorageSizeStats>): StorageSizeStats =
@@ -358,9 +409,9 @@ class CleanupUntrackedTableFoldersService {
         storageFolderPaths: List<String>,
         excludedPaths: List<String>,
         candidateFolderPaths: List<String>,
-        candidateSizeStats: StorageSizeStats,
+        candidateSizeStats: StorageSizeStats?,
         deletedFolderPaths: List<String>,
-        deletedSizeStats: StorageSizeStats,
+        deletedSizeStats: StorageSizeStats?,
     ) {
         val candidateFolderSet = candidateFolderPaths.toSet()
         val protectedFolderPaths = activeTableLocations.toSet()
@@ -376,7 +427,7 @@ class CleanupUntrackedTableFoldersService {
         logger.info("Immediate child storage folders scanned: ${storageFolderPaths.size}")
         logger.info("Untracked candidate folder count: ${candidateFolderPaths.size}")
         logger.info(
-            if (config.collectSizeStatistics) {
+            if (candidateSizeStats != null) {
                 "Estimated candidate size: ${formatBytes(candidateSizeStats.totalSizeBytes)} across ${candidateSizeStats.objectCount} object(s)"
             } else {
                 "Estimated candidate size: skipped because collect_size_statistics=false"
@@ -384,7 +435,7 @@ class CleanupUntrackedTableFoldersService {
         )
         logger.info("Deleted untracked folder count: ${deletedFolderPaths.size}")
         logger.info(
-            if (config.collectSizeStatistics) {
+            if (deletedSizeStats != null) {
                 "Deleted size: ${formatBytes(deletedSizeStats.totalSizeBytes)} across ${deletedSizeStats.objectCount} object(s)"
             } else {
                 "Deleted size: skipped because collect_size_statistics=false"
@@ -465,6 +516,29 @@ class CleanupUntrackedTableFoldersService {
         )
     }
 
+    private fun writeNoActiveTablesAuditRecord(
+        runId: String,
+        databaseStartTime: Instant,
+        catalogName: String,
+        databaseName: String,
+        discoveredDatabaseLocation: String?,
+    ) {
+        writeAuditRecord(
+            runId = runId,
+            databaseStartTime = databaseStartTime,
+            catalogName = catalogName,
+            databaseName = databaseName,
+            status = STATUS_SKIPPED,
+            statusReason = "no_active_tables_in_database",
+            errorMessage =
+                "Database has no active tables with discoverable locations in the catalog. " +
+                        "Cleanup was skipped to avoid wholesale deletion of immediate child folders.",
+            discoveredDatabaseLocation = discoveredDatabaseLocation,
+            activeTableCount = 0,
+            diagnosticDetails = diagnosticDetails(activeTableLocations = emptyList()),
+        )
+    }
+
     private fun writeTooManyCandidateFoldersAuditRecord(
         runId: String,
         databaseStartTime: Instant,
@@ -517,9 +591,9 @@ class CleanupUntrackedTableFoldersService {
         activeTableLocations: List<String>,
         storageFolderPaths: List<String>,
         candidateFolderPaths: List<String>,
-        candidateSizeStats: StorageSizeStats,
+        candidateSizeStats: StorageSizeStats?,
         deletedFolderPaths: List<String>,
-        deletedSizeStats: StorageSizeStats,
+        deletedSizeStats: StorageSizeStats?,
         cutoffTime: Instant,
         excludedPaths: List<String>,
     ) {
@@ -536,11 +610,11 @@ class CleanupUntrackedTableFoldersService {
             activeTableCount = activeTableCount,
             storageFolderCount = storageFolderPaths.size.toLong(),
             candidateFolderCount = candidateFolderPaths.size.toLong(),
-            candidateObjectCount = candidateSizeStats.objectCount,
-            candidateTotalSizeBytes = candidateSizeStats.totalSizeBytes,
+            candidateObjectCount = candidateSizeStats?.objectCount,
+            candidateTotalSizeBytes = candidateSizeStats?.totalSizeBytes,
             deletedFolderCount = deletedFolderPaths.size.toLong(),
-            deletedObjectCount = deletedSizeStats.objectCount,
-            deletedTotalSizeBytes = deletedSizeStats.totalSizeBytes,
+            deletedObjectCount = deletedSizeStats?.objectCount,
+            deletedTotalSizeBytes = deletedSizeStats?.totalSizeBytes,
             candidateFolders = candidateFolderPaths,
             deletedFolders = deletedFolderPaths,
             cutoffTime = cutoffTime,
@@ -607,26 +681,27 @@ class CleanupUntrackedTableFoldersService {
         activeTableCount: Long = 0,
         storageFolderCount: Long = 0,
         candidateFolderCount: Long = 0,
-        candidateObjectCount: Long = 0,
-        candidateTotalSizeBytes: Long = 0,
+        candidateObjectCount: Long? = null,
+        candidateTotalSizeBytes: Long? = null,
         deletedFolderCount: Long = 0,
-        deletedObjectCount: Long = 0,
-        deletedTotalSizeBytes: Long = 0,
+        deletedObjectCount: Long? = null,
+        deletedTotalSizeBytes: Long? = null,
         candidateFolders: List<String> = emptyList(),
         deletedFolders: List<String> = emptyList(),
         cutoffTime: Instant? = null,
-        excludedPaths: List<String> = config.excludePaths,
+        excludedPaths: List<String> = normalizedConfiguredExcludePaths(),
         diagnosticDetails: Map<String, String> = emptyMap(),
     ) {
         cleanupAuditTableService.writeAuditRecord(
             CleanupAuditRecord(
                 runId = runId,
                 sparkAppId = cleanupAuditTableService.currentSparkAppId(),
-                initiatedBy = cleanupAuditTableService.currentSparkUser(),
                 runtimeComputeId = cleanupAuditTableService.currentRuntimeComputeId(),
                 runtimeComputeNamespace = cleanupAuditTableService.currentRuntimeComputeNamespace(),
                 runtimeDomain = cleanupAuditTableService.currentRuntimeDomain(),
                 runtimeUser = cleanupAuditTableService.currentRuntimeUser(),
+                externalJobId = cleanupAuditTableService.currentExternalJobId(),
+                platformStartedBy = cleanupAuditTableService.currentPlatformStartedBy(),
                 catalogName = catalogName,
                 databaseName = databaseName,
                 operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
@@ -714,7 +789,9 @@ class CleanupUntrackedTableFoldersService {
         storageScanLocation: String,
     ): List<String> =
         config.excludeDatabaseFolders.mapNotNull { excludedDatabaseFolder ->
-            val parts = excludedDatabaseFolder.split(".")
+            val parts = excludedDatabaseFolder.split(".", limit = 2)
+            if (parts.size != 2) return@mapNotNull null
+
             val excludedDatabase = parts[0]
             val excludedFolder = parts[1]
 

@@ -13,7 +13,7 @@ object StoragePathUtils {
 
         val uri = Path(trimmed).toUri().normalize()
 
-        val scheme = uri.scheme?.lowercase()
+        val scheme = uri.scheme?.lowercase()?.let(::canonicalizeScheme)
         val authority = uri.authority?.lowercase()
         val normalizedPath = normalizeUriPath(uri)
 
@@ -55,6 +55,12 @@ object StoragePathUtils {
                 candidateLocation = candidateLocation,
                 rootLocation = rootLocation,
             )
+        }
+
+    private fun canonicalizeScheme(scheme: String): String =
+        when (scheme) {
+            "s3", "s3a", "s3n" -> "s3a"
+            else -> scheme
         }
 
     private fun normalizeUriPath(uri: URI): String {
