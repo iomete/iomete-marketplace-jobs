@@ -4,6 +4,7 @@ import com.iomete.cleanup.untrackedtablefolders.storage.StorageFolder
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import jakarta.enterprise.context.ApplicationScoped
 import org.jboss.logging.Logger
+import java.time.Instant
 
 class TooManyCandidateFoldersException(
     val candidateCount: Int,
@@ -46,8 +47,10 @@ class UntrackedFolderCandidateDetector {
                     )
 
                 if (skipReason != null) {
-                    logger.info(
-                        "Storage folder was not selected as cleanup candidate: path=${storageFolder.path}, reason=${skipReason.logValue}"
+                    logSkippedFolder(
+                        storageFolder = storageFolder,
+                        skipReason = skipReason,
+                        cutoffTimeMillis = cutoffTimeMillis,
                     )
                 }
 
@@ -83,7 +86,11 @@ class UntrackedFolderCandidateDetector {
             return CandidateSkipReason.SENTINEL_FOLDER
         }
 
-        val claimedByActiveTable =
+        if (normalizedFolder in normalizedActiveTableLocations) {
+            return CandidateSkipReason.ACTIVE_TABLE
+        }
+
+        val containsActiveTable =
             normalizedActiveTableLocations.any { activeLocation ->
                 StoragePathUtils.isSameOrChildLocation(
                     candidateLocation = activeLocation,
@@ -91,8 +98,8 @@ class UntrackedFolderCandidateDetector {
                 )
             }
 
-        if (claimedByActiveTable) {
-            return CandidateSkipReason.ACTIVE_OR_CONTAINS_ACTIVE_TABLE
+        if (containsActiveTable) {
+            return CandidateSkipReason.CONTAINS_ACTIVE_TABLE
         }
 
         if (normalizedFolder in excludedPathSet) {
@@ -106,9 +113,25 @@ class UntrackedFolderCandidateDetector {
         return null
     }
 
+    private fun logSkippedFolder(
+        storageFolder: StorageFolder,
+        skipReason: CandidateSkipReason,
+        cutoffTimeMillis: Long,
+    ) {
+        val message = when (skipReason) {
+            CandidateSkipReason.TOO_NEW ->
+                "Storage folder was not selected as cleanup candidate: path=${storageFolder.path}, reason=${skipReason.logValue}, modifiedAt=${Instant.ofEpochMilli(storageFolder.modificationTimeMillis)}, cutoffTime=${Instant.ofEpochMilli(cutoffTimeMillis)}"
+            else ->
+                "Storage folder was not selected as cleanup candidate: path=${storageFolder.path}, reason=${skipReason.logValue}"
+        }
+
+        logger.info(message)
+    }
+
     private enum class CandidateSkipReason(val logValue: String) {
         SENTINEL_FOLDER("sentinel_folder"),
-        ACTIVE_OR_CONTAINS_ACTIVE_TABLE("active_or_contains_active_table"),
+        ACTIVE_TABLE("active_table"),
+        CONTAINS_ACTIVE_TABLE("contains_active_table"),
         EXCLUDED_PATH("excluded_path"),
         TOO_NEW("too_new"),
     }
