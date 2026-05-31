@@ -37,30 +37,22 @@ class UntrackedFolderCandidateDetector {
 
         val candidateFolders = storageFolders
             .filter { storageFolder ->
-                val normalizedFolder = StoragePathUtils.normalizeLocation(storageFolder.path)
-                val finalSegment = normalizedFolder.substringAfterLast('/')
-                val matchedSentinelPrefix = SENTINEL_FOLDER_PREFIXES.firstOrNull { prefix ->
-                    finalSegment.startsWith(prefix)
-                }
-                if (matchedSentinelPrefix != null) {
+                val skipReason =
+                    skipReason(
+                        storageFolder = storageFolder,
+                        normalizedActiveTableLocations = normalizedActiveTableLocations,
+                        excludedPathSet = excludedPathSet,
+                        cutoffTimeMillis = cutoffTimeMillis,
+                    )
+
+                if (skipReason != null) {
                     logger.info(
-                        "Skipping framework sentinel folder (never selected as cleanup candidate): path=${storageFolder.path}, matchedPrefix=$matchedSentinelPrefix"
+                        "Storage folder was not selected as cleanup candidate: path=${storageFolder.path}, reason=${skipReason.logValue}"
                     )
                 }
-                matchedSentinelPrefix == null
+
+                skipReason == null
             }
-            .filter { storageFolder ->
-                val normalizedFolder = StoragePathUtils.normalizeLocation(storageFolder.path)
-                val claimedByActiveTable = normalizedActiveTableLocations.any { activeLocation ->
-                    StoragePathUtils.isSameOrChildLocation(
-                        candidateLocation = activeLocation,
-                        rootLocation = normalizedFolder,
-                    )
-                }
-                !claimedByActiveTable
-            }
-            .filter { StoragePathUtils.normalizeLocation(it.path) !in excludedPathSet }
-            .filter { it.modificationTimeMillis <= cutoffTimeMillis }
             .sortedBy { it.path }
 
         if (candidateFolders.size > maxCandidateFolders) {
@@ -72,6 +64,53 @@ class UntrackedFolderCandidateDetector {
         }
 
         return candidateFolders
+    }
+
+    private fun skipReason(
+        storageFolder: StorageFolder,
+        normalizedActiveTableLocations: List<String>,
+        excludedPathSet: Set<String>,
+        cutoffTimeMillis: Long,
+    ): CandidateSkipReason? {
+        val normalizedFolder = StoragePathUtils.normalizeLocation(storageFolder.path)
+        val finalSegment = normalizedFolder.substringAfterLast('/')
+        val matchedSentinelPrefix =
+            SENTINEL_FOLDER_PREFIXES.firstOrNull { prefix ->
+                finalSegment.startsWith(prefix)
+            }
+
+        if (matchedSentinelPrefix != null) {
+            return CandidateSkipReason.SENTINEL_FOLDER
+        }
+
+        val claimedByActiveTable =
+            normalizedActiveTableLocations.any { activeLocation ->
+                StoragePathUtils.isSameOrChildLocation(
+                    candidateLocation = activeLocation,
+                    rootLocation = normalizedFolder,
+                )
+            }
+
+        if (claimedByActiveTable) {
+            return CandidateSkipReason.ACTIVE_OR_CONTAINS_ACTIVE_TABLE
+        }
+
+        if (normalizedFolder in excludedPathSet) {
+            return CandidateSkipReason.EXCLUDED_PATH
+        }
+
+        if (storageFolder.modificationTimeMillis > cutoffTimeMillis) {
+            return CandidateSkipReason.TOO_NEW
+        }
+
+        return null
+    }
+
+    private enum class CandidateSkipReason(val logValue: String) {
+        SENTINEL_FOLDER("sentinel_folder"),
+        ACTIVE_OR_CONTAINS_ACTIVE_TABLE("active_or_contains_active_table"),
+        EXCLUDED_PATH("excluded_path"),
+        TOO_NEW("too_new"),
     }
 
     private companion object {
