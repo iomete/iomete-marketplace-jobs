@@ -4,64 +4,66 @@ import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import jakarta.enterprise.context.ApplicationScoped
 import org.jboss.logging.Logger
 
+data class CleanupSummary(
+    val catalog: String,
+    val database: String,
+    val discoveredDatabaseLocation: String?,
+    val storageScanLocation: String,
+    val activeTableLocations: List<String>,
+    val storageFolderPaths: List<String>,
+    val excludedPaths: List<String>,
+    val candidateFolderPaths: List<String>,
+    val candidateSizeStats: StorageSizeStats?,
+    val deletedFolderPaths: List<String>,
+    val deletedSizeStats: StorageSizeStats?,
+)
+
 @ApplicationScoped
 class CleanupSummaryLogger {
 
     private val logger = Logger.getLogger(CleanupSummaryLogger::class.java)
 
-    fun logCleanupSummary(
-        catalog: String,
-        database: String,
-        discoveredDatabaseLocation: String?,
-        storageScanLocation: String,
-        activeTableLocations: List<String>,
-        storageFolderPaths: List<String>,
-        excludedPaths: List<String>,
-        candidateFolderPaths: List<String>,
-        candidateSizeStats: StorageSizeStats?,
-        deletedFolderPaths: List<String>,
-        deletedSizeStats: StorageSizeStats?,
-    ) {
-        val candidateFolderSet = candidateFolderPaths.toSet()
-        val protectedFolderPaths = activeTableLocations.toSet()
+    fun logCleanupSummary(summary: CleanupSummary) {
+        val candidateFolderSet = summary.candidateFolderPaths.toSet()
+        val protectedFolderPaths = summary.activeTableLocations.toSet()
         val nonCandidateStorageFolderPaths =
-            storageFolderPaths.filter { it !in candidateFolderSet }.sorted()
+            summary.storageFolderPaths.filter { it !in candidateFolderSet }.sorted()
 
         logBlankLines(3)
         logger.info("========== Cleanup Untracked Table Folders Summary ==========")
-        logger.info("Catalog: $catalog")
-        logger.info("Configured database: $database")
-        logger.info("Discovered database location: $discoveredDatabaseLocation")
-        logger.info("Object storage scan root: $storageScanLocation")
-        logger.info("Protected catalog active table location count: ${activeTableLocations.size}")
-        logger.info("Immediate child storage folders scanned: ${storageFolderPaths.size}")
-        logger.info("Untracked candidate folder count: ${candidateFolderPaths.size}")
+        logger.info("Catalog: ${summary.catalog}")
+        logger.info("Configured database: ${summary.database}")
+        logger.info("Discovered database location: ${summary.discoveredDatabaseLocation}")
+        logger.info("Object storage scan root: ${summary.storageScanLocation}")
+        logger.info("Protected catalog active table location count: ${summary.activeTableLocations.size}")
+        logger.info("Immediate child storage folders scanned: ${summary.storageFolderPaths.size}")
+        logger.info("Untracked candidate folder count: ${summary.candidateFolderPaths.size}")
         logger.info(
-            if (candidateSizeStats != null) {
-                "Estimated candidate size: ${formatBytes(candidateSizeStats.totalSizeBytes)} across ${candidateSizeStats.objectCount} object(s)"
+            if (summary.candidateSizeStats != null) {
+                "Estimated candidate size: ${formatBytes(summary.candidateSizeStats.totalSizeBytes)} across ${summary.candidateSizeStats.objectCount} object(s)"
             } else {
                 "Estimated candidate size: skipped because collect_size_statistics=false"
             }
         )
-        logger.info("Deleted untracked folder count: ${deletedFolderPaths.size}")
+        logger.info("Deleted untracked folder count: ${summary.deletedFolderPaths.size}")
         logger.info(
-            if (deletedSizeStats != null) {
-                "Deleted size: ${formatBytes(deletedSizeStats.totalSizeBytes)} across ${deletedSizeStats.objectCount} object(s)"
+            if (summary.deletedSizeStats != null) {
+                "Deleted size: ${formatBytes(summary.deletedSizeStats.totalSizeBytes)} across ${summary.deletedSizeStats.objectCount} object(s)"
             } else {
                 "Deleted size: skipped because collect_size_statistics=false"
             }
         )
-        logger.info("Deletion performed: ${deletedFolderPaths.isNotEmpty()}")
+        logger.info("Deletion performed: ${summary.deletedFolderPaths.isNotEmpty()}")
         logger.info("Protected catalog active table locations:")
         logListOrNone(protectedFolderPaths.sorted())
         logger.info("Effective excluded paths:")
-        logListOrNone(excludedPaths.sorted())
+        logListOrNone(summary.excludedPaths.sorted())
         logger.info("Storage folders not selected as candidates:")
         logListOrNone(nonCandidateStorageFolderPaths)
         logger.info("Untracked candidate folders selected for cleanup:")
-        logListOrNone(candidateFolderPaths)
+        logListOrNone(summary.candidateFolderPaths)
         logger.info("Deleted folders:")
-        logListOrNone(deletedFolderPaths)
+        logListOrNone(summary.deletedFolderPaths)
         logger.info("============================================================")
         logBlankLines(3)
     }

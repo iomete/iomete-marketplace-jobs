@@ -7,6 +7,7 @@ import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandida
 import com.iomete.cleanup.untrackedtablefolders.catalog.DatabaseNotFoundException
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
+import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDeletionService
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
@@ -279,17 +280,19 @@ class CleanupUntrackedTableFoldersService {
                     }
 
                     cleanupSummaryLogger.logCleanupSummary(
-                        catalog = discoveredDatabase.catalog,
-                        database = discoveredDatabase.database,
-                        discoveredDatabaseLocation = discoveredDatabase.location,
-                        storageScanLocation = storageScanLocation,
-                        activeTableLocations = activeTableLocations,
-                        storageFolderPaths = storageFolderPaths,
-                        excludedPaths = effectiveExcludedPaths,
-                        candidateFolderPaths = candidateFolderPaths,
-                        candidateSizeStats = candidateSizeStats,
-                        deletedFolderPaths = deletedFolders,
-                        deletedSizeStats = deletedSizeStats,
+                        CleanupSummary(
+                            catalog = discoveredDatabase.catalog,
+                            database = discoveredDatabase.database,
+                            discoveredDatabaseLocation = discoveredDatabase.location,
+                            storageScanLocation = storageScanLocation,
+                            activeTableLocations = activeTableLocations,
+                            storageFolderPaths = storageFolderPaths,
+                            excludedPaths = effectiveExcludedPaths,
+                            candidateFolderPaths = candidateFolderPaths,
+                            candidateSizeStats = candidateSizeStats,
+                            deletedFolderPaths = deletedFolders,
+                            deletedSizeStats = deletedSizeStats,
+                        )
                     )
 
                     writeSuccessAuditRecord(
