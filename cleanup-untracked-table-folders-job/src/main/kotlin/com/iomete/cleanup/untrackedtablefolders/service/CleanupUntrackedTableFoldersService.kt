@@ -10,6 +10,7 @@ import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDeletionService
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
+import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
@@ -28,6 +29,7 @@ class CleanupUntrackedTableFoldersService {
     @Inject lateinit var objectStorageDeletionService: ObjectStorageDeletionService
     @Inject lateinit var untrackedFolderCandidateDetector: UntrackedFolderCandidateDetector
     @Inject lateinit var cleanupAuditTableService: CleanupAuditTableService
+    @Inject lateinit var storageScanLocationResolver: StorageScanLocationResolver
 
     fun run() {
 
@@ -95,7 +97,7 @@ class CleanupUntrackedTableFoldersService {
                     )
                 } else {
                     val storageScanLocation =
-                        resolveStorageScanLocation(
+                        storageScanLocationResolver.resolve(
                             databaseLocation = discoveredDatabase.location,
                             activeTableLocations =
                                 discoveredDatabase.tables.mapNotNull { it.location },
@@ -801,62 +803,6 @@ class CleanupUntrackedTableFoldersService {
                 null
             }
         }
-
-    private fun resolveStorageScanLocation(
-        databaseLocation: String,
-        activeTableLocations: List<String>,
-    ): String {
-        val inferredScanLocations =
-            activeTableLocations.mapNotNull { parentLocation(it) }.distinct().sorted()
-
-        val resolvedScanLocation =
-            when (inferredScanLocations.size) {
-                0 -> {
-                    logger.warn(
-                        "No active table locations were discovered for databaseLocation=$databaseLocation. Falling back to discovered database location for storage scan. This may miss untracked folders if the database location differs from the actual table storage root."
-                    )
-                    databaseLocation
-                }
-                1 -> inferredScanLocations.single()
-                else -> {
-                    logger.warn(
-                        "Multiple active table parent locations were discovered for databaseLocation=$databaseLocation: $inferredScanLocations. Falling back to database location."
-                    )
-                    databaseLocation
-                }
-            }
-
-        validateStorageScanLocation(
-            databaseLocation = databaseLocation,
-            storageScanLocation = resolvedScanLocation,
-        )
-
-        return resolvedScanLocation
-    }
-
-    private fun validateStorageScanLocation(
-        databaseLocation: String,
-        storageScanLocation: String,
-    ) {
-        val allowedRoots = StoragePathUtils.allowedDatabaseRoots(databaseLocation)
-
-        if (!StoragePathUtils.isInsideAnyRoot(storageScanLocation, allowedRoots)) {
-            throw IllegalStateException(
-                "Resolved storage scan location escapes database boundary. databaseLocation=$databaseLocation, storageScanLocation=$storageScanLocation, allowedRoots=$allowedRoots"
-            )
-        }
-    }
-
-    private fun parentLocation(location: String): String? {
-        val normalizedLocation = location.trim().trimEnd('/')
-        val lastSlashIndex = normalizedLocation.lastIndexOf('/')
-
-        return if (lastSlashIndex <= 0) {
-            null
-        } else {
-            normalizedLocation.substring(0, lastSlashIndex)
-        }
-    }
 
     private companion object {
 
