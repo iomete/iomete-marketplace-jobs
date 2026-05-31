@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.service
 
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecord
+import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditDiagnosticDetailsBuilder
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditTableService
 import com.iomete.cleanup.untrackedtablefolders.candidate.TooManyCandidateFoldersException
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
@@ -31,6 +32,7 @@ class CleanupUntrackedTableFoldersService {
     @Inject lateinit var objectStorageDeletionService: ObjectStorageDeletionService
     @Inject lateinit var untrackedFolderCandidateDetector: UntrackedFolderCandidateDetector
     @Inject lateinit var cleanupAuditTableService: CleanupAuditTableService
+    @Inject lateinit var auditDiagnosticDetailsBuilder: CleanupAuditDiagnosticDetailsBuilder
     @Inject lateinit var cleanupSummaryLogger: CleanupSummaryLogger
     @Inject lateinit var storageScanLocationResolver: StorageScanLocationResolver
 
@@ -403,12 +405,6 @@ class CleanupUntrackedTableFoldersService {
             )
         }
 
-    private fun auditPathSample(paths: List<String>): String =
-        paths.take(MAX_AUDIT_PATH_SAMPLE_SIZE).joinToString("\n")
-
-    private fun isAuditPathSampleTruncated(paths: List<String>): Boolean =
-        paths.size > MAX_AUDIT_PATH_SAMPLE_SIZE
-
     private fun writeDatabaseLocationMissingAuditRecord(
         runId: String,
         databaseStartTime: Instant,
@@ -428,7 +424,7 @@ class CleanupUntrackedTableFoldersService {
             errorMessage = "Database location is missing; storage folder discovery was skipped.",
             discoveredDatabaseLocation = discoveredDatabaseLocation,
             activeTableCount = activeTableCount,
-            diagnosticDetails = diagnosticDetails(activeTableLocations = activeTableLocations),
+            diagnosticDetails = auditDiagnosticDetailsBuilder.build(activeTableLocations = activeTableLocations),
         )
     }
 
@@ -451,7 +447,7 @@ class CleanupUntrackedTableFoldersService {
                         "Cleanup was skipped to avoid wholesale deletion of immediate child folders.",
             discoveredDatabaseLocation = discoveredDatabaseLocation,
             activeTableCount = 0,
-            diagnosticDetails = diagnosticDetails(activeTableLocations = emptyList()),
+            diagnosticDetails = auditDiagnosticDetailsBuilder.build(activeTableLocations = emptyList()),
         )
     }
 
@@ -488,7 +484,7 @@ class CleanupUntrackedTableFoldersService {
             cutoffTime = cutoffTime,
             excludedPaths = excludedPaths,
             diagnosticDetails =
-                diagnosticDetails(
+                auditDiagnosticDetailsBuilder.build(
                     activeTableLocations = activeTableLocations,
                     storageFolderPaths = storageFolderPaths,
                     candidateFolderPaths = candidateFolderPaths,
@@ -513,6 +509,7 @@ class CleanupUntrackedTableFoldersService {
         cutoffTime: Instant,
         excludedPaths: List<String>,
     ) {
+        val candidateFolderPathSet = candidateFolderPaths.toSet()
         writeAuditRecord(
             runId = runId,
             databaseStartTime = databaseStartTime,
@@ -536,52 +533,14 @@ class CleanupUntrackedTableFoldersService {
             cutoffTime = cutoffTime,
             excludedPaths = excludedPaths,
             diagnosticDetails =
-                diagnosticDetails(
+                auditDiagnosticDetailsBuilder.build(
                     activeTableLocations = activeTableLocations,
                     storageFolderPaths = storageFolderPaths,
                     candidateFolderPaths = candidateFolderPaths,
-                    includeNonCandidateStorageFolders = true,
+                    nonCandidateStorageFolderPaths =
+                        storageFolderPaths.filter { it !in candidateFolderPathSet }.sorted(),
                 ),
         )
-    }
-
-    private fun diagnosticDetails(
-        activeTableLocations: List<String>,
-        storageFolderPaths: List<String> = emptyList(),
-        candidateFolderPaths: List<String> = emptyList(),
-        includeNonCandidateStorageFolders: Boolean = false,
-    ): Map<String, String> {
-        val details =
-            mutableMapOf(
-                "active_table_locations_sample" to auditPathSample(activeTableLocations),
-                "active_table_locations_truncated" to
-                        isAuditPathSampleTruncated(activeTableLocations).toString(),
-            )
-
-        if (storageFolderPaths.isNotEmpty()) {
-            details["storage_folder_paths_sample"] = auditPathSample(storageFolderPaths)
-            details["storage_folder_paths_truncated"] =
-                isAuditPathSampleTruncated(storageFolderPaths).toString()
-        }
-
-        if (candidateFolderPaths.isNotEmpty()) {
-            details["candidate_folder_paths_sample"] = auditPathSample(candidateFolderPaths)
-            details["candidate_folder_paths_truncated"] =
-                isAuditPathSampleTruncated(candidateFolderPaths).toString()
-        }
-
-        if (includeNonCandidateStorageFolders) {
-            val candidateFolderSet = candidateFolderPaths.toSet()
-            val nonCandidateStorageFolderPaths =
-                storageFolderPaths.filter { it !in candidateFolderSet }.sorted()
-
-            details["non_candidate_storage_folder_paths_sample"] =
-                auditPathSample(nonCandidateStorageFolderPaths)
-            details["non_candidate_storage_folder_paths_truncated"] =
-                isAuditPathSampleTruncated(nonCandidateStorageFolderPaths).toString()
-        }
-
-        return details
     }
 
     private fun writeAuditRecord(
