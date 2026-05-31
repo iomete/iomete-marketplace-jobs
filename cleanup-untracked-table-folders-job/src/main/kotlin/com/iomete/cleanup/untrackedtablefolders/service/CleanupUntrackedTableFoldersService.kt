@@ -797,11 +797,8 @@ class CleanupUntrackedTableFoldersService {
             val excludedDatabase = parts[0]
             val excludedFolder = parts[1]
 
-            if (excludedDatabase == database) {
-                StoragePathUtils.normalizeLocation("$storageScanLocation/$excludedFolder")
-            } else {
-                null
-            }
+            if (excludedDatabase != database) return@mapNotNull null
+            StoragePathUtils.normalizeLocation("$storageScanLocation/$excludedFolder")
         }
 
     private companion object {
