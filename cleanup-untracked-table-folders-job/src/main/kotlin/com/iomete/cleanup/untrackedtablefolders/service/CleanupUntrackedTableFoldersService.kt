@@ -9,9 +9,10 @@ import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
-import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDeletionService
+import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
+import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
+import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
-import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import jakarta.enterprise.context.ApplicationScoped
@@ -28,12 +29,14 @@ class CleanupUntrackedTableFoldersService {
     @Inject lateinit var config: ApplicationConfig
     @Inject lateinit var catalogDiscoveryService: CatalogDiscoveryService
     @Inject lateinit var objectStorageDiscoveryService: ObjectStorageDiscoveryService
-    @Inject lateinit var objectStorageDeletionService: ObjectStorageDeletionService
     @Inject lateinit var untrackedFolderCandidateDetector: UntrackedFolderCandidateDetector
     @Inject lateinit var cleanupAuditTableService: CleanupAuditTableService
     @Inject lateinit var cleanupAuditRecorder: CleanupAuditRecorder
     @Inject lateinit var cleanupSummaryLogger: CleanupSummaryLogger
     @Inject lateinit var storageScanLocationResolver: StorageScanLocationResolver
+    @Inject lateinit var excludePathResolver: ExcludePathResolver
+    @Inject lateinit var candidateSizeStatCollector: CandidateSizeStatCollector
+    @Inject lateinit var candidateDeletionGate: CandidateDeletionGate
 
     fun run() {
 
@@ -45,7 +48,7 @@ class CleanupUntrackedTableFoldersService {
 
         config.databases.forEach { database ->
             val databaseStartTime = Instant.now()
-            var effectiveExcludedPathsForAudit = normalizedConfiguredExcludePaths()
+            var effectiveExcludedPathsForAudit = excludePathResolver.normalizedConfiguredExcludePaths()
             try {
                 val discoveredDatabase =
                     catalogDiscoveryService.discoverDatabase(
@@ -77,7 +80,7 @@ class CleanupUntrackedTableFoldersService {
                         catalogName = discoveredDatabase.catalog,
                         databaseName = discoveredDatabase.database,
                         discoveredDatabaseLocation = discoveredDatabase.location,
-                        excludedPaths = normalizedConfiguredExcludePaths(),
+                        excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
                     )
 
                     return@forEach
@@ -95,7 +98,7 @@ class CleanupUntrackedTableFoldersService {
                         databaseName = discoveredDatabase.database,
                         discoveredDatabaseLocation = discoveredDatabase.location,
                         errorMessage = "Database location is missing; storage folder discovery was skipped.",
-                        excludedPaths = normalizedConfiguredExcludePaths(),
+                        excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
                         activeTableCount = discoveredDatabase.tables.size.toLong(),
                         activeTableLocations =
                             discoveredDatabase.tables
@@ -138,7 +141,7 @@ class CleanupUntrackedTableFoldersService {
                         discoveredDatabase.tables.mapNotNull { it.location }.sorted()
 
                     val effectiveExcludedPaths =
-                        effectiveExcludedPaths(
+                        excludePathResolver.effectiveExcludedPaths(
                             database = discoveredDatabase.database,
                             storageScanLocation = storageScanLocation,
                         )
@@ -199,10 +202,10 @@ class CleanupUntrackedTableFoldersService {
 
                     val candidateFolderPaths = candidateFolders.map { it.path }.sorted()
                     val candidateSizeStatsByFolder =
-                        collectCandidateSizeStatsByFolder(candidateFolderPaths)
+                        candidateSizeStatCollector.collectPerFolder(candidateFolderPaths)
                     val candidateSizeStats: StorageSizeStats? =
                         if (config.collectSizeStatistics) {
-                            sumSizeStats(candidateSizeStatsByFolder.values)
+                            candidateSizeStatCollector.sum(candidateSizeStatsByFolder.values)
                         } else {
                             null
                         }
@@ -215,57 +218,17 @@ class CleanupUntrackedTableFoldersService {
                     }
 
                     val deletedFolders =
-                        when {
-                            config.dryRun -> emptyList()
-
-                            !config.deleteEnabled ->
-                                throw IllegalStateException(
-                                    "delete_enabled must be true before deleting candidate folders"
-                                )
-
-                            else -> {
-                                val currentActiveTableLocations =
-                                    catalogDiscoveryService
-                                        .discoverDatabase(
-                                            catalog = discoveredDatabase.catalog,
-                                            database = discoveredDatabase.database,
-                                        )
-                                        .tables
-                                        .mapNotNull { it.location }
-                                        .map { StoragePathUtils.normalizeLocation(it) }
-
-                                candidateFolders
-                                    .mapNotNull { candidateFolder ->
-                                        val normalizedCandidatePath =
-                                            StoragePathUtils.normalizeLocation(candidateFolder.path)
-
-                                        val claimedByActiveTable =
-                                            currentActiveTableLocations.any { activeLocation ->
-                                                StoragePathUtils.isSameOrChildLocation(
-                                                    candidateLocation = activeLocation,
-                                                    rootLocation = normalizedCandidatePath,
-                                                )
-                                            }
-
-                                        if (claimedByActiveTable) {
-                                            logger.warn(
-                                                "Skipping deletion because candidate folder is or contains an active table location: path=${candidateFolder.path}"
-                                            )
-                                            null
-                                        } else {
-                                            objectStorageDeletionService
-                                                .deleteFolderRecursively(candidateFolder.path)
-                                                .takeIf { it.deleted }
-                                                ?.path
-                                        }
-                                    }
-                                    .sorted()
-                            }
-                        }
+                        candidateDeletionGate.deleteCandidates(
+                            catalog = discoveredDatabase.catalog,
+                            database = discoveredDatabase.database,
+                            candidateFolders = candidateFolders,
+                        )
 
                     val deletedSizeStats: StorageSizeStats? =
                         if (config.collectSizeStatistics) {
-                            sumSizeStats(deletedFolders.mapNotNull { candidateSizeStatsByFolder[it] })
+                            candidateSizeStatCollector.sum(
+                                deletedFolders.mapNotNull { candidateSizeStatsByFolder[it] }
+                            )
                         } else {
                             null
                         }
@@ -352,92 +315,4 @@ class CleanupUntrackedTableFoldersService {
         }
     }
 
-    private fun collectCandidateSizeStatsByFolder(
-        candidateFolderPaths: List<String>,
-    ): Map<String, StorageSizeStats> {
-        if (candidateFolderPaths.isEmpty()) {
-            return emptyMap()
-        }
-
-        if (!config.collectSizeStatistics) {
-            logger.info(
-                "Skipping size statistics because collect_size_statistics=false. Candidate and deleted size audit fields will be NULL."
-            )
-            return emptyMap()
-        }
-
-        logger.info(
-            "Collecting size statistics for ${candidateFolderPaths.size} candidate folder(s). This may take time for folders with many objects. To skip this step, set collect_size_statistics=false."
-        )
-
-        val result = mutableMapOf<String, StorageSizeStats>()
-        var failedFolderCount = 0
-
-        candidateFolderPaths.forEach { candidateFolderPath ->
-            try {
-                result[candidateFolderPath] =
-                    objectStorageDiscoveryService.collectSizeStats(listOf(candidateFolderPath))
-            } catch (th: Throwable) {
-                failedFolderCount += 1
-                logger.warn(
-                    "Failed to collect size statistics for candidate folder; recording unknown size and continuing without aborting cleanup: path=$candidateFolderPath",
-                    th,
-                )
-            }
-        }
-
-        if (failedFolderCount > 0) {
-            logger.warn(
-                "Size statistics collection failed for $failedFolderCount of ${candidateFolderPaths.size} candidate folder(s). Candidate and deleted size audit fields exclude the failed folders."
-            )
-        }
-
-        return result
-    }
-
-    private fun sumSizeStats(stats: Iterable<StorageSizeStats>): StorageSizeStats =
-        stats.fold(StorageSizeStats.ZERO) { total, current ->
-            StorageSizeStats(
-                objectCount = total.objectCount + current.objectCount,
-                totalSizeBytes = total.totalSizeBytes + current.totalSizeBytes,
-            )
-        }
-
-    private fun normalizedConfiguredExcludePaths(): List<String> =
-        config.excludePaths
-            .map { StoragePathUtils.normalizeLocation(it) }
-            .distinct()
-            .sorted()
-
-    private fun effectiveExcludedPaths(
-        database: String,
-        storageScanLocation: String,
-    ): List<String> {
-        val configuredExcludePaths = normalizedConfiguredExcludePaths()
-        val databaseFolderExcludePaths =
-            resolvedExcludeDatabaseFolderPaths(
-                database = database,
-                storageScanLocation = storageScanLocation,
-            )
-
-        return (configuredExcludePaths + databaseFolderExcludePaths)
-            .map { StoragePathUtils.normalizeLocation(it) }
-            .distinct()
-            .sorted()
-    }
-
-    private fun resolvedExcludeDatabaseFolderPaths(
-        database: String,
-        storageScanLocation: String,
-    ): List<String> =
-        config.excludeDatabaseFolders.mapNotNull { excludedDatabaseFolder ->
-            val parts = excludedDatabaseFolder.split(".", limit = 2)
-            if (parts.size != 2) return@mapNotNull null
-
-            val excludedDatabase = parts[0]
-            val excludedFolder = parts[1]
-
-            if (excludedDatabase != database) return@mapNotNull null
-            StoragePathUtils.normalizeLocation("$storageScanLocation/$excludedFolder")
-        }
 }

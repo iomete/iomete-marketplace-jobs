@@ -1,7 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.audit
 
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
-import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
+import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
@@ -13,6 +13,7 @@ class CleanupAuditRecorder {
     @Inject lateinit var config: ApplicationConfig
     @Inject lateinit var cleanupAuditTableService: CleanupAuditTableService
     @Inject lateinit var auditDiagnosticDetailsBuilder: CleanupAuditDiagnosticDetailsBuilder
+    @Inject lateinit var excludePathResolver: ExcludePathResolver
 
     fun recordDatabaseLocationMissing(
         runId: String,
@@ -177,7 +178,7 @@ class CleanupAuditRecorder {
         runId: String,
         database: String,
         databaseStartTime: Instant,
-        excludedPaths: List<String> = normalizedConfiguredExcludePaths(),
+        excludedPaths: List<String> = excludePathResolver.normalizedConfiguredExcludePaths(),
         error: Throwable,
     ) {
         writeAuditRecord(
@@ -213,7 +214,7 @@ class CleanupAuditRecorder {
         candidateFolders: List<String> = emptyList(),
         deletedFolders: List<String> = emptyList(),
         cutoffTime: Instant? = null,
-        excludedPaths: List<String> = normalizedConfiguredExcludePaths(),
+        excludedPaths: List<String> = excludePathResolver.normalizedConfiguredExcludePaths(),
         diagnosticDetails: Map<String, String> = emptyMap(),
     ) {
         cleanupAuditTableService.writeAuditRecord(
@@ -256,12 +257,6 @@ class CleanupAuditRecorder {
             )
         )
     }
-
-    private fun normalizedConfiguredExcludePaths(): List<String> =
-        config.excludePaths
-            .map { StoragePathUtils.normalizeLocation(it) }
-            .distinct()
-            .sorted()
 
     private companion object {
         const val OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS = "DISCOVER_UNTRACKED_TABLE_FOLDERS"
