@@ -263,6 +263,5 @@ class CleanupAuditRecorder {
         const val STATUS_SUCCESS = "SUCCESS"
         const val STATUS_SKIPPED = "SKIPPED"
         const val STATUS_FAILED = "FAILED"
-        const val MAX_AUDIT_PATH_SAMPLE_SIZE = 100
     }
 }

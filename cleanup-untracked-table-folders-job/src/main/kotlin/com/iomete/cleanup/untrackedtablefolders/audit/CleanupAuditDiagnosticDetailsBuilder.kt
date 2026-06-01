@@ -44,8 +44,4 @@ class CleanupAuditDiagnosticDetailsBuilder {
 
     private fun isAuditPathSampleTruncated(paths: List<String>): Boolean =
         paths.size > MAX_AUDIT_PATH_SAMPLE_SIZE
-
-    private companion object {
-        const val MAX_AUDIT_PATH_SAMPLE_SIZE = 100
-    }
 }
