@@ -208,12 +208,9 @@ class CleanupUntrackedTableFoldersService {
                         }
 
                     candidateFolders.forEach { folder ->
+                        val modifiedAt = Instant.ofEpochMilli(folder.modificationTimeMillis)
                         logger.info(
-                            "Candidate untracked table folder selected for cleanup: path=${folder.path}, modifiedAt=${
-                                Instant.ofEpochMilli(
-                                    folder.modificationTimeMillis
-                                )
-                            }"
+                            "Candidate untracked table folder selected for cleanup: path=${folder.path}, modifiedAt=$modifiedAt"
                         )
                     }
 
@@ -415,11 +412,19 @@ class CleanupUntrackedTableFoldersService {
     private fun effectiveExcludedPaths(
         database: String,
         storageScanLocation: String,
-    ): List<String> =
-        (normalizedConfiguredExcludePaths() + resolvedExcludeDatabaseFolderPaths(database, storageScanLocation))
+    ): List<String> {
+        val configuredExcludePaths = normalizedConfiguredExcludePaths()
+        val databaseFolderExcludePaths =
+            resolvedExcludeDatabaseFolderPaths(
+                database = database,
+                storageScanLocation = storageScanLocation,
+            )
+
+        return (configuredExcludePaths + databaseFolderExcludePaths)
             .map { StoragePathUtils.normalizeLocation(it) }
             .distinct()
             .sorted()
+    }
 
     private fun resolvedExcludeDatabaseFolderPaths(
         database: String,
