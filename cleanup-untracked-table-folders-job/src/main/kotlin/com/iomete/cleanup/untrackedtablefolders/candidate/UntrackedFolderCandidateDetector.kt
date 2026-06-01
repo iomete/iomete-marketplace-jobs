@@ -36,6 +36,8 @@ class UntrackedFolderCandidateDetector {
             .map { StoragePathUtils.normalizeLocation(it) }
             .toSet()
 
+        val skipReasonCounts = mutableMapOf<CandidateSkipReason, Int>()
+
         val candidateFolders = storageFolders
             .filter { storageFolder ->
                 val skipReason =
@@ -47,6 +49,7 @@ class UntrackedFolderCandidateDetector {
                     )
 
                 if (skipReason != null) {
+                    skipReasonCounts.merge(skipReason, 1, Int::plus)
                     logSkippedFolder(
                         storageFolder = storageFolder,
                         skipReason = skipReason,
@@ -57,6 +60,11 @@ class UntrackedFolderCandidateDetector {
                 skipReason == null
             }
             .sortedBy { it.path }
+
+        logSkipReasonSummary(
+            totalFolderCount = storageFolders.size,
+            skipReasonCounts = skipReasonCounts,
+        )
 
         if (candidateFolders.size > maxCandidateFolders) {
             throw TooManyCandidateFoldersException(
@@ -86,6 +94,11 @@ class UntrackedFolderCandidateDetector {
             return CandidateSkipReason.SENTINEL_FOLDER
         }
 
+        // Exact-match check is logically subsumed by the containment check below
+        // (isSameOrChildLocation returns true for equal paths), but we keep both so
+        // skip-reason logging distinguishes "candidate IS an active table" from
+        // "candidate CONTAINS an active table." Do not collapse without preserving
+        // both reasons explicitly.
         if (normalizedFolder in normalizedActiveTableLocations) {
             return CandidateSkipReason.ACTIVE_TABLE
         }
@@ -118,6 +131,10 @@ class UntrackedFolderCandidateDetector {
         skipReason: CandidateSkipReason,
         cutoffTimeMillis: Long,
     ) {
+        if (!logger.isDebugEnabled) {
+            return
+        }
+
         val message = when (skipReason) {
             CandidateSkipReason.TOO_NEW ->
                 "Storage folder was not selected as cleanup candidate: path=${storageFolder.path}, reason=${skipReason.logValue}, modifiedAt=${Instant.ofEpochMilli(storageFolder.modificationTimeMillis)}, cutoffTime=${Instant.ofEpochMilli(cutoffTimeMillis)}"
@@ -125,7 +142,26 @@ class UntrackedFolderCandidateDetector {
                 "Storage folder was not selected as cleanup candidate: path=${storageFolder.path}, reason=${skipReason.logValue}"
         }
 
-        logger.info(message)
+        logger.debug(message)
+    }
+
+    private fun logSkipReasonSummary(
+        totalFolderCount: Int,
+        skipReasonCounts: Map<CandidateSkipReason, Int>,
+    ) {
+        if (skipReasonCounts.isEmpty()) {
+            return
+        }
+
+        val totalSkipped = skipReasonCounts.values.sum()
+        val perReasonSummary =
+            CandidateSkipReason.entries.joinToString(", ") { reason ->
+                "${reason.logValue}=${skipReasonCounts[reason] ?: 0}"
+            }
+
+        logger.info(
+            "Skipped $totalSkipped of $totalFolderCount storage folder(s) during candidate detection: $perReasonSummary. Enable DEBUG logging on ${UntrackedFolderCandidateDetector::class.java.name} for per-folder skip reasons."
+        )
     }
 
     private enum class CandidateSkipReason(val logValue: String) {
