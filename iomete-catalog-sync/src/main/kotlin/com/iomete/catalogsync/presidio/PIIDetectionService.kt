@@ -1,24 +1,28 @@
 package com.iomete.catalogsync.presidio
 
-import com.iomete.catalogsync.SparkSessionProvider
 import com.iomete.catalogsync.extract.get
 import jakarta.enterprise.context.ApplicationScoped
 import org.apache.spark.sql.SparkSession
 import org.eclipse.microprofile.config.ConfigProvider
 import org.eclipse.microprofile.rest.client.inject.RestClient
 import org.slf4j.LoggerFactory
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 @ApplicationScoped
 class PIIDetectionService(
     @param:RestClient private val presidioClient: PresidioClient,
 ) {
+    private val piiDetectionEnabled: Boolean by lazy { isPiiDetectionEnabled() }
+
     fun extract(
         spark: SparkSession,
         catalog: String,
         fullTableName: String,
         columns: List<String>,
     ): Map<String, List<String>> {
-        if (isPiiDetectionEnabled().not()) {
+        if (!piiDetectionEnabled) {
             return emptyMap()
         }
 
@@ -33,22 +37,31 @@ class PIIDetectionService(
                     .collectAsList()
                     .orEmpty()
 
-            columns.forEach { columnName ->
-                val columnSampleData =
-                    sampleData
-                        .map { it.get(columnName).toString() }
-                        .filter { it.isNotEmpty() }
-                        .distinct()
-                        .firstOrNull()
+            val futures = columns.map { columnName ->
+                CompletableFuture.supplyAsync({
+                    val columnSampleData =
+                        sampleData
+                            .map { it.get(columnName).toString() }
+                            .filter { it.isNotEmpty() }
+                            .distinct()
+                            .firstOrNull()
 
-                val detectedTags = detectedTags(columnSampleData)
-                logger.info(
-                    "table={} column={} detected-tags={} for sample data: {}",
-                    fullTableName,
-                    columnName,
-                    detectedTags,
-                    columnSampleData,
-                )
+                    val detectedTags = detectedTags(columnSampleData)
+                    logger.info(
+                        "table={} column={} detected-tags={} for sample data: {}",
+                        fullTableName,
+                        columnName,
+                        detectedTags,
+                        columnSampleData,
+                    )
+                    columnName to detectedTags
+                }, presidioExecutor)
+            }
+
+            CompletableFuture.allOf(*futures.toTypedArray()).join()
+
+            futures.forEach { future ->
+                val (columnName, detectedTags) = future.get()
                 result[columnName] = detectedTags
             }
         } catch (ex: Exception) {
@@ -82,6 +95,9 @@ class PIIDetectionService(
 
     companion object {
         private val logger = LoggerFactory.getLogger(PIIDetectionService::class.java)
+        private val presidioExecutor: ExecutorService = Executors.newFixedThreadPool(
+            System.getenv("HTTP_PARALLELISM")?.toIntOrNull() ?: 16
+        )
     }
 
     private fun isPiiDetectionEnabled(): Boolean {
