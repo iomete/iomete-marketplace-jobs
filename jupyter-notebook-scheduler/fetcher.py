@@ -1,4 +1,5 @@
 import logging
+import os
 import tempfile
 import git
 import s3fs
@@ -22,8 +23,27 @@ class InputFetcher:
             return self._fetch_git()
         elif input_type == "s3":
             return self._fetch_s3()
+        elif input_type in ("manual", "local"):
+            return self._fetch_local()
         else:
             raise ValueError(f"Unknown input type: {input_type}")
+
+    def _fetch_local(self):
+        """Uses a locally-mounted path for manual injection.
+
+        If a path is provided it must exist and is returned as-is; otherwise the
+        (empty) temp dir is returned for the caller to populate.
+        """
+        local_path = self.config.input_path
+        if not local_path:
+            logger.info(f"No local path provided; using temp dir {self.temp_dir}")
+            return self.temp_dir
+
+        if not os.path.exists(local_path):
+            raise FileNotFoundError(f"Local input path not found: {local_path}")
+
+        logger.info(f"Using local input path: {local_path}")
+        return local_path
 
     def _fetch_git(self):
         repo_url = self.config.input_path
