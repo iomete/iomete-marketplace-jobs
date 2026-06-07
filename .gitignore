@@ -30,4 +30,4 @@ __pycache__
 .pytest_cache
 .venv
 build/
-dependencies.zip
+# dependencies.zip
