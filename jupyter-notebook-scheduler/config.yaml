@@ -1,0 +1,66 @@
+# Jupyter Notebook Scheduler Configuration
+#
+# String values support environment variable interpolation:
+#   ${VAR}            -> value of VAR (empty + warning if unset)
+#   ${VAR:-default}   -> value of VAR, or "default" if unset
+# Use this to keep secrets (tokens) out of the committed config.
+
+# Input Configuration
+# Defines where the notebook and dependencies are located.
+input:
+  # Type of input source. Options: "git", "s3"
+  type: "git"
+
+  # Path to the input source.
+  # For git: The repository URL (e.g., https://github.com/org/repo.git)
+  # For s3: The S3 URI (e.g., s3://my-bucket/my-project/)
+  path: "https://github.com/iomete/sample-notebooks.git"
+
+  # (Optional) Git branch or tag to checkout. Default is "main".
+  branch: "main"
+
+  # (Optional) Git token for private repositories. Pass via environment.
+  # token: "${GIT_TOKEN}"
+
+# Notebook Configuration
+notebook:
+  # The relative path to the main notebook file to execute.
+  main_file: "notebooks/etl_job.ipynb"
+
+  # Parameters injected into the notebook before execution.
+  # A code cell assigning these is inserted after the "parameters"-tagged cell
+  # (or at the top if none exists), overriding the notebook's defaults.
+  parameters:
+    env: "production"
+    start_date: "2023-10-27"
+
+# Gateway Configuration (remote execution)
+# The notebook is executed on a remote Spark-backed kernel provisioned by the
+# IOMETE Jupyter Gateway instead of a local kernel.
+gateway:
+  # Base URL of the Jupyter Gateway / lab endpoint.
+  url: "${IOMETE_GATEWAY_URL:-https://dev.iomete.cloud/data-plane/spark-resources-1/jupyter/demo-lab}"
+
+  # Auth token for the gateway. ALWAYS provide via environment variable.
+  token: "${IOMETE_GATEWAY_TOKEN}"
+
+  # Auth scheme sent in the Authorization header (e.g. "token").
+  auth_scheme: "token"
+
+  # Kernel spec name to launch on the gateway.
+  kernel_name: "python3"
+
+  # HTTP request timeout (seconds) for gateway REST calls.
+  request_timeout: 120
+
+  # Connection timeout (seconds) for gateway REST calls.
+  connect_timeout: 60
+
+  # Per-cell execution timeout (seconds) for the notebook run.
+  execution_timeout: 600
+
+# Output Configuration
+output:
+  # The S3 base path where the executed notebook is saved.
+  # The final path is constructed as: {s3_path}/{jobId}/{runId}/{filename}
+  s3_path: "s3://storage/outputs"
