@@ -14,10 +14,10 @@ WORKDIR /opt/spark/work-dir
 # is reproducible; poetry is only used to export the lock to requirements and is
 # removed afterwards to keep the layer small.
 COPY pyproject.toml poetry.lock ./
-RUN pip install --no-cache-dir poetry poetry-plugin-export && \
-    poetry export -f requirements.txt --without-hashes --output requirements.txt && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip uninstall -y poetry poetry-plugin-export && \
+RUN python3 -m pip install --no-cache-dir poetry poetry-plugin-export && \
+    python3 -m poetry export -f requirements.txt --without-hashes --output requirements.txt && \
+    python3 -m pip install --no-cache-dir -r requirements.txt && \
+    python3 -m pip uninstall -y poetry poetry-plugin-export && \
     rm -f requirements.txt
 
 # Application code.
