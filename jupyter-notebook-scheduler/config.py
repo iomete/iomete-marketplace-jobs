@@ -66,20 +66,20 @@ class JobContext:
 
     @classmethod
     def from_env(cls):
-        job_id = os.environ.get("IOMETE_JOB_ID")
-        run_id = os.environ.get("IOMETE_JOB_RUN_ID")
+        job_id = os.environ.get("IOMETE_EXTERNAL_JOB_ID")
+        run_id = os.environ.get("IOMETE_COMPUTE_ID")
 
         if (job_id is None or run_id is None) and cls._in_cluster():
             # In-cluster these are always injected; missing values would silently
             # produce a wrong S3 path, so fail loudly instead.
             raise ValueError(
-                "IOMETE_JOB_ID and IOMETE_JOB_RUN_ID must be set when running in-cluster "
+                "IOMETE_EXTERNAL_JOB_ID and IOMETE_COMPUTE_ID must be set when running in-cluster "
                 f"(got job_id={job_id!r}, run_id={run_id!r})."
             )
 
         if job_id is None or run_id is None:
             logger.warning(
-                "IOMETE_JOB_ID / IOMETE_JOB_RUN_ID not set; using placeholder ids. "
+                "IOMETE_EXTERNAL_JOB_ID / IOMETE_COMPUTE_ID not set; using placeholder ids. "
                 "Output path and logs will not be correlatable to a job run."
             )
 
