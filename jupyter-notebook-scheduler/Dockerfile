@@ -12,7 +12,7 @@ COPY pyproject.toml poetry.lock ./
 RUN pip install --no-cache-dir --break-system-packages poetry poetry-plugin-export && \
     poetry export -f requirements.txt --without-hashes --output requirements.txt && \
     pip install --no-cache-dir --break-system-packages -r requirements.txt && \
-    pip uninstall -y poetry poetry-plugin-export && \
+    pip uninstall -y --break-system-packages poetry poetry-plugin-export && \
     rm -f requirements.txt
 
 COPY main.py config.py fetcher.py executor.py config.yaml ./
