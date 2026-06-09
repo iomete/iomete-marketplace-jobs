@@ -1,14 +1,14 @@
 # Jupyter Notebook Scheduler
 
 A Spark job to schedule and execute Jupyter Notebooks **remotely on an IOMETE
-Jupyter Gateway**. Instead of running a local kernel, the notebook cells are
-executed on a remote Spark-backed kernel provisioned by the gateway; the
+Jupyter Container**. Instead of running a local kernel, the notebook cells are
+executed on a remote Spark-backed kernel provisioned by the container; the
 executed notebook (with outputs) is then uploaded to S3.
 
 ## Features
 
-- **Input Sources**: Git, S3, or Manual (Local).
-- **Remote Execution**: Runs notebooks on a remote IOMETE Jupyter Gateway kernel
+- **Input Sources**: S3 or Manual (Local).
+- **Remote Execution**: Runs notebooks on a remote IOMETE Jupyter Container kernel
   (via `nbclient` + a custom XSRF/cookie-aware gateway kernel manager).
 - **Parameter Injection**: Parameters from config are injected as a code cell
   (papermill-style) before execution.
@@ -26,7 +26,7 @@ values support environment variable interpolation (`${VAR}` and
 `input.type`, `notebook.main_file`, `gateway.url`, `gateway.token`,
 `output.s3_path`.
 
-The gateway token must be provided via the `IOMETE_GATEWAY_TOKEN` environment
+The gateway token must be provided via the `IOMETE_JUPYTER_TOKEN` environment
 variable — never commit it to `config.yaml`.
 
 ## Development

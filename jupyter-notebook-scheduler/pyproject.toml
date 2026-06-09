@@ -14,7 +14,6 @@ dependencies = [
     "nbformat (>=5.10.0,<6.0.0)",
     "websocket-client (>=1.8.0,<2.0.0)",
     "pyyaml (>=6.0.3,<7.0.0)",
-    "gitpython (>=3.1.45,<4.0.0)",
     "s3fs (>=2025.10.0)",
     "fsspec (>=2025.10.0)",
     "setuptools (>=70.0.0)",

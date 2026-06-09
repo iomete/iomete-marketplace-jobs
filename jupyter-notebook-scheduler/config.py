@@ -94,8 +94,6 @@ class JobContext:
 class AppConfig:
     input_type: str = None
     input_path: str = None
-    git_branch: str = "main"
-    git_token: str = None
     main_notebook_file: str = None
     notebook_params: dict = field(default_factory=dict)
     gateway_url: str = None
@@ -122,8 +120,6 @@ class AppConfig:
         return cls(
             input_type=input_cfg.get("type"),
             input_path=input_cfg.get("path"),
-            git_branch=input_cfg.get("branch", "main"),
-            git_token=input_cfg.get("token"),
             main_notebook_file=notebook_cfg.get("main_file"),
             notebook_params=notebook_cfg.get("parameters") or {},
             gateway_url=gateway_cfg.get("url"),

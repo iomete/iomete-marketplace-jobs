@@ -2,10 +2,6 @@ FROM iomete.azurecr.io/iomete/spark-py:3.5.5-v11
 
 USER root
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends git && \
-    rm -rf /var/lib/apt/lists/*
-
 WORKDIR /opt/spark/work-dir
 
 COPY pyproject.toml poetry.lock ./
@@ -15,6 +11,6 @@ RUN pip install --no-cache-dir --break-system-packages poetry poetry-plugin-expo
     pip uninstall -y --break-system-packages poetry poetry-plugin-export && \
     rm -f requirements.txt
 
-COPY main.py config.py fetcher.py executor.py config.yaml ./
+COPY main.py config.py executor.py config.yaml ./
 
 USER 185

@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 
 
 class NotebookExecutor:
-    """Executes a notebook remotely against an IOMETE Jupyter Gateway.
+    """Executes a notebook remotely against an IOMETE Jupyter Container.
 
     Rather than spinning up a local kernel, the notebook cells are executed on a
-    remote Spark-backed kernel provisioned by the gateway. The executed notebook
+    remote Spark-backed kernel provisioned by the container. The executed notebook
     (including outputs) is written back to disk for the caller to upload.
     """
 
