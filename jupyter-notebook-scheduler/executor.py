@@ -42,7 +42,7 @@ class NotebookExecutor:
         input_path = os.path.join(self.working_dir, self.config.main_notebook_file)
         notebook_dir = os.path.dirname(input_path)
         notebook_name = os.path.basename(input_path)
-        return os.path.join(notebook_dir, f"output_{notebook_name}")
+        return os.path.join(notebook_dir, f"{notebook_name}")
 
     def execute(self):
         """Executes the notebook on the remote gateway.
