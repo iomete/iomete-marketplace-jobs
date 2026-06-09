@@ -66,20 +66,20 @@ class JobContext:
 
     @classmethod
     def from_env(cls):
-        job_id = os.environ.get("IOMETE_JOB_ID")
-        run_id = os.environ.get("IOMETE_JOB_RUN_ID")
+        job_id = os.environ.get("IOMETE_EXTERNAL_JOB_ID")
+        run_id = os.environ.get("IOMETE_COMPUTE_ID")
 
         if (job_id is None or run_id is None) and cls._in_cluster():
             # In-cluster these are always injected; missing values would silently
             # produce a wrong S3 path, so fail loudly instead.
             raise ValueError(
-                "IOMETE_JOB_ID and IOMETE_JOB_RUN_ID must be set when running in-cluster "
+                "IOMETE_EXTERNAL_JOB_ID and IOMETE_COMPUTE_ID must be set when running in-cluster "
                 f"(got job_id={job_id!r}, run_id={run_id!r})."
             )
 
         if job_id is None or run_id is None:
             logger.warning(
-                "IOMETE_JOB_ID / IOMETE_JOB_RUN_ID not set; using placeholder ids. "
+                "IOMETE_EXTERNAL_JOB_ID / IOMETE_COMPUTE_ID not set; using placeholder ids. "
                 "Output path and logs will not be correlatable to a job run."
             )
 
@@ -94,8 +94,6 @@ class JobContext:
 class AppConfig:
     input_type: str = None
     input_path: str = None
-    git_branch: str = "main"
-    git_token: str = None
     main_notebook_file: str = None
     notebook_params: dict = field(default_factory=dict)
     gateway_url: str = None
@@ -122,8 +120,6 @@ class AppConfig:
         return cls(
             input_type=input_cfg.get("type"),
             input_path=input_cfg.get("path"),
-            git_branch=input_cfg.get("branch", "main"),
-            git_token=input_cfg.get("token"),
             main_notebook_file=notebook_cfg.get("main_file"),
             notebook_params=notebook_cfg.get("parameters") or {},
             gateway_url=gateway_cfg.get("url"),
