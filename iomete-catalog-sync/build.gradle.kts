@@ -58,8 +58,9 @@ allprojects {
         testImplementation("io.mockk:mockk:1.13.12")
         testImplementation("org.apache.spark:spark-sql_2.12:3.5.7")
         testImplementation("org.apache.spark:spark-core_2.12:3.5.7")
-        testImplementation("org.scala-lang:scala-library:2.12.10")
-        testRuntimeOnly("org.scala-lang:scala-library:2.12.10")
+        testImplementation("org.scala-lang:scala-library:2.12.18")
+        testRuntimeOnly("org.scala-lang:scala-library:2.12.18")
+        testImplementation("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.7.1")
 
         // Force specific versions for transitive dependencies
         implementation("org.apache.parquet:parquet-avro:1.15.2")
@@ -79,18 +80,53 @@ allOpen {
 
 configurations.compileClasspath {
     resolutionStrategy {
-        force("org.scala-lang:scala-library:2.12.10")
+        force("org.scala-lang:scala-library:2.12.18")
+        force("org.scala-lang:scala-reflect:2.12.18")
     }
 }
 
 configurations.testCompileClasspath {
     resolutionStrategy {
-        force("org.scala-lang:scala-library:2.12.10")
+        force("org.scala-lang:scala-library:2.12.18")
+        force("org.scala-lang:scala-reflect:2.12.18")
     }
 }
 
 configurations.testRuntimeClasspath {
     resolutionStrategy {
-        force("org.scala-lang:scala-library:2.12.10")
+        force("org.scala-lang:scala-library:2.12.18")
+        force("org.scala-lang:scala-reflect:2.12.18")
+        force("org.antlr:antlr4-runtime:4.9.3")
     }
+}
+
+tasks.test {
+    useJUnitPlatform {
+        excludeTags("integration")
+    }
+}
+
+tasks.register<Test>("integrationTest") {
+    description = "Runs integration tests"
+    group = "verification"
+    useJUnitPlatform {
+        includeTags("integration")
+    }
+    jvmArgs(
+        "-Xmx2g",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
+        "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED",
+        "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED",
+    )
 }

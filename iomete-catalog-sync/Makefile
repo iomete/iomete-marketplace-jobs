@@ -1,9 +1,13 @@
 image := iomete.azurecr.io/iomete/iom-catalog-sync
-tag   := 5.0.1
+tag   := 5.0.2-dev0
 
 .PHONY: build
 build:
 	./gradlew clean quarkusBuild
+
+.PHONY: integration-test
+integration-test:
+	./gradlew integrationTest
 
 .PHONY: docker-push
 docker-push: build
