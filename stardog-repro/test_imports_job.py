@@ -10,14 +10,15 @@ Run it as a normal IOMETE Python job pointing at your custom image
 same ModuleNotFoundError the user is hitting, with a clear line telling you which.
 """
 
-import sys
 import importlib
+import sys
+from time import sleep
 
 # Everything the real load_constraints script imports.
 # (os, csv, re, datetime are stdlib and always present — kept here for parity.)
 MODULES = [
-    "stardog",      # provided by pystardog
-    "requests"
+    "stardog",  # provided by pystardog
+    "requests",
 ]
 
 
@@ -42,15 +43,21 @@ def main():
     if failures:
         # Non-zero exit so the IOMETE job is marked FAILED, mirroring the bug.
         print(f"MISSING MODULES: {failures}")
-        print("Add the corresponding packages to requirements.txt and rebuild the image.")
+        print(
+            "Add the corresponding packages to requirements.txt and rebuild the image."
+        )
         sys.exit(1)
 
     # Prove pystardog is usable, not just importable.
     import stardog
-    print("pystardog imported cleanly. Connection object available:",
-          hasattr(stardog, "Connection"))
+
+    print(
+        "pystardog imported cleanly. Connection object available:",
+        hasattr(stardog, "Connection"),
+    )
     print("ALL DEPENDENCIES PRESENT — image is good.")
 
 
 if __name__ == "__main__":
+    sleep(12000)
     main()
