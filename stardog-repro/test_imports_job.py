@@ -59,5 +59,5 @@ def main():
 
 
 if __name__ == "__main__":
-    sleep(12000)
+    # sleep(12000)
     main()
