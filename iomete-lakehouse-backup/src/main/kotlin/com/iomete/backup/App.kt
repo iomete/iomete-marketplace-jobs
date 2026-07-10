@@ -111,6 +111,10 @@ object App {
                     )
                 }
             }
+
+            check(summary.failureCount == 0) {
+                "${summary.failureCount} file(s) failed to copy"
+            }
         } finally {
             // Stop Spark session
             logger.info("Stopping Spark session...")
