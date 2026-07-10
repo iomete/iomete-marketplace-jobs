@@ -13,8 +13,7 @@ object SparkSessionProvider {
             return session ?: run {
                 logger.info("Initializing Spark session")
 
-                val s = SparkSession.builder().master("local")
-                    .orCreate
+                val s = SparkSession.builder().orCreate
 
                 logger.info("Spark session initialized successfully")
                 logger.info("  Application ID: {}", s.sparkContext().applicationId())

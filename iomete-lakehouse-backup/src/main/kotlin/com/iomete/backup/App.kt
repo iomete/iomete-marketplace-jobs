@@ -37,7 +37,7 @@ object App {
             logger.error("IOMETE Lakehouse Backup - Failed")
             logger.error("Error: {}", e.message)
             logger.error("=".repeat(60))
-//            exitProcess(1)
+            throw e
         }
     }
 
