@@ -8,7 +8,6 @@ object HadoopConfigBuilder {
     fun buildConfigMap(config: StorageConfig): Map<String, String> =
         when (config) {
             is S3Config -> buildS3ConfigMap(config)
-//            is HdfsConfig -> buildHdfsConfigMap(config) #TODO
         }
 
     private fun buildS3ConfigMap(config: S3Config): Map<String, String> {

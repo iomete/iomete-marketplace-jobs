@@ -35,29 +35,16 @@ object ConfigParser {
             throw ConfigParseException("Failed to parse configuration: ${e.message}", e)
         }
 
-    // is this actually required ???? #TODO
     private fun buildParseErrorMessage(e: JsonMappingException): String {
         val path =
             e.path.joinToString(".") { ref ->
                 if (ref.index >= 0) "[${ref.index}]" else ref.fieldName ?: ""
             }
-
-        return when {
-            e.message?.contains("Unrecognized field") == true -> {
-                "Unknown field in configuration at '$path': ${e.originalMessage}"
-            }
-
-            e.message?.contains("Missing required") == true -> {
-                "Missing required field at '$path': ${e.originalMessage}"
-            }
-
-            e.message?.contains("Cannot deserialize") == true -> {
-                "Invalid value at '$path': ${e.originalMessage}"
-            }
-
-            else -> {
-                "Parse error at '$path': ${e.originalMessage ?: e.message}"
-            }
+        val reason = e.originalMessage ?: e.message
+        return if (path.isBlank()) {
+            "Configuration parse error: $reason"
+        } else {
+            "Configuration parse error at '$path': $reason"
         }
     }
 }

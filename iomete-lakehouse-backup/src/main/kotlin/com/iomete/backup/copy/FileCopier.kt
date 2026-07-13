@@ -34,11 +34,10 @@ class FileCopier(
 
         for (attempt in 1..maxAttempts) {
             try {
-                val sourceConf = HadoopConfigBuilder.toHadoopConf(sourceConfMap) // TODO: should these be recreated again and again ?
-                val targetConf = HadoopConfigBuilder.toHadoopConf(targetConfMap) // TODO: should these be recreated again and again ?
+                val sourceConf = HadoopConfigBuilder.toHadoopConf(sourceConfMap)
+                val targetConf = HadoopConfigBuilder.toHadoopConf(targetConfMap)
                 return FileSystem.newInstance(URI(sourceFilePath), sourceConf).use { sourceFs ->
                     FileSystem.newInstance(URI(targetFilePath), targetConf).use { targetFs ->
-                        // TODO: again can the source and destination FS be the same and reused instead of creating per file ?
                         val sourcePath = Path(sourceFilePath)
                         val targetPath = Path(targetFilePath)
 
@@ -56,7 +55,7 @@ class FileCopier(
                             targetFs,
                             targetPath,
                             false,
-                            true, // TODO: should this not be a config and we handle both ?
+                            true,
                             targetConf,
                         )
 

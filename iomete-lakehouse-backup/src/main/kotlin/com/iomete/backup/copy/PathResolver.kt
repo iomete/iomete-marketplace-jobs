@@ -7,7 +7,6 @@ object PathResolver {
     fun resolveRootUri(config: StorageConfig): String =
         when (config) {
             is S3Config -> resolveS3Root(config)
-//            is HdfsConfig -> resolveHdfsRoot(config) #TODO
         }
 
     private fun resolveS3Root(config: S3Config): String {
