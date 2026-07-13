@@ -15,7 +15,6 @@ import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
 import org.slf4j.LoggerFactory
 import java.net.URI
-import java.time.Instant
 
 object App {
     private val logger = LoggerFactory.getLogger(App::class.java)
@@ -25,20 +24,12 @@ object App {
 
     @JvmStatic
     fun main(args: Array<String>) {
-        logger.info("=".repeat(60))
-        logger.info("IOMETE Lakehouse Backup - Starting")
-        logger.info("=".repeat(60))
-
+        logger.info("IOMETE Lakehouse Backup - starting")
         try {
             run(args)
-            logger.info("=".repeat(60))
-            logger.info("IOMETE Lakehouse Backup - Completed Successfully")
-            logger.info("=".repeat(60))
+            logger.info("IOMETE Lakehouse Backup - completed successfully")
         } catch (e: Exception) {
-            logger.error("=".repeat(60))
-            logger.error("IOMETE Lakehouse Backup - Failed")
-            logger.error("Error: {}", e.message)
-            logger.error("=".repeat(60))
+            logger.error("IOMETE Lakehouse Backup - failed: {}", e.message, e)
             throw e
         }
     }
@@ -52,15 +43,9 @@ object App {
         validateConfig(config)
         logRedactedConfig(config)
 
-        // Initialize Spark session
-        logger.info("Initializing Spark session...")
         val spark = SparkSessionProvider.sparkSession
-        logger.info("Spark session ready")
-        logger.info("  Application ID: {}", spark.sparkContext().applicationId())
 
         try {
-            // Enumerate source files
-            logger.info("-".repeat(60))
             logger.info("Enumerating source files...")
 
             val sourceConfMap = HadoopConfigBuilder.buildConfigMap(config.source)
@@ -82,54 +67,34 @@ object App {
                 return
             }
 
-            // Execute distributed copy
-            logger.info("-".repeat(60))
-            logger.info("Starting distributed copy...")
             val copyJobResult = CopyJobRunner.run(spark, config, files)
             val summary = copyJobResult.summary
 
-            // Log summary
-            logger.info("-".repeat(60))
-            logger.info("Copy Summary:")
-            logger.info("  Total files:  {}", summary.totalFiles)
-            logger.info("  Succeeded:    {}", summary.successCount)
-            logger.info("  Failed:       {}", summary.failureCount)
             logger.info(
-                "  Bytes copied: {} ({} MB)",
+                "Copy summary: {} total, {} succeeded, {} failed, {} bytes copied",
+                summary.totalFiles,
+                summary.successCount,
+                summary.failureCount,
                 summary.totalBytesCopied,
-                summary.totalBytesCopied / (1024 * 1024),
             )
-            logger.info("-".repeat(60))
 
-            logger.info("File-level copy results:")
-            copyJobResult.fileResults.forEach { result ->
-                if (result.success) {
-                    logger.info(
-                        "  [SUCCESS] source={} target={} bytesCopied={} attemptsUsed={}",
-                        result.sourcePath,
-                        result.targetPath,
-                        result.bytesCopied,
-                        result.attemptsUsed,
-                    )
-                } else {
+            copyJobResult.fileResults
+                .filter { !it.success }
+                .forEach { result ->
                     logger.warn(
-                        "  [FAILED] source={} target={} attemptsUsed={} reason={}",
+                        "Copy failed: source={} target={} attemptsUsed={} reason={}",
                         result.sourcePath,
                         result.targetPath,
                         result.attemptsUsed,
                         result.error,
                     )
                 }
-            }
 
             check(summary.failureCount == 0) {
                 "${summary.failureCount} file(s) failed to copy"
             }
         } finally {
-            // Stop Spark session
-            logger.info("Stopping Spark session...")
             SparkSessionProvider.stop()
-            logger.info("Spark session stopped")
         }
     }
 
@@ -160,14 +125,8 @@ object App {
     }
 
     private fun logRedactedConfig(config: ApplicationConfig) {
-        logger.info("-".repeat(60))
-        logger.info("Parsed Configuration (secrets redacted):")
-        logger.info("-".repeat(60))
         val redactedConfig = ConfigUtils.redactSecrets(config)
         val configJson = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(redactedConfig)
-        configJson.lines().forEach { line ->
-            logger.info(line)
-        }
-        logger.info("-".repeat(60))
+        logger.info("Parsed configuration (secrets redacted):\n{}", configJson)
     }
 }

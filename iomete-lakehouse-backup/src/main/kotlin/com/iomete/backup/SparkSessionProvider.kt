@@ -15,9 +15,11 @@ object SparkSessionProvider {
 
                 val s = SparkSession.builder().orCreate
 
-                logger.info("Spark session initialized successfully")
-                logger.info("  Application ID: {}", s.sparkContext().applicationId())
-                logger.info("  Spark version: {}", s.version())
+                logger.info(
+                    "Spark session ready (applicationId={}, version={})",
+                    s.sparkContext().applicationId(),
+                    s.version(),
+                )
 
                 session = s
                 s
