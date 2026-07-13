@@ -1,17 +1,21 @@
 image := iomete.azurecr.io/iomete/iomete-lakehouse-backup
 tag   := 1.0.0
 
+spark_version  := $(shell sed -n 's/^sparkVersion=//p' gradle.properties)
+spark_revision := $(shell sed -n 's/^sparkImageRevision=//p' gradle.properties)
+spark_image    := iomete.azurecr.io/iomete/spark:$(spark_version)-$(spark_revision)
+
 .PHONY: build
 build:
 	./gradlew clean jar
 
 .PHONY: docker-build
 docker-build: build
-	docker build -f Dockerfile -t ${image}:${tag} .
+	docker build --build-arg SPARK_IMAGE=$(spark_image) -f Dockerfile -t ${image}:${tag} .
 
 .PHONY: docker-push
 docker-push: build
-	docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile -t ${image}:${tag} --push . --sbom=true --provenance=true
+	docker buildx build --platform linux/amd64,linux/arm64 --build-arg SPARK_IMAGE=$(spark_image) -f Dockerfile -t ${image}:${tag} --push . --sbom=true --provenance=true
 	@echo ${image}
 	@echo ${tag}
 

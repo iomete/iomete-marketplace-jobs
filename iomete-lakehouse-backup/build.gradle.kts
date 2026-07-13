@@ -10,6 +10,9 @@ plugins {
 group = "com.iomete"
 version = "1.0.0"
 
+val sparkVersion = property("sparkVersion") as String
+val hadoopAwsVersion = property("hadoopAwsVersion") as String
+
 repositories {
     mavenCentral()
 }
@@ -27,15 +30,14 @@ dependencies {
     runtimeOnly("org.apache.logging.log4j:log4j-core:2.23.1")
 
     // Provided at runtime by the Spark base image
-    compileOnly("org.apache.spark:spark-sql_2.12:3.5.5")
-    compileOnly("org.apache.hadoop:hadoop-aws:3.3.4")
-    compileOnly("com.amazonaws:aws-java-sdk-bundle:1.12.262")
+    compileOnly("org.apache.spark:spark-sql_2.12:$sparkVersion")
+    compileOnly("org.apache.hadoop:hadoop-aws:$hadoopAwsVersion")
 
     // Testing
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testImplementation("io.mockk:mockk:1.13.12")
-    testImplementation("org.apache.spark:spark-sql_2.12:3.5.5")
-    testImplementation("org.apache.hadoop:hadoop-aws:3.3.4")
+    testImplementation("org.apache.spark:spark-sql_2.12:$sparkVersion")
+    testImplementation("org.apache.hadoop:hadoop-aws:$hadoopAwsVersion")
     testImplementation("org.testcontainers:junit-jupiter:1.21.4")
     testImplementation("org.testcontainers:minio:1.21.4")
     testImplementation("software.amazon.awssdk:s3:2.42.18")
