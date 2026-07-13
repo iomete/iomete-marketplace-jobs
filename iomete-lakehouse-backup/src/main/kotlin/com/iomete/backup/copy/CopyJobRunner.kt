@@ -36,7 +36,9 @@ object CopyJobRunner {
             )
 
         val filePaths = files.map { it.path }
-        val rdd = jsc.parallelize(filePaths)
+        // Interim: one partition per executor core (Spark default parallelism).
+        // Byte-balanced partitioning will come later.
+        val rdd = jsc.parallelize(filePaths, jsc.defaultParallelism())
 
         logger.info("Copying {} files across {} partitions", files.size, rdd.getNumPartitions())
 
