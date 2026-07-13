@@ -213,12 +213,14 @@ class IcebergMetadataReaderTest {
         assertEquals(4L, stats!!.numFiles)
         assertEquals(4L, stats.totalTableNumFiles)
         assertNull(stats.sizeInBytes)
-        assertNull(stats.totalTableSizeInBytes)
+        // Legacy `$table.snapshots` SQL coalesced missing summary values to 0, so a table
+        // whose snapshots never report size sums to 0, not null.
+        assertEquals(0L, stats.totalTableSizeInBytes)
         assertNull(stats.totalRecords)
     }
 
     @Test
-    fun `returns null historical totals instead of drifting when added summary values are missing`() {
+    fun `treats missing added summary values as zero like the legacy snapshots sql path`() {
         val schema = Schema(Types.NestedField.required(1, "id", Types.IntegerType.get()))
         val firstSnapshot = snapshot(
             timestampMillis = 10,
@@ -248,9 +250,60 @@ class IcebergMetadataReaderTest {
 
         assertNotNull(stats)
         assertEquals(4L, stats!!.numFiles)
-        assertNull(stats.totalTableNumFiles)
+        // Current snapshot omits added-data-files (added no files): counts as 0.
+        assertEquals(2L, stats.totalTableNumFiles)
         assertEquals(250L, stats.sizeInBytes)
         assertEquals(250L, stats.totalTableSizeInBytes)
+    }
+
+    @Test
+    fun `computes historical totals when history contains delete-only snapshots without added keys`() {
+        val schema = Schema(Types.NestedField.required(1, "id", Types.IntegerType.get()))
+        val firstSnapshot = snapshot(
+            timestampMillis = 10,
+            summary = mapOf(
+                "total-data-files" to "4",
+                "total-files-size" to "400",
+                "added-data-files" to "4",
+                "added-files-size" to "400",
+            ),
+        )
+        // Delete-only commit: Iceberg omits added-* keys entirely.
+        val deleteSnapshot = snapshot(
+            timestampMillis = 15,
+            summary = mapOf(
+                "total-data-files" to "2",
+                "total-files-size" to "200",
+                "total-records" to "20",
+            ),
+        )
+        val currentSnapshot = snapshot(
+            timestampMillis = 20,
+            summary = mapOf(
+                "total-data-files" to "5",
+                "total-files-size" to "500",
+                "total-records" to "50",
+                "added-data-files" to "3",
+                "added-files-size" to "300",
+            ),
+        )
+        val table = table(
+            schema = schema,
+            spec = PartitionSpec.unpartitioned(),
+            currentSnapshot = currentSnapshot,
+            snapshots = listOf(firstSnapshot, deleteSnapshot, currentSnapshot),
+        )
+
+        val stats = readerReturning(table).loadTableMetadata(spark, "cat", "sch", "tbl").statistics
+
+        assertNotNull(stats)
+        assertEquals(5L, stats!!.numFiles)
+        assertEquals(500L, stats.sizeInBytes)
+        assertEquals(50L, stats.totalRecords)
+        // 4 (first total) + (4 + 0 + 3 added) - 4 (first added) = 7
+        assertEquals(7L, stats.totalTableNumFiles)
+        // 400 + (400 + 0 + 300) - 400 = 700
+        assertEquals(700L, stats.totalTableSizeInBytes)
     }
 
     @Test

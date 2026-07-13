@@ -124,18 +124,16 @@ class IcebergMetadataReader {
         firstSnapshot: Snapshot,
         totalKey: String,
         addedKey: String,
-    ): Long? {
+    ): Long {
+        // Matches the legacy `$table.snapshots` SQL aggregation, which COALESCEd missing
+        // summary values to 0: baseline is the earliest retained snapshot's total, plus
+        // added deltas from every later snapshot. Iceberg omits `added-*` keys for
+        // snapshots that add no files (e.g. delete-only commits), so missing means 0.
         val firstSummary = firstSnapshot.summary().orEmpty()
-        val firstTotal = firstSummary.longValue(totalKey) ?: return null
-        val firstAdded = firstSummary.longValue(addedKey) ?: return null
-        val addedValues = snapshots.map { it.summary().orEmpty().longValue(addedKey) }
-
-        if (addedValues.any { it == null }) return null
-
-        // Iceberg summaries expose a current total and per-snapshot added counts. Use the
-        // first available total as the baseline, then add later snapshot deltas only when
-        // every needed summary value exists; otherwise return null instead of guessing.
-        return firstTotal + (addedValues.filterNotNull().sum() - firstAdded)
+        val firstTotal = firstSummary.longValue(totalKey) ?: 0L
+        val firstAdded = firstSummary.longValue(addedKey) ?: 0L
+        val addedSum = snapshots.sumOf { it.summary().orEmpty().longValue(addedKey) ?: 0L }
+        return firstTotal + (addedSum - firstAdded)
     }
 
     private fun Map<String, String>.longValue(key: String): Long? = this[key]?.toLongOrNull()
