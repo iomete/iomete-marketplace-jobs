@@ -27,26 +27,18 @@ object CopyJobRunner {
         logger.info("Source root: {}", sourceRoot)
         logger.info("Target root: {}", targetRoot)
 
-        // Determine parallelism from config
-        val copyOptions = config.copy.options
-        val numPartitions = copyOptions.maxMaps
-
-        // Create the copier (serializable, shipped to executors)
         val copier =
             FileCopier(
                 sourceConfMap = sourceConfMap,
                 targetConfMap = targetConfMap,
                 sourceRoot = sourceRoot,
                 targetRoot = targetRoot,
-                maxAttempts = copyOptions.maxAttempts,
-                retryDelayMs = copyOptions.retryDelayMs,
             )
 
-        logger.info("Creating RDD with {} partitions from {} files", numPartitions, files.size)
-
-        // Parallelize file paths as strings (lightweight, serializable)
         val filePaths = files.map { it.path }
-        val rdd = jsc.parallelize(filePaths, numPartitions)
+        val rdd = jsc.parallelize(filePaths)
+
+        logger.info("Copying {} files across {} partitions", files.size, rdd.getNumPartitions())
 
         // Execute the distributed copy
         val results: List<CopyResult> =

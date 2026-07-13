@@ -163,36 +163,6 @@ class ConfigValidatorTest {
         assertTrue(result.errors.any { it.contains("secretKey") && it.contains("target") })
     }
 
-    @Test
-    fun `copy options with non-positive maxAttempts fails validation`() {
-        val config =
-            ApplicationConfig(
-                source = s3Config(),
-                target = s3Config(),
-                copy = CopyConfig(options = CopyOptions(maxAttempts = 0)),
-            )
-
-        val result = ConfigValidator.validate(config)
-
-        assertIs<ValidationResult.Invalid>(result)
-        assertTrue(result.errors.any { it.contains("maxAttempts") })
-    }
-
-    @Test
-    fun `copy options with negative retryDelayMs fails validation`() {
-        val config =
-            ApplicationConfig(
-                source = s3Config(),
-                target = s3Config(),
-                copy = CopyConfig(options = CopyOptions(retryDelayMs = -1)),
-            )
-
-        val result = ConfigValidator.validate(config)
-
-        assertIs<ValidationResult.Invalid>(result)
-        assertTrue(result.errors.any { it.contains("retryDelayMs") })
-    }
-
 //    @Test
 //    fun `HDFS with neither namenode nor HA fails validation`() {
 //        val config = ApplicationConfig(
@@ -379,40 +349,4 @@ class ConfigValidatorTest {
 //
 //        assertIs<ValidationResult.Valid>(result)
 //    }
-//
-    @Test
-    fun `copy options with zero maxMaps fails validation`() {
-        val config =
-            ApplicationConfig(
-                source = s3Config(),
-                target = s3Config(),
-                copy =
-                    CopyConfig(
-                        options = CopyOptions(maxMaps = 0),
-                    ),
-            )
-
-        val result = ConfigValidator.validate(config)
-
-        assertIs<ValidationResult.Invalid>(result)
-        assertTrue(result.errors.any { it.contains("maxMaps") })
-    }
-
-    @Test
-    fun `copy options with negative maxMaps fails validation`() {
-        val config =
-            ApplicationConfig(
-                source = s3Config(),
-                target = s3Config(),
-                copy =
-                    CopyConfig(
-                        options = CopyOptions(maxMaps = -1),
-                    ),
-            )
-
-        val result = ConfigValidator.validate(config)
-
-        assertIs<ValidationResult.Invalid>(result)
-        assertTrue(result.errors.any { it.contains("maxMaps") })
-    }
 }
