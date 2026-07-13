@@ -458,6 +458,47 @@ class TableMetadataExtractorTest {
     }
 
     @Test
+    fun `scrapeTable fast path promotes iceberg provider to managed when type metadata is absent`() {
+        val fastPathMetadata = IcebergLoadedTableMetadata(
+            tableDescription = TableDescription(
+                columns = listOf(ColumnMetadata("id", "int", null, 0, false)),
+                metadata = mapOf("Provider" to "iceberg"),
+            ),
+            tableProperties = emptyMap(),
+            statistics = null,
+        )
+        val extractor = mockk<TableExtractor>()
+
+        every {
+            icebergMetadataReader.loadTableMetadata(sparkSession, "cat", "sch", "tbl")
+        } returns fastPathMetadata
+        every {
+            tableExtractorFactory.extractorFor(
+                spark = sparkSession,
+                provider = "iceberg",
+                isView = false,
+                catalog = "cat",
+                schema = "sch",
+                table = "tbl",
+                tableProperties = emptyMap(),
+            )
+        } returns extractor
+
+        val result = tableMetadataExtractor.scrapeTable(
+            spark = sparkSession,
+            catalog = "cat",
+            schema = "sch",
+            tableName = "tbl",
+            isTemp = false,
+            useIcebergFastPath = true,
+        )
+
+        assertEquals("MANAGED", result.tableType)
+        assertFalse(result.isView)
+        verify(exactly = 0) { sparkMetadataReader.describeTable(any(), any(), any(), any()) }
+    }
+
+    @Test
     fun `scrapeTable fast path preserves complete output shape in regular test gate`() {
         val columns = listOf(
             ColumnMetadata("id", "bigint", "user id", 0, false),

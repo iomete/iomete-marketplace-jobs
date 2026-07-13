@@ -34,7 +34,7 @@ class IcebergMetadataReader {
     private val tableLoader: (
         spark: SparkSession,
         catalog: String,
-        schema: String,
+        schemaName: String,
         tableName: String,
     ) -> Table
 
@@ -44,7 +44,7 @@ class IcebergMetadataReader {
         tableLoader: (
             spark: SparkSession,
             catalog: String,
-            schema: String,
+            schemaName: String,
             tableName: String,
         ) -> Table,
     ) {
@@ -54,10 +54,10 @@ class IcebergMetadataReader {
     fun loadTableMetadata(
         spark: SparkSession,
         catalog: String,
-        schema: String,
+        schemaName: String,
         tableName: String,
     ): IcebergLoadedTableMetadata {
-        val table = tableLoader(spark, catalog, schema, tableName)
+        val table = tableLoader(spark, catalog, schemaName, tableName)
         val icebergSchema = table.schema()
         val partitionSpec = table.spec()
         val properties = table.properties().orEmpty()
@@ -161,14 +161,14 @@ private fun sparkTimestampType(shouldAdjustToUTC: Boolean): String =
     }
 
 private fun partitionSpecString(
-    schema: Schema,
+    icebergSchema: Schema,
     spec: PartitionSpec?,
 ): String {
     val fields = spec?.fields().orEmpty()
     if (fields.isEmpty()) return "[]"
 
     return fields.joinToString(", ") { field ->
-        val sourceName = schema.findColumnName(field.sourceId()) ?: field.sourceId().toString()
+        val sourceName = icebergSchema.findColumnName(field.sourceId()) ?: field.sourceId().toString()
         if (field.transform().isIdentity) {
             sourceName
         } else {
@@ -180,9 +180,9 @@ private fun partitionSpecString(
 private fun loadIcebergTable(
     spark: SparkSession,
     catalog: String,
-    schema: String,
+    schemaName: String,
     tableName: String,
-): Table = Spark3Util.loadIcebergTable(spark, quotedFullName(catalog, schema, tableName))
+): Table = Spark3Util.loadIcebergTable(spark, quotedFullName(catalog, schemaName, tableName))
 
 private fun quotedFullName(vararg parts: String): String =
     parts.joinToString(".") { part -> "`${part.replace("`", "``")}`" }
