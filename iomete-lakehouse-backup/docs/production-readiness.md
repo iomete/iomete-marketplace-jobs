@@ -91,10 +91,13 @@ defect that must be fixed before production.
   independent Hadoop config maps for each end. This is essential for real backup
   scenarios (production account → backup account) and is a capability SparkDistCP
   lacks entirely.
-- **Wrong / open question:** The README documents `${VAR_NAME}` placeholder
-  substitution for secrets, but there is no substitution logic in the parser. We
-  must confirm whether the IOMETE platform performs this at mount time; if not,
-  it is an unimplemented feature.
+- **Resolved:** The README documents `${VAR_NAME}` placeholder substitution for
+  secrets. This is performed **platform-side** by the spark-operator at CRD deploy
+  time, so no substitution logic is needed in the parser (see
+  `milestone-1-plan.md`).
+- **Update (pre-POC cleanup):** the `copy` tuning block (`maxMaps`,
+  `maxAttempts`, `retryDelayMs`) was removed from the user config surface. Retry
+  is internal with defaults; the config now takes `source`/`target` only.
 
 ### 3.2 Source enumeration (`FileLister`) — **works, but limited**
 
@@ -127,19 +130,17 @@ defect that must be fixed before production.
   every run re-copies the entire dataset. There is no skip-if-identical
   (`update`) semantics.
 
-### 3.4 Spark session (`SparkSessionProvider`) — **wrong**
+### 3.4 Spark session (`SparkSessionProvider`) — **fixed**
 
-- **Wrong (critical): `master("local")` is hardcoded.** The job runs entirely on
-  the driver and never distributes work to executors, defeating the purpose of a
-  Spark-based copier. The master must come from the Spark submit environment, not
-  from code.
+- **Fixed (was critical): `master("local")` is no longer hardcoded.**
+  `SparkSessionProvider` uses `SparkSession.builder().orCreate`, so the master
+  comes from the Spark submit environment and work distributes to executors.
 
-### 3.5 Entry point (`App`) — **wrong**
+### 3.5 Entry point (`App`) — **mostly fixed**
 
-- **Wrong (critical): failures are swallowed.** In `App.main`, the
-  `exitProcess(1)` call is commented out, so a failed run exits `0`. Any external
-  scheduler will record a failed backup as successful. This is a silent-failure
-  hazard and must be fixed.
+- **Fixed (was critical): failures propagate.** `App.main` rethrows on error and
+  `check(summary.failureCount == 0)` fails the run, so the JVM exits non-zero via
+  the propagated exception. A failed backup is no longer reported as success.
 - **Wrong (medium): no machine-readable result output.** Results are logged only.
   There is no manifest artifact for reconciliation, alerting, or resume.
 
@@ -162,10 +163,10 @@ defect that must be fixed before production.
 | Separate src/dst credentials | ✅ right | — |
 | JSON config + validation + redaction | ✅ right | — |
 | Per-file retry | ✅ right | — |
-| Distributed execution (`master`) | ❌ wrong | Critical |
+| Distributed execution (`master`) | ✅ fixed | Critical |
 | Write atomicity | ❌ wrong | Critical |
 | Post-copy verification | ❌ wrong | Critical |
-| Failure propagation / exit code | ❌ wrong | Critical |
+| Failure propagation / exit code | ✅ fixed | Critical |
 | Partition balancing | ❌ wrong | High |
 | Idempotent `update` | ❌ missing | High |
 | Parallel / distributed listing | ❌ missing | Medium |
