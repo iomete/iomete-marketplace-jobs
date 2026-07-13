@@ -123,9 +123,10 @@ defect that must be fixed before production.
 - **Wrong (high): naive partitioning.** `jsc.parallelize(filePaths, maxMaps)`
   distributes by file *count*, not bytes. A single large file colocated with many
   small ones creates severe skew — one task does most of the work.
-- **Wrong (medium): FileSystem churn.** A new source *and* target `FileSystem` is
-  created **per file** (flagged with TODOs in the code). SparkDistCP reuses
-  FileSystem objects per task via a cache.
+- **Wrong (medium): FileSystem churn.** In `FileCopier.copySingleFile`, a new
+  source *and* target `FileSystem` — and a new Hadoop `Configuration` — is built
+  **per file** (and per retry attempt). SparkDistCP reuses FileSystem objects per
+  task via a cache. Fixed in milestone-1 PR5.
 - **Wrong (medium): no idempotency.** `overwrite = true` unconditionally, so
   every run re-copies the entire dataset. There is no skip-if-identical
   (`update`) semantics.

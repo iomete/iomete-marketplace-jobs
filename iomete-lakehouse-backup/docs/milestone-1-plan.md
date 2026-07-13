@@ -71,8 +71,9 @@ there is no monolithic "add all the tests" PR at the end.
 
 ### PR5 — FileSystem caching
 - Refactor `FileCopier` to `mapPartitions` with a per-task FileSystem cache keyed
-  by URI authority, eliminating the per-file FS/Configuration churn (current TODOs
-  in `FileCopier.kt`).
+  by URI authority, eliminating the per-file FS/Configuration churn in
+  `FileCopier.copySingleFile` (a fresh FileSystem + Configuration is currently
+  built per file and per retry attempt).
 - Test: FileSystem instances reused within a task.
 
 ### PR6 — Idempotent `update`
