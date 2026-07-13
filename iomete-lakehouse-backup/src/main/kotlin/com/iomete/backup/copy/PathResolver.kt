@@ -4,13 +4,11 @@ import com.iomete.backup.config.S3Config
 import com.iomete.backup.config.StorageConfig
 
 object PathResolver {
-
-    fun resolveRootUri(config: StorageConfig): String {
-        return when (config) {
+    fun resolveRootUri(config: StorageConfig): String =
+        when (config) {
             is S3Config -> resolveS3Root(config)
 //            is HdfsConfig -> resolveHdfsRoot(config) #TODO
         }
-    }
 
     private fun resolveS3Root(config: S3Config): String {
         val prefix = config.prefix.trim('/')
@@ -21,7 +19,11 @@ object PathResolver {
         }
     }
 
-    fun resolveTargetPath(sourceFilePath: String, sourceRoot: String, targetRoot: String): String {
+    fun resolveTargetPath(
+        sourceFilePath: String,
+        sourceRoot: String,
+        targetRoot: String,
+    ): String {
         // Normalize: ensure sourceRoot ends without slash for clean stripping
         val normalizedSourceRoot = sourceRoot.trimEnd('/')
         val normalizedTargetRoot = targetRoot.trimEnd('/')
@@ -41,5 +43,4 @@ object PathResolver {
             "$normalizedTargetRoot$relativePath"
         }
     }
-
 }

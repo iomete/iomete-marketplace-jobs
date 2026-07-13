@@ -67,10 +67,11 @@ object App {
             val sourceConf = HadoopConfigBuilder.toHadoopConf(sourceConfMap)
             val sourceRoot = PathResolver.resolveRootUri(config.source)
 
-            val files = FileSystem.newInstance(URI(sourceRoot), sourceConf).use { sourceFs ->
-                val fileLister = FileLister(sourceFs)
-                fileLister.listRecursively(Path(sourceRoot)).toList()
-            }
+            val files =
+                FileSystem.newInstance(URI(sourceRoot), sourceConf).use { sourceFs ->
+                    val fileLister = FileLister(sourceFs)
+                    fileLister.listRecursively(Path(sourceRoot)).toList()
+                }
 
             logger.info("Found {} files to copy", files.size)
             val totalBytes = files.sumOf { it.size }
@@ -93,8 +94,11 @@ object App {
             logger.info("  Total files:  {}", summary.totalFiles)
             logger.info("  Succeeded:    {}", summary.successCount)
             logger.info("  Failed:       {}", summary.failureCount)
-            logger.info("  Bytes copied: {} ({} MB)", summary.totalBytesCopied,
-                summary.totalBytesCopied / (1024 * 1024))
+            logger.info(
+                "  Bytes copied: {} ({} MB)",
+                summary.totalBytesCopied,
+                summary.totalBytesCopied / (1024 * 1024),
+            )
             logger.info("-".repeat(60))
 
             logger.info("File-level copy results:")
@@ -102,12 +106,18 @@ object App {
                 if (result.success) {
                     logger.info(
                         "  [SUCCESS] source={} target={} bytesCopied={} attemptsUsed={}",
-                        result.sourcePath, result.targetPath, result.bytesCopied, result.attemptsUsed
+                        result.sourcePath,
+                        result.targetPath,
+                        result.bytesCopied,
+                        result.attemptsUsed,
                     )
                 } else {
                     logger.warn(
                         "  [FAILED] source={} target={} attemptsUsed={} reason={}",
-                        result.sourcePath, result.targetPath, result.attemptsUsed, result.error
+                        result.sourcePath,
+                        result.targetPath,
+                        result.attemptsUsed,
+                        result.error,
                     )
                 }
             }
@@ -121,17 +131,17 @@ object App {
             SparkSessionProvider.stop()
             logger.info("Spark session stopped")
         }
-
     }
 
     private fun parseConfig(configPath: String): ApplicationConfig {
         logger.info("Parsing configuration...")
-        val config = try {
-            ConfigParser.parseFromFile(configPath)
-        } catch (e: ConfigParseException) {
-            logger.error("Configuration parsing failed: {}", e.message)
-            throw e
-        }
+        val config =
+            try {
+                ConfigParser.parseFromFile(configPath)
+            } catch (e: ConfigParseException) {
+                logger.error("Configuration parsing failed: {}", e.message)
+                throw e
+            }
         logger.info("Configuration parsed successfully")
         return config
     }

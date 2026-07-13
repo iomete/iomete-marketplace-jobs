@@ -15,5 +15,5 @@ import java.io.Serializable
 data class FileEntry(
     val path: String,
     val size: Long,
-    val modificationTime: Long
+    val modificationTime: Long,
 ) : Serializable

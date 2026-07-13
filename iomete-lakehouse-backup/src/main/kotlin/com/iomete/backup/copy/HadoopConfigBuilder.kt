@@ -5,13 +5,11 @@ import com.iomete.backup.config.StorageConfig
 import org.apache.hadoop.conf.Configuration
 
 object HadoopConfigBuilder {
-
-    fun buildConfigMap(config: StorageConfig): Map<String, String> {
-        return when (config) {
+    fun buildConfigMap(config: StorageConfig): Map<String, String> =
+        when (config) {
             is S3Config -> buildS3ConfigMap(config)
 //            is HdfsConfig -> buildHdfsConfigMap(config) #TODO
         }
-    }
 
     private fun buildS3ConfigMap(config: S3Config): Map<String, String> {
         val props = mutableMapOf<String, String>()
@@ -41,6 +39,4 @@ object HadoopConfigBuilder {
         props.forEach { (key, value) -> conf[key] = value }
         return conf
     }
-
-
 }

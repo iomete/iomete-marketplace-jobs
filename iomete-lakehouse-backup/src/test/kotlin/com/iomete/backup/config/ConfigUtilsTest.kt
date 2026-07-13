@@ -5,23 +5,25 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 
 class ConfigUtilsTest {
-
     @Test
     fun `redactSecrets masks S3 accessKey and secretKey`() {
-        val config = ApplicationConfig(
-            source = S3Config(
-                bucket = "source-bucket",
-                prefix = "data/",
-                accessKey = "AKIAIOSFODNN7EXAMPLE",
-                secretKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-            ),
-            target = S3Config(
-                bucket = "target-bucket",
-                prefix = "backup/",
-                accessKey = "AKIAI44QH8DHBEXAMPLE",
-                secretKey = "je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY"
+        val config =
+            ApplicationConfig(
+                source =
+                    S3Config(
+                        bucket = "source-bucket",
+                        prefix = "data/",
+                        accessKey = "AKIAIOSFODNN7EXAMPLE",
+                        secretKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                    ),
+                target =
+                    S3Config(
+                        bucket = "target-bucket",
+                        prefix = "backup/",
+                        accessKey = "AKIAI44QH8DHBEXAMPLE",
+                        secretKey = "je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY",
+                    ),
             )
-        )
 
         val redacted = ConfigUtils.redactSecrets(config)
 
@@ -35,7 +37,6 @@ class ConfigUtilsTest {
         assertEquals("***", target.accessKey)
         assertEquals("***", target.secretKey)
     }
-
 
 //    @Test #TODO
 //    fun `redactSecrets masks Kerberos keytabPath`() {

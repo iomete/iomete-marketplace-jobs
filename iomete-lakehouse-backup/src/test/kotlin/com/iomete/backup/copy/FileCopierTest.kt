@@ -24,7 +24,6 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class FileCopierTest {
-
     private lateinit var tempDir: File
     private lateinit var sourceDir: File
     private lateinit var targetDir: File
@@ -44,21 +43,23 @@ class FileCopierTest {
     @Test
     fun `copies a single file successfully`() {
         // Create a source file
-        val sourceFile = File(sourceDir, "data/file.txt").apply {
-            parentFile.mkdirs()
-            writeText("hello world")
-        }
+        val sourceFile =
+            File(sourceDir, "data/file.txt").apply {
+                parentFile.mkdirs()
+                writeText("hello world")
+            }
 
         val sourceRoot = sourceDir.toURI().toString().trimEnd('/')
         val targetRoot = targetDir.toURI().toString().trimEnd('/')
         val sourceFilePath = sourceFile.toURI().toString()
 
-        val copier = FileCopier(
-            sourceConfMap = emptyMap(),
-            targetConfMap = emptyMap(),
-            sourceRoot = sourceRoot,
-            targetRoot = targetRoot
-        )
+        val copier =
+            FileCopier(
+                sourceConfMap = emptyMap(),
+                targetConfMap = emptyMap(),
+                sourceRoot = sourceRoot,
+                targetRoot = targetRoot,
+            )
 
         val result = copier.copySingleFile(sourceFilePath)
 
@@ -76,20 +77,22 @@ class FileCopierTest {
 
     @Test
     fun `creates parent directories on target`() {
-        val sourceFile = File(sourceDir, "a/b/c/deep.txt").apply {
-            parentFile.mkdirs()
-            writeText("deep content")
-        }
+        val sourceFile =
+            File(sourceDir, "a/b/c/deep.txt").apply {
+                parentFile.mkdirs()
+                writeText("deep content")
+            }
 
         val sourceRoot = sourceDir.toURI().toString().trimEnd('/')
         val targetRoot = targetDir.toURI().toString().trimEnd('/')
 
-        val copier = FileCopier(
-            sourceConfMap = emptyMap(),
-            targetConfMap = emptyMap(),
-            sourceRoot = sourceRoot,
-            targetRoot = targetRoot
-        )
+        val copier =
+            FileCopier(
+                sourceConfMap = emptyMap(),
+                targetConfMap = emptyMap(),
+                sourceRoot = sourceRoot,
+                targetRoot = targetRoot,
+            )
 
         val result = copier.copySingleFile(sourceFile.toURI().toString())
 
@@ -106,12 +109,13 @@ class FileCopierTest {
         val sourceRoot = sourceDir.toURI().toString().trimEnd('/')
         val targetRoot = targetDir.toURI().toString().trimEnd('/')
 
-        val copier = FileCopier(
-            sourceConfMap = emptyMap(),
-            targetConfMap = emptyMap(),
-            sourceRoot = sourceRoot,
-            targetRoot = targetRoot
-        )
+        val copier =
+            FileCopier(
+                sourceConfMap = emptyMap(),
+                targetConfMap = emptyMap(),
+                sourceRoot = sourceRoot,
+                targetRoot = targetRoot,
+            )
 
         val result = copier.copySingleFile(nonExistentPath)
 
@@ -128,14 +132,15 @@ class FileCopierTest {
         val sourceRoot = sourceDir.toURI().toString().trimEnd('/')
         val targetRoot = targetDir.toURI().toString().trimEnd('/')
 
-        val copier = FileCopier(
-            sourceConfMap = emptyMap(),
-            targetConfMap = emptyMap(),
-            sourceRoot = sourceRoot,
-            targetRoot = targetRoot,
-            maxAttempts = 1,
-            retryDelayMs = 0
-        )
+        val copier =
+            FileCopier(
+                sourceConfMap = emptyMap(),
+                targetConfMap = emptyMap(),
+                sourceRoot = sourceRoot,
+                targetRoot = targetRoot,
+                maxAttempts = 1,
+                retryDelayMs = 0,
+            )
 
         val result = copier.copySingleFile(nonExistentPath)
 
@@ -145,11 +150,12 @@ class FileCopierTest {
 
     @Test
     fun `copies multiple files preserving relative structure`() {
-        val files = listOf(
-            "db/table1/part-0001.parquet" to "content-1",
-            "db/table1/part-0002.parquet" to "content-2",
-            "db/table2/part-0001.parquet" to "content-3"
-        )
+        val files =
+            listOf(
+                "db/table1/part-0001.parquet" to "content-1",
+                "db/table1/part-0002.parquet" to "content-2",
+                "db/table2/part-0001.parquet" to "content-3",
+            )
         files.forEach { (relativePath, content) ->
             File(sourceDir, relativePath).apply {
                 parentFile.mkdirs()
@@ -160,17 +166,19 @@ class FileCopierTest {
         val sourceRoot = sourceDir.toURI().toString().trimEnd('/')
         val targetRoot = targetDir.toURI().toString().trimEnd('/')
 
-        val copier = FileCopier(
-            sourceConfMap = emptyMap(),
-            targetConfMap = emptyMap(),
-            sourceRoot = sourceRoot,
-            targetRoot = targetRoot
-        )
+        val copier =
+            FileCopier(
+                sourceConfMap = emptyMap(),
+                targetConfMap = emptyMap(),
+                sourceRoot = sourceRoot,
+                targetRoot = targetRoot,
+            )
 
-        val results = files.map { (relativePath, _) ->
-            val sourceFilePath = File(sourceDir, relativePath).toURI().toString()
-            copier.copySingleFile(sourceFilePath)
-        }
+        val results =
+            files.map { (relativePath, _) ->
+                val sourceFilePath = File(sourceDir, relativePath).toURI().toString()
+                copier.copySingleFile(sourceFilePath)
+            }
 
         assertTrue(results.all { it.success })
         assertTrue(results.all { it.attemptsUsed == 1 })
@@ -185,19 +193,21 @@ class FileCopierTest {
 
     @Test
     fun `result contains correct target path`() {
-        val sourceFile = File(sourceDir, "file.txt").apply {
-            writeText("test")
-        }
+        val sourceFile =
+            File(sourceDir, "file.txt").apply {
+                writeText("test")
+            }
 
         val sourceRoot = sourceDir.toURI().toString().trimEnd('/')
         val targetRoot = targetDir.toURI().toString().trimEnd('/')
 
-        val copier = FileCopier(
-            sourceConfMap = emptyMap(),
-            targetConfMap = emptyMap(),
-            sourceRoot = sourceRoot,
-            targetRoot = targetRoot
-        )
+        val copier =
+            FileCopier(
+                sourceConfMap = emptyMap(),
+                targetConfMap = emptyMap(),
+                sourceRoot = sourceRoot,
+                targetRoot = targetRoot,
+            )
 
         val result = copier.copySingleFile(sourceFile.toURI().toString())
 
@@ -208,21 +218,24 @@ class FileCopierTest {
 
     @Test
     fun `copier is serializable`() {
-        val copier = FileCopier(
-            sourceConfMap = mapOf("fs.s3a.access.key" to "key"),
-            targetConfMap = mapOf("fs.s3a.access.key" to "key2"),
-            sourceRoot = "s3a://source/root",
-            targetRoot = "s3a://target/root"
-        )
+        val copier =
+            FileCopier(
+                sourceConfMap = mapOf("fs.s3a.access.key" to "key"),
+                targetConfMap = mapOf("fs.s3a.access.key" to "key2"),
+                sourceRoot = "s3a://source/root",
+                targetRoot = "s3a://target/root",
+            )
 
         // Serialize and deserialize
         val baos = java.io.ByteArrayOutputStream()
         java.io.ObjectOutputStream(baos).use { it.writeObject(copier) }
         val bytes = baos.toByteArray()
 
-        val deserialized = java.io.ObjectInputStream(
-            java.io.ByteArrayInputStream(bytes)
-        ).use { it.readObject() as FileCopier }
+        val deserialized =
+            java.io
+                .ObjectInputStream(
+                    java.io.ByteArrayInputStream(bytes),
+                ).use { it.readObject() as FileCopier }
 
         // The deserialized copier should be usable (logger re-created lazily)
         // We can't easily test copy on a deserialized instance without real S3,
@@ -252,18 +265,21 @@ class FileCopierTest {
             every { sourceFs.close() } just runs
             every { targetFs.close() } just runs
 
-            val copier = FileCopier(
-                sourceConfMap = mapOf(
-                    "fs.s3a.access.key" to "source-key",
-                    "fs.s3a.secret.key" to "source-secret"
-                ),
-                targetConfMap = mapOf(
-                    "fs.s3a.access.key" to "target-key",
-                    "fs.s3a.secret.key" to "target-secret"
-                ),
-                sourceRoot = "s3a://shared-bucket/warehouse/in",
-                targetRoot = "s3a://shared-bucket/warehouse/out"
-            )
+            val copier =
+                FileCopier(
+                    sourceConfMap =
+                        mapOf(
+                            "fs.s3a.access.key" to "source-key",
+                            "fs.s3a.secret.key" to "source-secret",
+                        ),
+                    targetConfMap =
+                        mapOf(
+                            "fs.s3a.access.key" to "target-key",
+                            "fs.s3a.secret.key" to "target-secret",
+                        ),
+                    sourceRoot = "s3a://shared-bucket/warehouse/in",
+                    targetRoot = "s3a://shared-bucket/warehouse/out",
+                )
 
             val result = copier.copySingleFile(sourcePathString)
 

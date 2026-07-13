@@ -25,10 +25,11 @@ object SparkSessionProvider {
         }
 
     fun stop() {
-        val s = session ?: run {
-            logger.info("Spark session was never initialized, nothing to stop")
-            return
-        }
+        val s =
+            session ?: run {
+                logger.info("Spark session was never initialized, nothing to stop")
+                return
+            }
 
         if (s.sparkContext().isStopped) {
             logger.info("Spark session already stopped")

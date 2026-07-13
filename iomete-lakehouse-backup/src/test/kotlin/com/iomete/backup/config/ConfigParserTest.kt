@@ -7,27 +7,27 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 
 class ConfigParserTest {
-
     @Test
     fun `parse minimal S3-to-S3 config`() {
-        val json = """
-        {
-          "source": {
-            "type": "s3",
-            "bucket": "source-bucket",
-            "prefix": "data/",
-            "accessKey": "access123",
-            "secretKey": "secret456"
-          },
-          "target": {
-            "type": "s3",
-            "bucket": "target-bucket",
-            "prefix": "backup/",
-            "accessKey": "access789",
-            "secretKey": "secret012"
-          }
-        }
-        """.trimIndent()
+        val json =
+            """
+            {
+              "source": {
+                "type": "s3",
+                "bucket": "source-bucket",
+                "prefix": "data/",
+                "accessKey": "access123",
+                "secretKey": "secret456"
+              },
+              "target": {
+                "type": "s3",
+                "bucket": "target-bucket",
+                "prefix": "backup/",
+                "accessKey": "access789",
+                "secretKey": "secret012"
+              }
+            }
+            """.trimIndent()
 
         val config = ConfigParser.parse(json)
 
@@ -53,29 +53,30 @@ class ConfigParserTest {
 
     @Test
     fun `parse copy retry options`() {
-        val json = """
-        {
-          "source": {
-            "type": "s3",
-            "bucket": "source-bucket",
-            "accessKey": "access123",
-            "secretKey": "secret456"
-          },
-          "target": {
-            "type": "s3",
-            "bucket": "target-bucket",
-            "accessKey": "access789",
-            "secretKey": "secret012"
-          },
-          "copy": {
-            "options": {
-              "maxMaps": 10,
-              "maxAttempts": 5,
-              "retryDelayMs": 2500
+        val json =
+            """
+            {
+              "source": {
+                "type": "s3",
+                "bucket": "source-bucket",
+                "accessKey": "access123",
+                "secretKey": "secret456"
+              },
+              "target": {
+                "type": "s3",
+                "bucket": "target-bucket",
+                "accessKey": "access789",
+                "secretKey": "secret012"
+              },
+              "copy": {
+                "options": {
+                  "maxMaps": 10,
+                  "maxAttempts": 5,
+                  "retryDelayMs": 2500
+                }
+              }
             }
-          }
-        }
-        """.trimIndent()
+            """.trimIndent()
 
         val config = ConfigParser.parse(json)
 
@@ -344,14 +345,15 @@ class ConfigParserTest {
 
     @Test
     fun `reject malformed JSON`() {
-        val malformedJson = """
-        {
-          "source": {
-            "type": "s3"
-            "bucket": "missing-comma"
-          }
-        }
-        """.trimIndent()
+        val malformedJson =
+            """
+            {
+              "source": {
+                "type": "s3"
+                "bucket": "missing-comma"
+              }
+            }
+            """.trimIndent()
 
         assertThrows<ConfigParseException> {
             ConfigParser.parse(malformedJson)
@@ -360,16 +362,17 @@ class ConfigParserTest {
 
     @Test
     fun `reject config with missing required source`() {
-        val json = """
-        {
-          "target": {
-            "type": "s3",
-            "bucket": "target-bucket",
-            "accessKey": "key",
-            "secretKey": "secret"
-          }
-        }
-        """.trimIndent()
+        val json =
+            """
+            {
+              "target": {
+                "type": "s3",
+                "bucket": "target-bucket",
+                "accessKey": "key",
+                "secretKey": "secret"
+              }
+            }
+            """.trimIndent()
 
         assertThrows<ConfigParseException> {
             ConfigParser.parse(json)
@@ -378,20 +381,21 @@ class ConfigParserTest {
 
     @Test
     fun `reject config with unknown storage type`() {
-        val json = """
-        {
-          "source": {
-            "type": "gcs",
-            "bucket": "source-bucket"
-          },
-          "target": {
-            "type": "s3",
-            "bucket": "target-bucket",
-            "accessKey": "key",
-            "secretKey": "secret"
-          }
-        }
-        """.trimIndent()
+        val json =
+            """
+            {
+              "source": {
+                "type": "gcs",
+                "bucket": "source-bucket"
+              },
+              "target": {
+                "type": "s3",
+                "bucket": "target-bucket",
+                "accessKey": "key",
+                "secretKey": "secret"
+              }
+            }
+            """.trimIndent()
 
         assertThrows<ConfigParseException> {
             ConfigParser.parse(json)

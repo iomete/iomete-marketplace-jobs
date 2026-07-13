@@ -8,17 +8,16 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 
 class HadoopConfigBuilderTest {
-
     @Nested
     inner class S3ConfigTests {
-
         @Test
         fun `S3 config sets access key and secret key`() {
-            val config = S3Config(
-                bucket = "my-bucket",
-                accessKey = "myAccessKey",
-                secretKey = "mySecretKey"
-            )
+            val config =
+                S3Config(
+                    bucket = "my-bucket",
+                    accessKey = "myAccessKey",
+                    secretKey = "mySecretKey",
+                )
             val props = HadoopConfigBuilder.buildConfigMap(config)
 
             assertEquals("myAccessKey", props["fs.s3a.access.key"])
@@ -27,12 +26,13 @@ class HadoopConfigBuilderTest {
 
         @Test
         fun `S3 config sets endpoint when provided`() {
-            val config = S3Config(
-                bucket = "my-bucket",
-                endpoint = "https://s3.example.com",
-                accessKey = "key",
-                secretKey = "secret"
-            )
+            val config =
+                S3Config(
+                    bucket = "my-bucket",
+                    endpoint = "https://s3.example.com",
+                    accessKey = "key",
+                    secretKey = "secret",
+                )
             val props = HadoopConfigBuilder.buildConfigMap(config)
 
             assertEquals("https://s3.example.com", props["fs.s3a.endpoint"])
@@ -40,11 +40,12 @@ class HadoopConfigBuilderTest {
 
         @Test
         fun `S3 config omits endpoint when null`() {
-            val config = S3Config(
-                bucket = "my-bucket",
-                accessKey = "key",
-                secretKey = "secret"
-            )
+            val config =
+                S3Config(
+                    bucket = "my-bucket",
+                    accessKey = "key",
+                    secretKey = "secret",
+                )
             val props = HadoopConfigBuilder.buildConfigMap(config)
 
             assertFalse(props.containsKey("fs.s3a.endpoint"))
@@ -52,12 +53,13 @@ class HadoopConfigBuilderTest {
 
         @Test
         fun `S3 config sets path style access`() {
-            val config = S3Config(
-                bucket = "my-bucket",
-                pathStyleAccess = true,
-                accessKey = "key",
-                secretKey = "secret"
-            )
+            val config =
+                S3Config(
+                    bucket = "my-bucket",
+                    pathStyleAccess = true,
+                    accessKey = "key",
+                    secretKey = "secret",
+                )
             val props = HadoopConfigBuilder.buildConfigMap(config)
 
             assertEquals("true", props["fs.s3a.path.style.access"])
@@ -65,11 +67,12 @@ class HadoopConfigBuilderTest {
 
         @Test
         fun `S3 config sets S3A filesystem implementation`() {
-            val config = S3Config(
-                bucket = "my-bucket",
-                accessKey = "key",
-                secretKey = "secret"
-            )
+            val config =
+                S3Config(
+                    bucket = "my-bucket",
+                    accessKey = "key",
+                    secretKey = "secret",
+                )
             val props = HadoopConfigBuilder.buildConfigMap(config)
 
             assertEquals("org.apache.hadoop.fs.s3a.S3AFileSystem", props["fs.s3a.impl"])
@@ -77,11 +80,12 @@ class HadoopConfigBuilderTest {
 
         @Test
         fun `S3 config disables filesystem cache`() {
-            val config = S3Config(
-                bucket = "my-bucket",
-                accessKey = "key",
-                secretKey = "secret"
-            )
+            val config =
+                S3Config(
+                    bucket = "my-bucket",
+                    accessKey = "key",
+                    secretKey = "secret",
+                )
             val props = HadoopConfigBuilder.buildConfigMap(config)
 
             assertEquals("true", props["fs.s3a.impl.disable.cache"])
@@ -89,12 +93,13 @@ class HadoopConfigBuilderTest {
 
         @Test
         fun `S3 config enables SSL for https endpoint`() {
-            val config = S3Config(
-                bucket = "my-bucket",
-                endpoint = "https://s3.example.com",
-                accessKey = "key",
-                secretKey = "secret"
-            )
+            val config =
+                S3Config(
+                    bucket = "my-bucket",
+                    endpoint = "https://s3.example.com",
+                    accessKey = "key",
+                    secretKey = "secret",
+                )
             val props = HadoopConfigBuilder.buildConfigMap(config)
 
             assertEquals("true", props["fs.s3a.connection.ssl.enabled"])
@@ -102,12 +107,13 @@ class HadoopConfigBuilderTest {
 
         @Test
         fun `S3 config disables SSL for http endpoint`() {
-            val config = S3Config(
-                bucket = "my-bucket",
-                endpoint = "http://s3.example.com",
-                accessKey = "key",
-                secretKey = "secret"
-            )
+            val config =
+                S3Config(
+                    bucket = "my-bucket",
+                    endpoint = "http://s3.example.com",
+                    accessKey = "key",
+                    secretKey = "secret",
+                )
             val props = HadoopConfigBuilder.buildConfigMap(config)
 
             assertEquals("false", props["fs.s3a.connection.ssl.enabled"])
@@ -115,22 +121,24 @@ class HadoopConfigBuilderTest {
 
         @Test
         fun `same bucket S3 configs keep credentials isolated in separate maps`() {
-            val sourceProps = HadoopConfigBuilder.buildConfigMap(
-                S3Config(
-                    bucket = "shared-bucket",
-                    endpoint = "https://source.example.com",
-                    accessKey = "source-key",
-                    secretKey = "source-secret"
+            val sourceProps =
+                HadoopConfigBuilder.buildConfigMap(
+                    S3Config(
+                        bucket = "shared-bucket",
+                        endpoint = "https://source.example.com",
+                        accessKey = "source-key",
+                        secretKey = "source-secret",
+                    ),
                 )
-            )
-            val targetProps = HadoopConfigBuilder.buildConfigMap(
-                S3Config(
-                    bucket = "shared-bucket",
-                    endpoint = "https://target.example.com",
-                    accessKey = "target-key",
-                    secretKey = "target-secret"
+            val targetProps =
+                HadoopConfigBuilder.buildConfigMap(
+                    S3Config(
+                        bucket = "shared-bucket",
+                        endpoint = "https://target.example.com",
+                        accessKey = "target-key",
+                        secretKey = "target-secret",
+                    ),
                 )
-            )
 
             assertEquals("source-key", sourceProps["fs.s3a.access.key"])
             assertEquals("source-secret", sourceProps["fs.s3a.secret.key"])
@@ -218,13 +226,13 @@ class HadoopConfigBuilderTest {
 
     @Nested
     inner class ToHadoopConfTests {
-
         @Test
         fun `toHadoopConf reconstructs Configuration from map`() {
-            val props = mapOf(
-                "fs.defaultFS" to "hdfs://namenode:8020",
-                "custom.property" to "custom-value"
-            )
+            val props =
+                mapOf(
+                    "fs.defaultFS" to "hdfs://namenode:8020",
+                    "custom.property" to "custom-value",
+                )
             val conf = HadoopConfigBuilder.toHadoopConf(props)
 
             assertEquals("hdfs://namenode:8020", conf.get("fs.defaultFS"))

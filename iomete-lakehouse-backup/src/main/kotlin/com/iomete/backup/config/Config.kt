@@ -6,13 +6,13 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo
 data class ApplicationConfig(
     val source: StorageConfig,
     val target: StorageConfig,
-    val copy: CopyConfig = CopyConfig()
+    val copy: CopyConfig = CopyConfig(),
 )
 
 @JsonTypeInfo(
     use = JsonTypeInfo.Id.NAME,
     include = JsonTypeInfo.As.PROPERTY,
-    property = "type"
+    property = "type",
 )
 @JsonSubTypes(
     JsonSubTypes.Type(value = S3Config::class, name = "s3"),
@@ -33,7 +33,7 @@ data class S3Config(
 data class CopyConfig(
 //    val mode: CopyMode = CopyMode.FULL, #TODO
 //    val incrementalStrategy: IncrementalStrategy = IncrementalStrategy.MTIME,
-    val options: CopyOptions = CopyOptions() // TODO: can we get rid of this extra class? why not have it flat ?
+    val options: CopyOptions = CopyOptions(), // TODO: can we get rid of this extra class? why not have it flat ?
 )
 
 data class CopyOptions(

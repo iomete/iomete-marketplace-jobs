@@ -3,7 +3,6 @@ package com.iomete.backup.config
 import org.slf4j.LoggerFactory
 
 object ConfigValidator {
-
     private val logger = LoggerFactory.getLogger(ConfigValidator::class.java)
 
     fun validate(config: ApplicationConfig): ValidationResult {
@@ -26,7 +25,7 @@ object ConfigValidator {
     private fun validateStorageConfig(
         storage: StorageConfig,
         location: String,
-        errors: MutableList<String>
+        errors: MutableList<String>,
     ) {
         when (storage) {
             is S3Config -> validateS3Config(storage, location, errors)
@@ -37,7 +36,7 @@ object ConfigValidator {
     private fun validateS3Config(
         config: S3Config,
         location: String,
-        errors: MutableList<String>
+        errors: MutableList<String>,
     ) {
         if (config.bucket.isBlank()) {
             errors.add("S3 $location: bucket is required and cannot be empty")
@@ -54,14 +53,14 @@ object ConfigValidator {
 
     private fun validateCopyConfig(
         config: CopyConfig,
-        errors: MutableList<String>
+        errors: MutableList<String>,
     ) {
         validateCopyOptions(config.options, errors)
     }
 
     private fun validateCopyOptions(
         options: CopyOptions,
-        errors: MutableList<String>
+        errors: MutableList<String>,
     ) {
         if (options.maxMaps <= 0) {
             errors.add("Copy options: maxMaps must be a positive integer (got ${options.maxMaps})")
@@ -96,5 +95,7 @@ sealed class ValidationResult {
     /**
      * Configuration is invalid with a list of error messages.
      */
-    data class Invalid(val errors: List<String>) : ValidationResult()
+    data class Invalid(
+        val errors: List<String>,
+    ) : ValidationResult()
 }

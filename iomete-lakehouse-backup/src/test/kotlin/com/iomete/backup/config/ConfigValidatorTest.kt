@@ -5,7 +5,6 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class ConfigValidatorTest {
-
     // Helper functions to create test configs
     private fun s3Config(
         bucket: String = "test-bucket",
@@ -13,14 +12,14 @@ class ConfigValidatorTest {
         accessKey: String = "access-key",
         secretKey: String = "secret-key",
         endpoint: String? = null,
-        pathStyleAccess: Boolean = false
+        pathStyleAccess: Boolean = false,
     ) = S3Config(
         bucket = bucket,
         prefix = prefix,
         accessKey = accessKey,
         secretKey = secretKey,
         endpoint = endpoint,
-        pathStyleAccess = pathStyleAccess
+        pathStyleAccess = pathStyleAccess,
     )
 
 //    private fun hdfsConfig( #TODO
@@ -46,10 +45,11 @@ class ConfigValidatorTest {
 
     @Test
     fun `valid S3-to-S3 config passes validation`() {
-        val config = ApplicationConfig(
-            source = s3Config(bucket = "source-bucket"),
-            target = s3Config(bucket = "target-bucket")
-        )
+        val config =
+            ApplicationConfig(
+                source = s3Config(bucket = "source-bucket"),
+                target = s3Config(bucket = "target-bucket"),
+            )
 
         val result = ConfigValidator.validate(config)
 
@@ -123,10 +123,11 @@ class ConfigValidatorTest {
 
     @Test
     fun `S3 with empty bucket fails validation`() {
-        val config = ApplicationConfig(
-            source = s3Config(bucket = ""),
-            target = s3Config()
-        )
+        val config =
+            ApplicationConfig(
+                source = s3Config(bucket = ""),
+                target = s3Config(),
+            )
 
         val result = ConfigValidator.validate(config)
 
@@ -136,10 +137,11 @@ class ConfigValidatorTest {
 
     @Test
     fun `S3 with empty accessKey fails validation`() {
-        val config = ApplicationConfig(
-            source = s3Config(accessKey = ""),
-            target = s3Config()
-        )
+        val config =
+            ApplicationConfig(
+                source = s3Config(accessKey = ""),
+                target = s3Config(),
+            )
 
         val result = ConfigValidator.validate(config)
 
@@ -149,10 +151,11 @@ class ConfigValidatorTest {
 
     @Test
     fun `S3 with empty secretKey fails validation`() {
-        val config = ApplicationConfig(
-            source = s3Config(),
-            target = s3Config(secretKey = "")
-        )
+        val config =
+            ApplicationConfig(
+                source = s3Config(),
+                target = s3Config(secretKey = ""),
+            )
 
         val result = ConfigValidator.validate(config)
 
@@ -162,11 +165,12 @@ class ConfigValidatorTest {
 
     @Test
     fun `copy options with non-positive maxAttempts fails validation`() {
-        val config = ApplicationConfig(
-            source = s3Config(),
-            target = s3Config(),
-            copy = CopyConfig(options = CopyOptions(maxAttempts = 0))
-        )
+        val config =
+            ApplicationConfig(
+                source = s3Config(),
+                target = s3Config(),
+                copy = CopyConfig(options = CopyOptions(maxAttempts = 0)),
+            )
 
         val result = ConfigValidator.validate(config)
 
@@ -176,11 +180,12 @@ class ConfigValidatorTest {
 
     @Test
     fun `copy options with negative retryDelayMs fails validation`() {
-        val config = ApplicationConfig(
-            source = s3Config(),
-            target = s3Config(),
-            copy = CopyConfig(options = CopyOptions(retryDelayMs = -1))
-        )
+        val config =
+            ApplicationConfig(
+                source = s3Config(),
+                target = s3Config(),
+                copy = CopyConfig(options = CopyOptions(retryDelayMs = -1)),
+            )
 
         val result = ConfigValidator.validate(config)
 
@@ -377,13 +382,15 @@ class ConfigValidatorTest {
 //
     @Test
     fun `copy options with zero maxMaps fails validation`() {
-        val config = ApplicationConfig(
-            source = s3Config(),
-            target = s3Config(),
-            copy = CopyConfig(
-                options = CopyOptions(maxMaps = 0)
+        val config =
+            ApplicationConfig(
+                source = s3Config(),
+                target = s3Config(),
+                copy =
+                    CopyConfig(
+                        options = CopyOptions(maxMaps = 0),
+                    ),
             )
-        )
 
         val result = ConfigValidator.validate(config)
 
@@ -393,13 +400,15 @@ class ConfigValidatorTest {
 
     @Test
     fun `copy options with negative maxMaps fails validation`() {
-        val config = ApplicationConfig(
-            source = s3Config(),
-            target = s3Config(),
-            copy = CopyConfig(
-                options = CopyOptions(maxMaps = -1)
+        val config =
+            ApplicationConfig(
+                source = s3Config(),
+                target = s3Config(),
+                copy =
+                    CopyConfig(
+                        options = CopyOptions(maxMaps = -1),
+                    ),
             )
-        )
 
         val result = ConfigValidator.validate(config)
 

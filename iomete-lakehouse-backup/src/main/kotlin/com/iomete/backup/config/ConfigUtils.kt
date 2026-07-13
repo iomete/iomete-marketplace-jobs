@@ -1,22 +1,21 @@
 package com.iomete.backup.config
 
 object ConfigUtils {
-
     private const val MASKED_VALUE = "***"
 
-    fun redactSecrets(config: ApplicationConfig): ApplicationConfig {
-        return config.copy(
+    fun redactSecrets(config: ApplicationConfig): ApplicationConfig =
+        config.copy(
             source = redactStorageConfig(config.source),
-            target = redactStorageConfig(config.target)
+            target = redactStorageConfig(config.target),
         )
-    }
 
-    private fun redactStorageConfig(storage: StorageConfig): StorageConfig {
-        return when (storage) {
-            is S3Config -> storage.copy(
-                accessKey = MASKED_VALUE,
-                secretKey = MASKED_VALUE
-            )
+    private fun redactStorageConfig(storage: StorageConfig): StorageConfig =
+        when (storage) {
+            is S3Config -> {
+                storage.copy(
+                    accessKey = MASKED_VALUE,
+                    secretKey = MASKED_VALUE,
+                )
+            }
         }
-    }
 }

@@ -13,7 +13,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class FileListerTest {
-
     private lateinit var fileSystem: FileSystem
     private lateinit var fileLister: FileLister
 
@@ -36,11 +35,12 @@ class FileListerTest {
     @Test
     fun `single file returns one FileEntry with correct fields`() {
         val root = Path("s3a://bucket/data")
-        val status = mockFileStatus(
-            path = "s3a://bucket/data/file1.parquet",
-            size = 1024L,
-            mtime = 1700000000000L
-        )
+        val status =
+            mockFileStatus(
+                path = "s3a://bucket/data/file1.parquet",
+                size = 1024L,
+                mtime = 1700000000000L,
+            )
         every { fileSystem.listFiles(root, true) } returns remoteIteratorOf(status)
 
         val result = fileLister.listRecursively(root).toList()
@@ -54,11 +54,12 @@ class FileListerTest {
     @Test
     fun `multiple files in nested directories are all returned`() {
         val root = Path("hdfs://namenode:8020/warehouse")
-        val statuses = listOf(
-            mockFileStatus("hdfs://namenode:8020/warehouse/db/table/part-0001.parquet", 500L, 1700000000000L),
-            mockFileStatus("hdfs://namenode:8020/warehouse/db/table/part-0002.parquet", 750L, 1700000001000L),
-            mockFileStatus("hdfs://namenode:8020/warehouse/db/table/metadata/snap-001.avro", 200L, 1700000002000L)
-        )
+        val statuses =
+            listOf(
+                mockFileStatus("hdfs://namenode:8020/warehouse/db/table/part-0001.parquet", 500L, 1700000000000L),
+                mockFileStatus("hdfs://namenode:8020/warehouse/db/table/part-0002.parquet", 750L, 1700000001000L),
+                mockFileStatus("hdfs://namenode:8020/warehouse/db/table/metadata/snap-001.avro", 200L, 1700000002000L),
+            )
         every { fileSystem.listFiles(root, true) } returns remoteIteratorOf(*statuses.toTypedArray())
 
         val result = fileLister.listRecursively(root).toList()
@@ -76,11 +77,12 @@ class FileListerTest {
     @Test
     fun `path captures full URI including scheme`() {
         val root = Path("s3a://my-bucket/prefix")
-        val status = mockFileStatus(
-            path = "s3a://my-bucket/prefix/nested/deep/file.csv",
-            size = 42L,
-            mtime = 1600000000000L
-        )
+        val status =
+            mockFileStatus(
+                path = "s3a://my-bucket/prefix/nested/deep/file.csv",
+                size = 42L,
+                mtime = 1600000000000L,
+            )
         every { fileSystem.listFiles(root, true) } returns remoteIteratorOf(status)
 
         val result = fileLister.listRecursively(root).toList()
@@ -101,22 +103,24 @@ class FileListerTest {
 
     // -- helpers --
 
-    private fun mockFileStatus(path: String, size: Long, mtime: Long): LocatedFileStatus {
-        return mockk<LocatedFileStatus> {
+    private fun mockFileStatus(
+        path: String,
+        size: Long,
+        mtime: Long,
+    ): LocatedFileStatus =
+        mockk<LocatedFileStatus> {
             every { getPath() } returns Path(path)
             every { getLen() } returns size
             every { getModificationTime() } returns mtime
         }
-    }
 
-    private fun emptyRemoteIterator(): RemoteIterator<LocatedFileStatus> {
-        return remoteIteratorOf()
-    }
+    private fun emptyRemoteIterator(): RemoteIterator<LocatedFileStatus> = remoteIteratorOf()
 
     private fun remoteIteratorOf(vararg items: LocatedFileStatus): RemoteIterator<LocatedFileStatus> {
         val iter = items.iterator()
         return object : RemoteIterator<LocatedFileStatus> {
             override fun hasNext(): Boolean = iter.hasNext()
+
             override fun next(): LocatedFileStatus = iter.next()
         }
     }
