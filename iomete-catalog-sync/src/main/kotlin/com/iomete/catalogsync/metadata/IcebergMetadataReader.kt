@@ -13,7 +13,6 @@ import org.apache.iceberg.types.Types
 import org.apache.spark.sql.SparkSession
 
 private const val ICEBERG_PROVIDER = "iceberg"
-private const val MANAGED_TABLE_TYPE = "MANAGED"
 private const val TABLE_COMMENT_PROPERTY = "comment"
 private const val TABLE_OWNER_PROPERTY = "owner"
 private const val PARTITION_SPEC_METADATA = "Partition Spec"
@@ -32,11 +31,23 @@ data class IcebergLoadedTableMetadata(
 
 @Singleton
 class IcebergMetadataReader {
-    private val tableLoader: (SparkSession, String, String, String) -> Table
+    private val tableLoader: (
+        spark: SparkSession,
+        catalog: String,
+        schema: String,
+        tableName: String,
+    ) -> Table
 
     constructor() : this(::loadIcebergTable)
 
-    internal constructor(tableLoader: (SparkSession, String, String, String) -> Table) {
+    internal constructor(
+        tableLoader: (
+            spark: SparkSession,
+            catalog: String,
+            schema: String,
+            tableName: String,
+        ) -> Table,
+    ) {
         this.tableLoader = tableLoader
     }
 
@@ -47,14 +58,14 @@ class IcebergMetadataReader {
         tableName: String,
     ): IcebergLoadedTableMetadata {
         val table = tableLoader(spark, catalog, schema, tableName)
-        val schema = table.schema()
-        val spec = table.spec()
+        val icebergSchema = table.schema()
+        val partitionSpec = table.spec()
         val properties = table.properties().orEmpty()
-        val partitionSourceIds = spec?.fields().orEmpty().map { it.sourceId() }.toSet()
+        val partitionSourceIds = partitionSpec?.fields().orEmpty().map { it.sourceId() }.toSet()
 
         return IcebergLoadedTableMetadata(
             tableDescription = TableDescription(
-                columns = schema.columns().mapIndexed { index, field ->
+                columns = icebergSchema.columns().mapIndexed { index, field ->
                     ColumnMetadata(
                         name = field.name(),
                         dataType = toSparkType(field.type()),
@@ -63,7 +74,7 @@ class IcebergMetadataReader {
                         isPartitionKey = field.fieldId() in partitionSourceIds,
                     )
                 },
-                metadata = buildMetadata(properties, partitionSpecString(schema, spec)),
+                metadata = buildMetadata(properties, partitionSpecString(icebergSchema, partitionSpec)),
             ),
             tableProperties = properties,
             statistics = extractStatistics(table),
@@ -75,7 +86,6 @@ class IcebergMetadataReader {
         partitionSpec: String,
     ): Map<String, String> =
         buildMap {
-            put("Type", MANAGED_TABLE_TYPE)
             put("Provider", ICEBERG_PROVIDER)
             properties[TABLE_COMMENT_PROPERTY]?.let { put("Comment", it) }
             properties[TABLE_OWNER_PROPERTY]?.let { put("Owner", it) }
@@ -122,6 +132,9 @@ class IcebergMetadataReader {
 
         if (addedValues.any { it == null }) return null
 
+        // Iceberg summaries expose a current total and per-snapshot added counts. Use the
+        // first available total as the baseline, then add later snapshot deltas only when
+        // every needed summary value exists; otherwise return null instead of guessing.
         return firstTotal + (addedValues.filterNotNull().sum() - firstAdded)
     }
 

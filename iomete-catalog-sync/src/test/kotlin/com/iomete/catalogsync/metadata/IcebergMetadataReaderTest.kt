@@ -66,7 +66,7 @@ class IcebergMetadataReaderTest {
             mapOf("comment" to "orders table", "owner" to "analytics", "hidden" to "true"),
             metadata.tableProperties,
         )
-        assertEquals("MANAGED", metadata.tableDescription.metadata["Type"])
+        assertFalse(metadata.tableDescription.metadata.containsKey("Type"))
         assertEquals("iceberg", metadata.tableDescription.metadata["Provider"])
         assertEquals("orders table", metadata.tableDescription.metadata["Comment"])
         assertEquals("analytics", metadata.tableDescription.metadata["Owner"])
