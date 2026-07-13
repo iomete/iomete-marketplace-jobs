@@ -169,8 +169,14 @@ class MetadataScraper(
                 .map { t ->
                     try {
                         tableMetadataExtractor
-                            .scrapeTable(spark, catalog.name, schema, t.name, t.isTemp)
-                            .also { it.log() }
+                            .scrapeTable(
+                                spark = spark,
+                                catalog = catalog.name,
+                                schema = schema,
+                                tableName = t.name,
+                                isTemp = t.isTemp,
+                                useIcebergFastPath = catalog.isIcebergCatalog() && !t.isView,
+                            ).also { it.log() }
                     } catch (_: ExcludedItemException) {
                         null // skipped
                     } catch (th: Throwable) {
@@ -194,4 +200,7 @@ class MetadataScraper(
             tableMetadataList = tables,
         )
     }
+
+    private fun CatalogDetails.isIcebergCatalog(): Boolean =
+        type.any { it.equals("iceberg", ignoreCase = true) }
 }

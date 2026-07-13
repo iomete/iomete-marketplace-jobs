@@ -81,12 +81,14 @@ class SparkMetadataReader {
         catalog: CatalogDetails,
         schema: String,
     ): List<ShowTablesRow> {
-        val rows = fetchTables(spark, catalog.name, schema) + fetchViews(spark, catalog, schema)
-        return rows
-            .distinctBy { it.getString(1) }
-            .map {
-                ShowTablesRow(name = it.getString(1), isTemp = it.getBoolean(2))
-            }
+        val tables =
+            fetchTables(spark, catalog.name, schema)
+                .map { ShowTablesRow(name = it.getString(1), isTemp = it.getBoolean(2), isView = false) }
+        val views =
+            fetchViews(spark, catalog, schema)
+                .map { ShowTablesRow(name = it.getString(1), isTemp = it.getBoolean(2), isView = true) }
+
+        return (views + tables).distinctBy { it.name }
     }
 
     private fun fetchTables(
@@ -217,6 +219,7 @@ class SparkMetadataReader {
 data class ShowTablesRow(
     val name: String,
     val isTemp: Boolean,
+    val isView: Boolean = false,
 )
 
 data class TableDescription(

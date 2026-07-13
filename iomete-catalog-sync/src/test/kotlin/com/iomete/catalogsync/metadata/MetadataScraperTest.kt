@@ -91,6 +91,70 @@ class MetadataScraperTest {
     }
 
     @Test
+    fun `run enables iceberg fast path only for non-view tables in iceberg catalogs`() {
+        val table = makeTableMetadata("test_catalog", "schema1", "table1")
+        val view = makeTableMetadata("test_catalog", "schema1", "view1").copy(tableType = "view", isView = true)
+
+        every { mockCoreServiceClient.catalogs() } returns listOf(testCatalog)
+        every { mockSparkMetadataReader.getSchemas(mockSparkSession, "test_catalog") } returns listOf("schema1")
+        every { mockSparkMetadataReader.getSchemaProperties(mockSparkSession, "test_catalog", "schema1") } returns emptyMap()
+        every {
+            mockSparkMetadataReader.getTables(mockSparkSession, match { it.name == "test_catalog" }, "schema1")
+        } returns listOf(
+            ShowTablesRow(name = "table1", isTemp = false, isView = false),
+            ShowTablesRow(name = "view1", isTemp = false, isView = true),
+        )
+        every {
+            mockTableMetadataExtractor.scrapeTable(
+                spark = mockSparkSession,
+                catalog = "test_catalog",
+                schema = "schema1",
+                tableName = "table1",
+                isTemp = false,
+                useIcebergFastPath = true,
+            )
+        } returns table
+        every {
+            mockTableMetadataExtractor.scrapeTable(
+                spark = mockSparkSession,
+                catalog = "test_catalog",
+                schema = "schema1",
+                tableName = "view1",
+                isTemp = false,
+                useIcebergFastPath = false,
+            )
+        } returns view
+
+        val mockResponse = mockk<Response>()
+        every { mockCatalogServiceClient.indexTable(any()) } returns mockResponse
+        every { mockCatalogServiceClient.indexSchema(any()) } returns mockResponse
+        every { mockCatalogServiceClient.indexCatalog(any()) } returns mockResponse
+
+        scraper.run()
+
+        verify(exactly = 1) {
+            mockTableMetadataExtractor.scrapeTable(
+                spark = mockSparkSession,
+                catalog = "test_catalog",
+                schema = "schema1",
+                tableName = "table1",
+                isTemp = false,
+                useIcebergFastPath = true,
+            )
+        }
+        verify(exactly = 1) {
+            mockTableMetadataExtractor.scrapeTable(
+                spark = mockSparkSession,
+                catalog = "test_catalog",
+                schema = "schema1",
+                tableName = "view1",
+                isTemp = false,
+                useIcebergFastPath = false,
+            )
+        }
+    }
+
+    @Test
     fun `run skips excluded catalogs`() {
         val excludedCatalog = CatalogDetails(
             name = "excluded_catalog",
@@ -287,7 +351,14 @@ class MetadataScraperTest {
 
         tableMetadataList.forEach { tm ->
             every {
-                mockTableMetadataExtractor.scrapeTable(mockSparkSession, catalogName, schemaName, tm.name, false)
+                mockTableMetadataExtractor.scrapeTable(
+                    spark = mockSparkSession,
+                    catalog = catalogName,
+                    schema = schemaName,
+                    tableName = tm.name,
+                    isTemp = false,
+                    useIcebergFastPath = any(),
+                )
             } returns tm
         }
     }
