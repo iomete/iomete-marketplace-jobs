@@ -20,3 +20,6 @@ Thumbs.db
 
 # Local config with secrets
 conf/application.local.json
+
+# Spark distribution extracted from the base image for local debugging (see docs/local-debugging.md)
+.local-spark/
