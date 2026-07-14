@@ -36,7 +36,19 @@ class FileCopier(
     }
 
     fun copySingleFile(sourceFilePath: String): CopyResult {
-        val targetFilePath = PathResolver.resolveTargetPath(sourceFilePath, sourceRoot, targetRoot)
+        val targetFilePath =
+            try {
+                PathResolver.resolveTargetPath(sourceFilePath, sourceRoot, targetRoot)
+            } catch (e: IllegalArgumentException) {
+                return CopyResult(
+                    sourcePath = sourceFilePath,
+                    targetPath = "",
+                    success = false,
+                    error = "${e.javaClass.simpleName}: ${e.message}",
+                    attemptsUsed = 0,
+                )
+            }
+
         var lastError: String? = null
         var attemptsMade = 0
 

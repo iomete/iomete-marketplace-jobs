@@ -134,6 +134,24 @@ class FileCopierTest {
     }
 
     @Test
+    fun `records path outside source root as a failure without throwing`() {
+        val copier =
+            FileCopier(
+                sourceConfig = dummyConfig,
+                targetConfig = dummyConfig,
+                sourceRoot = "s3a://bucket/root",
+                targetRoot = "s3a://backup/dest",
+            )
+
+        val result = copier.copySingleFile("s3a://other-bucket/somewhere/file.csv")
+
+        assertFalse(result.success)
+        assertEquals("s3a://other-bucket/somewhere/file.csv", result.sourcePath)
+        assertTrue(result.error!!.contains("IllegalArgumentException"))
+        assertEquals(0, result.attemptsUsed)
+    }
+
+    @Test
     fun `retries transient errors up to maxAttempts`() {
         val sourcePathString = "s3a://bucket/in/file.txt"
         val sourcePath = Path(sourcePathString)
