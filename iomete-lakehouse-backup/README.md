@@ -1,17 +1,19 @@
 # IOMETE Lakehouse Backup
 
-Copy your data from one S3 location to another, as a Spark job on IOMETE.
+Copy your data from an S3 source to an S3 or HDFS (Dell Isilon / OneFS) target,
+as a Spark job on IOMETE.
 
 ## Overview
 
-This job copies all the files from a source S3 location to a target S3 location.
-It runs the copy in parallel across your Spark cluster, so it scales with the
-size of the data. You set it up with a single JSON file and run it as a
-scheduled job on the IOMETE platform.
+This job copies all the files from a source S3 location to a target location
+(another S3 bucket, or an HDFS filesystem such as Dell Isilon). It runs the copy
+in parallel across your Spark cluster, so it scales with the size of the data.
+You set it up with a single JSON file and run it as a scheduled job on the
+IOMETE platform.
 
 ## What it does
 
-- Copies files between S3 locations (source and target)
+- Copies files from an S3 source to an S3 or HDFS target
 - Copies a folder and everything under it
 - Uses separate credentials for the source and the target (for example, a
   production account and a separate backup account)
@@ -57,6 +59,40 @@ The remaining S3 fields are optional and have sensible defaults: `prefix`
 (empty), `endpoint` (AWS default), `pathStyleAccess` (`false`), `region`
 (`us-east-1`). The job scales automatically with your Spark cluster, so there is
 nothing extra to tune.
+
+### HDFS target (Dell Isilon / OneFS)
+
+To back up into an HDFS filesystem, set the `target` to `type: "hdfs"`:
+
+```json
+{
+  "source": {
+    "type": "s3",
+    "bucket": "<source-bucket>",
+    "prefix": "<source-prefix>",
+    "accessKey": "${SOURCE_ACCESS_KEY}",
+    "secretKey": "${SOURCE_SECRET_KEY}"
+  },
+  "target": {
+    "type": "hdfs",
+    "namenode": "<host:port>",
+    "path": "<target-path>",
+    "user": "<hdfs-user>"
+  }
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `namenode` | yes | NameNode RPC endpoint as `host:port` (e.g. `isilon.example.com:8020`). For Dell Isilon, prefer the SmartConnect zone FQDN so the connection is load-balanced across nodes. |
+| `path` | no (default empty) | Directory under the filesystem root to write into. |
+| `user` | yes | The identity the files are written as. HDFS `simple` authentication has no password — the job connects as this user and OneFS applies that user's POSIX permissions. Choose a user with write access to `path`. |
+| `authentication` | no (default `simple`) | Only `simple` is supported; any other value is rejected at validation. Kerberos/secure clusters are not yet supported. |
+
+> **Credentials for HDFS.** Simple authentication carries no secret or password
+> — only the `user` name — so there is nothing to store in IOMETE Secrets for
+> the target. Ensure the run has network reachability to the NameNode and every
+> DataNode in the cluster.
 
 ## Set up as a job in IOMETE
 
