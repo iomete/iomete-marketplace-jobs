@@ -5,8 +5,7 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 
 class CopyAggregateFoldTest {
-    private fun success(bytes: Long) =
-        CopyResult(sourcePath = "s", targetPath = "t", success = true, bytesCopied = bytes, attemptsUsed = 1)
+    private fun success(bytes: Long) = CopyResult(sourcePath = "s", targetPath = "t", success = true, bytesCopied = bytes, attemptsUsed = 1)
 
     private fun failure(path: String) =
         CopyResult(sourcePath = path, targetPath = "t/$path", success = false, error = "boom", attemptsUsed = 3)

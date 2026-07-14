@@ -1,10 +1,10 @@
 package com.iomete.backup.config
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import com.iomete.backup.config.internal.Validator
 import com.iomete.backup.config.internal.Parser
 import com.iomete.backup.config.internal.Utils
 import com.iomete.backup.config.internal.ValidationResult
+import com.iomete.backup.config.internal.Validator
 import org.slf4j.LoggerFactory
 
 object ConfigLoader {

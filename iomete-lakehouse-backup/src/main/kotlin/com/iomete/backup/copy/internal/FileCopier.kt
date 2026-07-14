@@ -54,8 +54,10 @@ class FileCopier(
 
         for (attempt in 1..maxAttempts) {
             attemptsMade = attempt
+
             try {
                 val bytesCopied = copyOnce(sourceFilePath, targetFilePath)
+
                 log().debug(
                     "Copied on attempt {}/{}: {} -> {} ({} bytes)",
                     attempt,
@@ -73,6 +75,7 @@ class FileCopier(
                 )
             } catch (e: Exception) {
                 lastError = "${e.javaClass.simpleName}: ${e.message}"
+
                 log().warn(
                     "Attempt {}/{} failed for {} -> {}: {}",
                     attempt,
