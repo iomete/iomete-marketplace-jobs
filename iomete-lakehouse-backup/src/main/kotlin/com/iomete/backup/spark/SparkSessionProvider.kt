@@ -1,4 +1,4 @@
-package com.iomete.backup
+package com.iomete.backup.spark
 
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
@@ -15,9 +15,11 @@ object SparkSessionProvider {
 
                 val s = SparkSession.builder().orCreate
 
-                logger.info("Spark session initialized successfully")
-                logger.info("  Application ID: {}", s.sparkContext().applicationId())
-                logger.info("  Spark version: {}", s.version())
+                logger.info(
+                    "Spark session ready (applicationId={}, version={})",
+                    s.sparkContext().applicationId(),
+                    s.version(),
+                )
 
                 session = s
                 s
@@ -25,10 +27,11 @@ object SparkSessionProvider {
         }
 
     fun stop() {
-        val s = session ?: run {
-            logger.info("Spark session was never initialized, nothing to stop")
-            return
-        }
+        val s =
+            session ?: run {
+                logger.info("Spark session was never initialized, nothing to stop")
+                return
+            }
 
         if (s.sparkContext().isStopped) {
             logger.info("Spark session already stopped")

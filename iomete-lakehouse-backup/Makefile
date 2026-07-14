@@ -1,5 +1,9 @@
 image := iomete.azurecr.io/iomete/iomete-lakehouse-backup
-tag   := 1.0.0
+tag   := $(shell sed -n 's/^projectVersion=//p' gradle.properties)
+
+spark_version  := $(shell sed -n 's/^sparkVersion=//p' gradle.properties)
+spark_revision := $(shell sed -n 's/^sparkImageRevision=//p' gradle.properties)
+spark_image    := iomete.azurecr.io/iomete/spark:$(spark_version)-$(spark_revision)
 
 .PHONY: build
 build:
@@ -7,13 +11,18 @@ build:
 
 .PHONY: docker-build
 docker-build: build
-	docker build -f Dockerfile -t ${image}:${tag} .
+	docker build --build-arg SPARK_IMAGE=$(spark_image) -f Dockerfile -t ${image}:${tag} .
 
 .PHONY: docker-push
 docker-push: build
-	docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile -t ${image}:${tag} --push . --sbom=true --provenance=true
+	docker buildx build --platform linux/amd64,linux/arm64 --build-arg SPARK_IMAGE=$(spark_image) -f Dockerfile -t ${image}:${tag} --push . --sbom=true --provenance=true
 	@echo ${image}
 	@echo ${tag}
+
+.PHONY: docker-push-latest
+docker-push-latest: build
+	docker buildx build --platform linux/amd64,linux/arm64 --build-arg SPARK_IMAGE=$(spark_image) -f Dockerfile -t ${image}:latest --push . --sbom=true --provenance=true
+	@echo ${image}:latest
 
 .PHONY: test
 test:
@@ -26,7 +35,7 @@ integration-test:
 spark_submit_cmd := /opt/spark/bin/spark-submit \
 		--properties-file=/opt/spark/conf/spark-defaults.conf \
 		--class com.iomete.backup.App \
-		local:///opt/spark/jars/iomete-lakehouse-backup-${tag}.jar \
+		local:///opt/spark/jars/iomete-lakehouse-backup.jar \
 		/etc/configs/application.json
 
 .PHONY: docker-run

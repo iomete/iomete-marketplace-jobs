@@ -8,12 +8,12 @@ data class CopyResult(
     val success: Boolean,
     val bytesCopied: Long = 0,
     val error: String? = null,
-    val attemptsUsed: Int = 1
+    val attemptsUsed: Int = 1,
 ) : Serializable
 
 data class CopyJobResult(
     val summary: CopyJobSummary,
-    val fileResults: List<CopyResult>
+    val failedResults: List<CopyResult>,
 )
 
 data class CopyJobSummary(
@@ -21,5 +21,5 @@ data class CopyJobSummary(
     val successCount: Int,
     val failureCount: Int,
     val totalBytesCopied: Long,
-    val errors: List<String>
+    val errors: List<String>,
 )
