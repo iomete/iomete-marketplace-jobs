@@ -1,5 +1,7 @@
 package com.iomete.backup.copy
 
+import com.iomete.backup.config.StorageConfig
+import com.iomete.backup.fs.HadoopConfigBuilder
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.FileUtil
 import org.apache.hadoop.fs.Path
@@ -8,8 +10,8 @@ import java.io.Serializable
 import java.net.URI
 
 class FileCopier(
-    private val sourceConfMap: Map<String, String>,
-    private val targetConfMap: Map<String, String>,
+    private val sourceConfig: StorageConfig,
+    private val targetConfig: StorageConfig,
     private val sourceRoot: String,
     private val targetRoot: String,
     private val maxAttempts: Int = 3,
@@ -34,8 +36,8 @@ class FileCopier(
 
         for (attempt in 1..maxAttempts) {
             try {
-                val sourceConf = HadoopConfigBuilder.toHadoopConf(sourceConfMap)
-                val targetConf = HadoopConfigBuilder.toHadoopConf(targetConfMap)
+                val sourceConf = HadoopConfigBuilder.build(sourceConfig)
+                val targetConf = HadoopConfigBuilder.build(targetConfig)
                 return FileSystem.newInstance(URI(sourceFilePath), sourceConf).use { sourceFs ->
                     FileSystem.newInstance(URI(targetFilePath), targetConf).use { targetFs ->
                         val sourcePath = Path(sourceFilePath)

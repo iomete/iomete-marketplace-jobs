@@ -16,7 +16,7 @@ data class ApplicationConfig(
 @JsonSubTypes(
     JsonSubTypes.Type(value = S3Config::class, name = "s3"),
 )
-sealed class StorageConfig
+sealed class StorageConfig : java.io.Serializable
 
 data class S3Config(
     val bucket: String,

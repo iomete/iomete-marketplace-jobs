@@ -1,5 +1,6 @@
 package com.iomete.backup.copy
 
+import com.iomete.backup.config.S3Config
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
@@ -24,6 +25,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class FileCopierTest {
+    private val dummyConfig = S3Config(bucket = "bucket", accessKey = "key", secretKey = "secret")
+
     private lateinit var tempDir: File
     private lateinit var sourceDir: File
     private lateinit var targetDir: File
@@ -55,8 +58,8 @@ class FileCopierTest {
 
         val copier =
             FileCopier(
-                sourceConfMap = emptyMap(),
-                targetConfMap = emptyMap(),
+                sourceConfig = dummyConfig,
+                targetConfig = dummyConfig,
                 sourceRoot = sourceRoot,
                 targetRoot = targetRoot,
             )
@@ -88,8 +91,8 @@ class FileCopierTest {
 
         val copier =
             FileCopier(
-                sourceConfMap = emptyMap(),
-                targetConfMap = emptyMap(),
+                sourceConfig = dummyConfig,
+                targetConfig = dummyConfig,
                 sourceRoot = sourceRoot,
                 targetRoot = targetRoot,
             )
@@ -111,8 +114,8 @@ class FileCopierTest {
 
         val copier =
             FileCopier(
-                sourceConfMap = emptyMap(),
-                targetConfMap = emptyMap(),
+                sourceConfig = dummyConfig,
+                targetConfig = dummyConfig,
                 sourceRoot = sourceRoot,
                 targetRoot = targetRoot,
             )
@@ -134,8 +137,8 @@ class FileCopierTest {
 
         val copier =
             FileCopier(
-                sourceConfMap = emptyMap(),
-                targetConfMap = emptyMap(),
+                sourceConfig = dummyConfig,
+                targetConfig = dummyConfig,
                 sourceRoot = sourceRoot,
                 targetRoot = targetRoot,
                 maxAttempts = 1,
@@ -168,8 +171,8 @@ class FileCopierTest {
 
         val copier =
             FileCopier(
-                sourceConfMap = emptyMap(),
-                targetConfMap = emptyMap(),
+                sourceConfig = dummyConfig,
+                targetConfig = dummyConfig,
                 sourceRoot = sourceRoot,
                 targetRoot = targetRoot,
             )
@@ -203,8 +206,8 @@ class FileCopierTest {
 
         val copier =
             FileCopier(
-                sourceConfMap = emptyMap(),
-                targetConfMap = emptyMap(),
+                sourceConfig = dummyConfig,
+                targetConfig = dummyConfig,
                 sourceRoot = sourceRoot,
                 targetRoot = targetRoot,
             )
@@ -220,8 +223,8 @@ class FileCopierTest {
     fun `copier is serializable`() {
         val copier =
             FileCopier(
-                sourceConfMap = mapOf("fs.s3a.access.key" to "key"),
-                targetConfMap = mapOf("fs.s3a.access.key" to "key2"),
+                sourceConfig = dummyConfig,
+                targetConfig = dummyConfig,
                 sourceRoot = "s3a://source/root",
                 targetRoot = "s3a://target/root",
             )
@@ -267,15 +270,17 @@ class FileCopierTest {
 
             val copier =
                 FileCopier(
-                    sourceConfMap =
-                        mapOf(
-                            "fs.s3a.access.key" to "source-key",
-                            "fs.s3a.secret.key" to "source-secret",
+                    sourceConfig =
+                        S3Config(
+                            bucket = "shared-bucket",
+                            accessKey = "source-key",
+                            secretKey = "source-secret",
                         ),
-                    targetConfMap =
-                        mapOf(
-                            "fs.s3a.access.key" to "target-key",
-                            "fs.s3a.secret.key" to "target-secret",
+                    targetConfig =
+                        S3Config(
+                            bucket = "shared-bucket",
+                            accessKey = "target-key",
+                            secretKey = "target-secret",
                         ),
                     sourceRoot = "s3a://shared-bucket/warehouse/in",
                     targetRoot = "s3a://shared-bucket/warehouse/out",

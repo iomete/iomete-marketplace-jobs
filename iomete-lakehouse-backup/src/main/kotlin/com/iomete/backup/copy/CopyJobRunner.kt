@@ -2,6 +2,7 @@ package com.iomete.backup.copy
 
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.fs.FileEntry
+import com.iomete.backup.fs.HadoopConfigBuilder
 import org.apache.spark.api.java.JavaSparkContext
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
@@ -16,10 +17,6 @@ object CopyJobRunner {
     ): CopyJobResult {
         val jsc = JavaSparkContext(spark.sparkContext())
 
-        // Build serializable config maps
-        val sourceConfMap = HadoopConfigBuilder.buildConfigMap(config.source)
-        val targetConfMap = HadoopConfigBuilder.buildConfigMap(config.target)
-
         // Resolve root URIs
         val sourceRoot = PathResolver.resolveRootUri(config.source)
         val targetRoot = PathResolver.resolveRootUri(config.target)
@@ -29,8 +26,8 @@ object CopyJobRunner {
 
         val copier =
             FileCopier(
-                sourceConfMap = sourceConfMap,
-                targetConfMap = targetConfMap,
+                sourceConfig = config.source,
+                targetConfig = config.target,
                 sourceRoot = sourceRoot,
                 targetRoot = targetRoot,
             )

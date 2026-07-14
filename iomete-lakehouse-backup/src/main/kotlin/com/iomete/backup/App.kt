@@ -2,9 +2,9 @@ package com.iomete.backup
 
 import com.iomete.backup.config.ConfigLoader
 import com.iomete.backup.copy.CopyJobRunner
-import com.iomete.backup.copy.HadoopConfigBuilder
 import com.iomete.backup.copy.PathResolver
 import com.iomete.backup.fs.FileLister
+import com.iomete.backup.fs.HadoopConfigBuilder
 import com.iomete.backup.spark.SparkSessionProvider
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
@@ -39,8 +39,7 @@ object App {
         try {
             logger.info("Enumerating source files...")
 
-            val sourceConfMap = HadoopConfigBuilder.buildConfigMap(config.source)
-            val sourceConf = HadoopConfigBuilder.toHadoopConf(sourceConfMap)
+            val sourceConf = HadoopConfigBuilder.build(config.source)
             val sourceRoot = PathResolver.resolveRootUri(config.source)
 
             val files =
