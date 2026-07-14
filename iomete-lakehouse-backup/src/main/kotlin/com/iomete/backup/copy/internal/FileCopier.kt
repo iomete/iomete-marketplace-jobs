@@ -6,10 +6,13 @@ import com.iomete.backup.fs.HadoopConfigBuilder
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.FileUtil
 import org.apache.hadoop.fs.Path
+import org.apache.hadoop.security.AccessControlException
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import java.io.FileNotFoundException
 import java.io.Serializable
 import java.net.URI
+import java.nio.file.AccessDeniedException
 
 class FileCopier(
     private val sourceConfig: StorageConfig,
@@ -35,8 +38,10 @@ class FileCopier(
     fun copySingleFile(sourceFilePath: String): CopyResult {
         val targetFilePath = PathResolver.resolveTargetPath(sourceFilePath, sourceRoot, targetRoot)
         var lastError: String? = null
+        var attemptsMade = 0
 
         for (attempt in 1..maxAttempts) {
+            attemptsMade = attempt
             try {
                 val sourceConf = HadoopConfigBuilder.build(sourceConfig)
                 val targetConf = HadoopConfigBuilder.build(targetConfig)
@@ -92,6 +97,7 @@ class FileCopier(
                     lastError,
                 )
 
+                if (isTerminal(e)) break
                 if (attempt < maxAttempts) {
                     Thread.sleep(retryDelayMs)
                 }
@@ -103,7 +109,13 @@ class FileCopier(
             targetPath = targetFilePath,
             success = false,
             error = lastError ?: "Unknown copy failure",
-            attemptsUsed = maxAttempts,
+            attemptsUsed = attemptsMade,
         )
     }
+
+    private fun isTerminal(e: Throwable): Boolean =
+        e is FileNotFoundException ||
+            e is AccessDeniedException ||
+            e is AccessControlException ||
+            e is IllegalArgumentException
 }

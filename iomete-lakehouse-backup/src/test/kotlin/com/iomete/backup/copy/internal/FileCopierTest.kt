@@ -111,7 +111,7 @@ class FileCopierTest {
     }
 
     @Test
-    fun `returns failure result for non-existent source file`() {
+    fun `terminal error (missing source) fails fast without retry`() {
         val nonExistentPath = File(sourceDir, "does-not-exist.txt").toURI().toString()
         val sourceRoot = sourceDir.toURI().toString().trimEnd('/')
         val targetRoot = targetDir.toURI().toString().trimEnd('/')
@@ -130,7 +130,43 @@ class FileCopierTest {
         assertEquals(nonExistentPath, result.sourcePath)
         assertEquals(0L, result.bytesCopied)
         assertTrue(result.error!!.contains("FileNotFoundException") || result.error!!.contains("No such file"))
-        assertEquals(3, result.attemptsUsed)
+        assertEquals(1, result.attemptsUsed)
+    }
+
+    @Test
+    fun `retries transient errors up to maxAttempts`() {
+        val sourcePathString = "s3a://bucket/in/file.txt"
+        val sourcePath = Path(sourcePathString)
+        val sourceFs = mockk<FileSystem>()
+        val targetFs = mockk<FileSystem>()
+
+        mockkStatic(FileSystem::class)
+        try {
+            every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
+            every { FileSystem.newInstance(URI("s3a://bucket/out/file.txt"), any<Configuration>()) } returns targetFs
+            every { targetFs.exists(any()) } returns true
+            every { sourceFs.getFileStatus(sourcePath) } throws java.io.IOException("transient boom")
+            every { sourceFs.close() } just runs
+            every { targetFs.close() } just runs
+
+            val copier =
+                FileCopier(
+                    sourceConfig = dummyConfig,
+                    targetConfig = dummyConfig,
+                    sourceRoot = "s3a://bucket/in",
+                    targetRoot = "s3a://bucket/out",
+                    maxAttempts = 3,
+                    retryDelayMs = 0,
+                )
+
+            val result = copier.copySingleFile(sourcePathString)
+
+            assertFalse(result.success)
+            assertEquals(3, result.attemptsUsed)
+            verify(exactly = 3) { sourceFs.getFileStatus(sourcePath) }
+        } finally {
+            unmockkStatic(FileSystem::class)
+        }
     }
 
     @Test
