@@ -99,7 +99,7 @@ To back up into an HDFS filesystem, set the `target` to `type: "hdfs"`:
 1. In the IOMETE console, navigate to **Spark → Jobs** and click **Create Job**.
 2. Fill in the job form:
    - **Docker Image:** `iomete.azurecr.io/iomete/iomete-lakehouse-backup:x.y.z`
-   - **Main Application File:** `local:///opt/spark/jars/iomete-lakehouse-backup.jar`
+   - **Main Application File:** `spark-internal`
    - **Main Class:** `com.iomete.backup.App`
    - **Arguments:** `/etc/configs/application.json`
 3. Choose the **Instance** size appropriate for the volume of data being copied.
