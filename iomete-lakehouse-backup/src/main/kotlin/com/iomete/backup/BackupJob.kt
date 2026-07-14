@@ -4,8 +4,8 @@ import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.copy.CopyJobRunner
 import com.iomete.backup.fs.FileEntry
 import com.iomete.backup.fs.FileLister
+import com.iomete.backup.fs.FileSystemFactory
 import com.iomete.backup.fs.HadoopConfigBuilder
-import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
@@ -61,7 +61,7 @@ object BackupJob {
         val sourceConf = HadoopConfigBuilder.build(config.source)
         val sourceRoot = config.source.rootUri
 
-        return FileSystem.newInstance(URI(sourceRoot), sourceConf).use { sourceFs ->
+        return FileSystemFactory.create(config.source, URI(sourceRoot), sourceConf).use { sourceFs ->
             FileLister(sourceFs).listRecursively(Path(sourceRoot)).toList()
         }
     }

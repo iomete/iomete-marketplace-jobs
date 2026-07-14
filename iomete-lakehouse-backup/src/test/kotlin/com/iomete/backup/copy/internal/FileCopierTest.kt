@@ -1,5 +1,6 @@
 package com.iomete.backup.copy.internal
 
+import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
 import io.mockk.every
 import io.mockk.just
@@ -435,6 +436,65 @@ class FileCopierTest {
             verify(exactly = 1) { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) }
             verify(exactly = 1) { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) }
             verify(exactly = 0) { FileSystem.get(any<URI>(), any<Configuration>()) }
+            verify(exactly = 1) { targetFs.close() }
+            verify(exactly = 1) { sourceFs.close() }
+        } finally {
+            unmockkStatic(FileUtil::class)
+            unmockkStatic(FileSystem::class)
+        }
+    }
+
+    @Test
+    fun `HDFS target filesystem is built with the configured user`() {
+        val sourcePathString = "s3a://source-bucket/in/file.txt"
+        val targetPathString = "hdfs://isilon.example.com:8020/out/file.txt"
+        val sourcePath = Path(sourcePathString)
+        val targetPath = Path(targetPathString)
+        val targetParent = Path("hdfs://isilon.example.com:8020/out")
+        val sourceFs = mockk<FileSystem>()
+        val targetFs = mockk<FileSystem>()
+
+        mockkStatic(FileSystem::class)
+        mockkStatic(FileUtil::class)
+
+        try {
+            every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
+            every {
+                FileSystem.newInstance(URI(targetPathString), any<Configuration>(), "isilon-user")
+            } returns targetFs
+            every { targetFs.exists(targetParent) } returns true
+            every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(11L, false, 1, 1024L, 0L, sourcePath)
+            every { FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, any()) } returns true
+            every { sourceFs.close() } just runs
+            every { targetFs.close() } just runs
+
+            val copier =
+                FileCopier(
+                    sourceConfig =
+                        S3Config(
+                            bucket = "source-bucket",
+                            accessKey = "key",
+                            secretKey = "secret",
+                        ),
+                    targetConfig =
+                        HdfsConfig(
+                            namenode = "isilon.example.com:8020",
+                            path = "out",
+                            user = "isilon-user",
+                        ),
+                    sourceRoot = "s3a://source-bucket/in",
+                    targetRoot = "hdfs://isilon.example.com:8020/out",
+                )
+
+            val result = copier.copySingleFile(sourcePathString)
+
+            assertTrue(result.success)
+            assertEquals(targetPathString, result.targetPath)
+            assertEquals(11L, result.bytesCopied)
+            verify(exactly = 1) {
+                FileSystem.newInstance(URI(targetPathString), any<Configuration>(), "isilon-user")
+            }
+            verify(exactly = 0) { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) }
             verify(exactly = 1) { targetFs.close() }
             verify(exactly = 1) { sourceFs.close() }
         } finally {
