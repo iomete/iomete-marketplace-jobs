@@ -13,6 +13,23 @@ version = property("projectVersion") as String
 val sparkVersion = property("sparkVersion") as String
 val hadoopAwsVersion = property("hadoopAwsVersion") as String
 
+// Spark on JDK 17 needs these JVM module openings (driver + local executors in tests).
+val sparkJvmArgs =
+    listOf(
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
+        "--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
+    )
+
 repositories {
     mavenCentral()
 }
@@ -44,21 +61,7 @@ dependencies {
 
 application {
     mainClass.set("com.iomete.backup.App")
-    applicationDefaultJvmArgs =
-        listOf(
-            "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
-            "--add-opens=java.base/java.lang=ALL-UNNAMED",
-            "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
-            "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
-            "--add-opens=java.base/java.io=ALL-UNNAMED",
-            "--add-opens=java.base/java.net=ALL-UNNAMED",
-            "--add-opens=java.base/java.nio=ALL-UNNAMED",
-            "--add-opens=java.base/java.util=ALL-UNNAMED",
-            "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
-            "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
-            "--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED",
-            "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
-        )
+    applicationDefaultJvmArgs = sparkJvmArgs
 }
 
 tasks.withType<KotlinCompile> {
@@ -69,6 +72,7 @@ tasks.withType<KotlinCompile> {
 }
 
 tasks.test {
+    jvmArgs(sparkJvmArgs)
     useJUnitPlatform {
         excludeTags("integration")
     }
@@ -85,6 +89,7 @@ tasks.register<Test>("integrationTest") {
             .get()
             .output.classesDirs
     classpath = sourceSets.test.get().runtimeClasspath
+    jvmArgs(sparkJvmArgs)
     shouldRunAfter(tasks.test)
     useJUnitPlatform {
         includeTags("integration")

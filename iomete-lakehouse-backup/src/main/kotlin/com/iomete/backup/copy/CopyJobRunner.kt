@@ -2,6 +2,7 @@ package com.iomete.backup.copy
 
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.copy.internal.FileCopier
+import com.iomete.backup.copy.internal.aggregateCopyResults
 import com.iomete.backup.fs.FileEntry
 import org.apache.spark.api.java.JavaSparkContext
 import org.apache.spark.sql.SparkSession
@@ -39,25 +40,15 @@ object CopyJobRunner {
 
         logger.info("Copying {} files across {} partitions", files.size, rdd.getNumPartitions())
 
-        // Execute the distributed copy
-        val results: List<CopyResult> =
-            rdd
-                .map { path -> copier.copySingleFile(path) }
-                .collect()
-
-        // Aggregate results
-        val successCount = results.count { it.success }
-        val failureCount = results.count { !it.success }
-        val totalBytesCopied = results.filter { it.success }.sumOf { it.bytesCopied }
-        val errors = results.filter { !it.success }.map { "${it.sourcePath}: ${it.error}" }
+        val aggregate = aggregateCopyResults(rdd.map { path -> copier.copySingleFile(path) })
 
         val summary =
             CopyJobSummary(
-                totalFiles = results.size,
-                successCount = successCount,
-                failureCount = failureCount,
-                totalBytesCopied = totalBytesCopied,
-                errors = errors,
+                totalFiles = aggregate.successCount + aggregate.failureCount,
+                successCount = aggregate.successCount,
+                failureCount = aggregate.failureCount,
+                totalBytesCopied = aggregate.totalBytesCopied,
+                errors = aggregate.failures.map { "${it.sourcePath}: ${it.error}" },
             )
 
         logger.info(
@@ -69,7 +60,7 @@ object CopyJobRunner {
 
         return CopyJobResult(
             summary = summary,
-            fileResults = results,
+            failedResults = aggregate.failures,
         )
     }
 }

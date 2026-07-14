@@ -41,8 +41,7 @@ object BackupJob {
             summary.totalBytesCopied,
         )
 
-        copyJobResult.fileResults
-            .filter { !it.success }
+        copyJobResult.failedResults
             .forEach { result ->
                 logger.warn(
                     "Copy failed: source={} target={} attemptsUsed={} reason={}",

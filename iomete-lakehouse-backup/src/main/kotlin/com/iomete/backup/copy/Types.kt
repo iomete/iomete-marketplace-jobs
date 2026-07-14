@@ -13,7 +13,7 @@ data class CopyResult(
 
 data class CopyJobResult(
     val summary: CopyJobSummary,
-    val fileResults: List<CopyResult>,
+    val failedResults: List<CopyResult>,
 )
 
 data class CopyJobSummary(
