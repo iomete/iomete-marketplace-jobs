@@ -1,9 +1,12 @@
-package com.iomete.backup.config
+package com.iomete.backup.config.internal
 
+import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.S3Config
+import com.iomete.backup.config.StorageConfig
 import org.slf4j.LoggerFactory
 
-object ConfigValidator {
-    private val logger = LoggerFactory.getLogger(ConfigValidator::class.java)
+object Validator {
+    private val logger = LoggerFactory.getLogger(Validator::class.java)
 
     fun validate(config: ApplicationConfig): ValidationResult {
         val errors = mutableListOf<String>()

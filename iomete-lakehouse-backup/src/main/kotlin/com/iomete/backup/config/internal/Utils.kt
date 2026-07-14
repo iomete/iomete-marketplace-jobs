@@ -1,7 +1,11 @@
-package com.iomete.backup.config
+package com.iomete.backup.config.internal
 
-object ConfigUtils {
-    private const val MASKED_VALUE = "***"
+import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.S3Config
+import com.iomete.backup.config.StorageConfig
+
+object Utils {
+    private const val MASKED_VALUE = "********"
 
     fun redactSecrets(config: ApplicationConfig): ApplicationConfig =
         config.copy(

@@ -1,4 +1,4 @@
-package com.iomete.backup
+package com.iomete.backup.spark
 
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory

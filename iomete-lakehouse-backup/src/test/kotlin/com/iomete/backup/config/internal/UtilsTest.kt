@@ -1,10 +1,11 @@
-package com.iomete.backup.config
+package com.iomete.backup.config.internal
 
-import com.github.dockerjava.api.model.AuthConfig
+import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.S3Config
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 
-class ConfigUtilsTest {
+class UtilsTest {
     @Test
     fun `redactSecrets masks S3 accessKey and secretKey`() {
         val config =
@@ -25,16 +26,16 @@ class ConfigUtilsTest {
                     ),
             )
 
-        val redacted = ConfigUtils.redactSecrets(config)
+        val redacted = Utils.redactSecrets(config)
 
         val source = redacted.source as S3Config
         assertEquals("source-bucket", source.bucket) // Non-sensitive preserved
-        assertEquals("***", source.accessKey)
-        assertEquals("***", source.secretKey)
+        assertEquals("********", source.accessKey)
+        assertEquals("********", source.secretKey)
 
         val target = redacted.target as S3Config
         assertEquals("target-bucket", target.bucket)
-        assertEquals("***", target.accessKey)
-        assertEquals("***", target.secretKey)
+        assertEquals("********", target.accessKey)
+        assertEquals("********", target.secretKey)
     }
 }

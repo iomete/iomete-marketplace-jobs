@@ -1,10 +1,12 @@
-package com.iomete.backup.config
+package com.iomete.backup.config.internal
 
+import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.S3Config
 import org.junit.jupiter.api.Test
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
-class ConfigValidatorTest {
+class ValidatorTest {
     // Helper functions to create test configs
     private fun s3Config(
         bucket: String = "test-bucket",
@@ -30,7 +32,7 @@ class ConfigValidatorTest {
                 target = s3Config(bucket = "target-bucket"),
             )
 
-        val result = ConfigValidator.validate(config)
+        val result = Validator.validate(config)
 
         assertIs<ValidationResult.Valid>(result)
     }
@@ -43,7 +45,7 @@ class ConfigValidatorTest {
                 target = s3Config(),
             )
 
-        val result = ConfigValidator.validate(config)
+        val result = Validator.validate(config)
 
         assertIs<ValidationResult.Invalid>(result)
         assertTrue(result.errors.any { it.contains("bucket") && it.contains("source") })
@@ -57,7 +59,7 @@ class ConfigValidatorTest {
                 target = s3Config(),
             )
 
-        val result = ConfigValidator.validate(config)
+        val result = Validator.validate(config)
 
         assertIs<ValidationResult.Invalid>(result)
         assertTrue(result.errors.any { it.contains("accessKey") && it.contains("source") })
@@ -71,7 +73,7 @@ class ConfigValidatorTest {
                 target = s3Config(secretKey = ""),
             )
 
-        val result = ConfigValidator.validate(config)
+        val result = Validator.validate(config)
 
         assertIs<ValidationResult.Invalid>(result)
         assertTrue(result.errors.any { it.contains("secretKey") && it.contains("target") })
