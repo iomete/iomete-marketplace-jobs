@@ -74,8 +74,8 @@ the Spark cluster; there are no copy-tuning knobs to set in this release.
 
 1. In the IOMETE console, navigate to **Spark → Jobs** and click **Create Job**.
 2. Fill in the job form:
-   - **Docker Image:** `iomete.azurecr.io/iomete/iomete-lakehouse-backup:1.0.0`
-   - **Main Application File:** `local:///opt/spark/jars/iomete-lakehouse-backup-1.0.0.jar`
+   - **Docker Image:** `iomete.azurecr.io/iomete/iomete-lakehouse-backup:x.y.z`
+   - **Main Application File:** `local:///opt/spark/jars/iomete-lakehouse-backup.jar`
    - **Main Class:** `com.iomete.backup.App`
    - **Arguments:** `/etc/configs/application.json`
 3. Choose the **Instance** size appropriate for the volume of data being copied.

@@ -35,7 +35,7 @@ integration-test:
 spark_submit_cmd := /opt/spark/bin/spark-submit \
 		--properties-file=/opt/spark/conf/spark-defaults.conf \
 		--class com.iomete.backup.App \
-		local:///opt/spark/jars/iomete-lakehouse-backup-${tag}.jar \
+		local:///opt/spark/jars/iomete-lakehouse-backup.jar \
 		/etc/configs/application.json
 
 .PHONY: docker-run

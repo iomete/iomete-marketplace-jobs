@@ -2,4 +2,4 @@
 ARG SPARK_IMAGE
 FROM ${SPARK_IMAGE}
 
-COPY build/libs/iomete-lakehouse-backup-*.jar /opt/spark/jars/
+COPY build/libs/iomete-lakehouse-backup-*.jar /opt/spark/jars/iomete-lakehouse-backup.jar
