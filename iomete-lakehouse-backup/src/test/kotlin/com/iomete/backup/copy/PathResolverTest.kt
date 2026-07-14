@@ -76,6 +76,17 @@ class PathResolverTest {
         }
 
         @Test
+        fun `file path equal to source root maps to target root`() {
+            val result =
+                PathResolver.resolveTargetPath(
+                    sourceFilePath = "s3a://bucket/root",
+                    sourceRoot = "s3a://bucket/root",
+                    targetRoot = "s3a://backup/dest",
+                )
+            assertEquals("s3a://backup/dest", result)
+        }
+
+        @Test
         fun `file directly under source root`() {
             val result =
                 PathResolver.resolveTargetPath(

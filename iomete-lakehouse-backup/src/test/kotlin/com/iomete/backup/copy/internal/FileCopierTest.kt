@@ -188,6 +188,52 @@ class FileCopierTest {
     }
 
     @Test
+    fun `recovers on a later attempt after transient failures`() {
+        val sourcePathString = "s3a://bucket/in/file.txt"
+        val targetPathString = "s3a://bucket/out/file.txt"
+        val sourcePath = Path(sourcePathString)
+        val targetPath = Path(targetPathString)
+        val sourceFs = mockk<FileSystem>()
+        val targetFs = mockk<FileSystem>()
+
+        mockkStatic(FileSystem::class)
+        mockkStatic(FileUtil::class)
+        try {
+            every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
+            every { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) } returns targetFs
+            every { targetFs.exists(any()) } returns true
+            every { sourceFs.getFileStatus(sourcePath) } throws
+                java.io.IOException("transient 1") andThenThrows
+                java.io.IOException("transient 2") andThen
+                FileStatus(42L, false, 1, 1024L, 0L, sourcePath)
+            every { FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, any()) } returns true
+            every { sourceFs.close() } just runs
+            every { targetFs.close() } just runs
+
+            val copier =
+                FileCopier(
+                    sourceConfig = dummyConfig,
+                    targetConfig = dummyConfig,
+                    sourceRoot = "s3a://bucket/in",
+                    targetRoot = "s3a://bucket/out",
+                    maxAttempts = 3,
+                    retryDelayMs = 0,
+                )
+
+            val result = copier.copySingleFile(sourcePathString)
+
+            assertTrue(result.success)
+            assertEquals(3, result.attemptsUsed)
+            assertEquals(42L, result.bytesCopied)
+            verify(exactly = 3) { sourceFs.getFileStatus(sourcePath) }
+            verify(exactly = 1) { FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, any()) }
+        } finally {
+            unmockkStatic(FileUtil::class)
+            unmockkStatic(FileSystem::class)
+        }
+    }
+
+    @Test
     fun `uses configured max attempts for failed copy`() {
         val nonExistentPath = File(sourceDir, "does-not-exist.txt").toURI().toString()
         val sourceRoot = sourceDir.toURI().toString().trimEnd('/')
