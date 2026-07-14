@@ -55,49 +55,22 @@ class FileCopier(
         for (attempt in 1..maxAttempts) {
             attemptsMade = attempt
             try {
-                val sourceConf = HadoopConfigBuilder.build(sourceConfig)
-                val targetConf = HadoopConfigBuilder.build(targetConfig)
-                return FileSystem.newInstance(URI(sourceFilePath), sourceConf).use { sourceFs ->
-                    FileSystem.newInstance(URI(targetFilePath), targetConf).use { targetFs ->
-                        val sourcePath = Path(sourceFilePath)
-                        val targetPath = Path(targetFilePath)
-
-                        val parentDir = targetPath.parent
-                        if (parentDir != null && !targetFs.exists(parentDir)) {
-                            targetFs.mkdirs(parentDir)
-                        }
-
-                        val fileStatus = sourceFs.getFileStatus(sourcePath)
-                        val fileSize = fileStatus.len
-
-                        FileUtil.copy(
-                            sourceFs,
-                            sourcePath,
-                            targetFs,
-                            targetPath,
-                            false,
-                            true,
-                            targetConf,
-                        )
-
-                        log().debug(
-                            "Copied on attempt {}/{}: {} -> {} ({} bytes)",
-                            attempt,
-                            maxAttempts,
-                            sourceFilePath,
-                            targetFilePath,
-                            fileSize,
-                        )
-
-                        CopyResult(
-                            sourcePath = sourceFilePath,
-                            targetPath = targetFilePath,
-                            success = true,
-                            bytesCopied = fileSize,
-                            attemptsUsed = attempt,
-                        )
-                    }
-                }
+                val bytesCopied = copyOnce(sourceFilePath, targetFilePath)
+                log().debug(
+                    "Copied on attempt {}/{}: {} -> {} ({} bytes)",
+                    attempt,
+                    maxAttempts,
+                    sourceFilePath,
+                    targetFilePath,
+                    bytesCopied,
+                )
+                return CopyResult(
+                    sourcePath = sourceFilePath,
+                    targetPath = targetFilePath,
+                    success = true,
+                    bytesCopied = bytesCopied,
+                    attemptsUsed = attempt,
+                )
             } catch (e: Exception) {
                 lastError = "${e.javaClass.simpleName}: ${e.message}"
                 log().warn(
@@ -123,6 +96,27 @@ class FileCopier(
             error = lastError ?: "Unknown copy failure",
             attemptsUsed = attemptsMade,
         )
+    }
+
+    private fun copyOnce(
+        sourceFilePath: String,
+        targetFilePath: String,
+    ): Long {
+        val sourceConf = HadoopConfigBuilder.build(sourceConfig)
+        val targetConf = HadoopConfigBuilder.build(targetConfig)
+
+        return FileSystem.newInstance(URI(sourceFilePath), sourceConf).use { sourceFs ->
+            FileSystem.newInstance(URI(targetFilePath), targetConf).use { targetFs ->
+                val sourcePath = Path(sourceFilePath)
+                val targetPath = Path(targetFilePath)
+
+                targetPath.parent?.let { if (!targetFs.exists(it)) targetFs.mkdirs(it) }
+
+                val fileSize = sourceFs.getFileStatus(sourcePath).len
+                FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, targetConf)
+                fileSize
+            }
+        }
     }
 
     private fun isTerminal(e: Throwable): Boolean =
