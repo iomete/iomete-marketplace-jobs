@@ -10,6 +10,7 @@ import org.apache.hadoop.security.AccessControlException
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.io.FileNotFoundException
+import java.io.IOException
 import java.io.Serializable
 import java.net.URI
 import java.nio.file.AccessDeniedException
@@ -121,7 +122,10 @@ class FileCopier(
                 targetPath.parent?.let { if (!targetFs.exists(it)) targetFs.mkdirs(it) }
 
                 val fileSize = sourceFs.getFileStatus(sourcePath).len
-                FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, targetConf)
+                val copied = FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, targetConf)
+                if (!copied) {
+                    throw IOException("FileUtil.copy reported failure: $sourceFilePath -> $targetFilePath")
+                }
                 fileSize
             }
         }

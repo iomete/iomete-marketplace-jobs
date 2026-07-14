@@ -13,6 +13,7 @@ import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.ConfigParseException
 import org.slf4j.LoggerFactory
 import java.io.File
+import java.io.IOException
 
 object Parser {
     private val logger = LoggerFactory.getLogger(Parser::class.java)
@@ -30,8 +31,19 @@ object Parser {
         if (!file.exists()) {
             throw ConfigParseException("Configuration file not found: $path")
         }
+        if (!file.isFile) {
+            throw ConfigParseException("Configuration path is not a file: $path")
+        }
 
-        return parse(file.readText())
+        val content =
+            try {
+                file.readText()
+            } catch (e: IOException) {
+                logger.debug("Failed to read configuration file", e)
+                throw ConfigParseException("Unable to read configuration file: $path", e)
+            }
+
+        return parse(content)
     }
 
     fun parse(json: String): ApplicationConfig =
