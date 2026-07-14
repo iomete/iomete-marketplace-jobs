@@ -1,47 +1,34 @@
 # IOMETE Lakehouse Backup
 
-Spark-based distributed file-copy utility for the IOMETE Marketplace. It is the
-low-level building block on which higher-level Iceberg catalog backup and
-restore workflows will be built.
+Copy your data from one S3 location to another, as a Spark job on IOMETE.
 
 ## Overview
 
-The job copies every file under a source object-store prefix to a target
-object-store prefix, distributing the work across Spark executors. It is
-configured declaratively with a single JSON file and is designed to run as a
-scheduled Spark job on the IOMETE platform.
+This job copies all the files from a source S3 location to a target S3 location.
+It runs the copy in parallel across your Spark cluster, so it scales with the
+size of the data. You set it up with a single JSON file and run it as a
+scheduled job on the IOMETE platform.
 
-This first release is intentionally a minimal, correct building block. Iceberg
-awareness (snapshot-consistent table backup and restore) is layered on top in a
-later release.
+## What it does
 
-## Scope
+- Copies files between S3 locations (source and target)
+- Copies a folder and everything under it
+- Uses separate credentials for the source and the target (for example, a
+  production account and a separate backup account)
+- Automatically retries a file if it fails temporarily
+- Prints the configuration when it starts, with credentials hidden
+- Marks the whole run as failed if any file fails to copy, so a broken backup is
+  never reported as successful
 
-**Supported storage**
-- S3 (source and target)
-
-**Copy behaviour**
-- Single source prefix, recursive crawl
-- Per-file retry on transient failures
-- Separate credentials for source and target (production account → backup
-  account)
-- Configuration logged at startup with secrets redacted
-- Non-zero exit if any file fails to copy (failures are never silently ignored)
-
-**Not in this release**
-- HDFS / Dell Isilon targets
-- Incremental / snapshot-diff copy
-- Bandwidth throttling and a machine-readable result manifest
-
-> **Consistency caveat.** This is a raw file copy with no point-in-time
-> guarantee. Copying a dataset that is being mutated can produce an inconsistent
-> backup. Run against a quiescent source until the Iceberg-aware layer lands.
+> **Before you run it.** This copies files exactly as they are. If the data is
+> still being written while the copy runs, the backup may be inconsistent — run
+> it when the source data is not changing.
 
 ## Configuration
 
-The job reads a single JSON file (mounted by IOMETE at
-`/etc/configs/application.json`). Only `source` and `target` are required; each
-takes storage credentials and an optional prefix:
+The job reads a single JSON file (IOMETE mounts it at
+`/etc/configs/application.json`). You only need to fill in `source` and
+`target` — the storage credentials and, optionally, a folder (`prefix`):
 
 ```json
 {
@@ -66,9 +53,10 @@ takes storage credentials and an optional prefix:
 }
 ```
 
-Optional S3 fields default sensibly: `prefix` (empty), `endpoint` (AWS default),
-`pathStyleAccess` (`false`), `region` (`us-east-1`). Parallelism is derived from
-the Spark cluster; there are no copy-tuning knobs to set in this release.
+The remaining S3 fields are optional and have sensible defaults: `prefix`
+(empty), `endpoint` (AWS default), `pathStyleAccess` (`false`), `region`
+(`us-east-1`). The job scales automatically with your Spark cluster, so there is
+nothing extra to tune.
 
 ## Set up as a job in IOMETE
 
