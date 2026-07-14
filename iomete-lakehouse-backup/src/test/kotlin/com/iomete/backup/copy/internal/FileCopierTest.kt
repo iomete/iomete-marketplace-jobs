@@ -210,6 +210,44 @@ class FileCopierTest {
     }
 
     @Test
+    fun `interrupt during retry backoff stops retrying and preserves interrupt flag`() {
+        val sourcePathString = "s3a://bucket/in/file.txt"
+        val sourcePath = Path(sourcePathString)
+        val sourceFs = mockk<FileSystem>()
+        val targetFs = mockk<FileSystem>()
+
+        mockkStatic(FileSystem::class)
+        try {
+            every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
+            every { FileSystem.newInstance(URI("s3a://bucket/out/file.txt"), any<Configuration>()) } returns targetFs
+            every { targetFs.exists(any()) } returns true
+            every { sourceFs.getFileStatus(sourcePath) } throws java.io.IOException("transient boom")
+            every { sourceFs.close() } just runs
+            every { targetFs.close() } just runs
+
+            val copier =
+                FileCopier(
+                    sourceConfig = dummyConfig,
+                    targetConfig = dummyConfig,
+                    sourceRoot = "s3a://bucket/in",
+                    targetRoot = "s3a://bucket/out",
+                    maxAttempts = 3,
+                    retryDelayMs = 10_000,
+                )
+
+            Thread.currentThread().interrupt()
+            val result = copier.copySingleFile(sourcePathString)
+
+            assertTrue(Thread.interrupted(), "interrupt flag should be restored")
+            assertFalse(result.success)
+            assertEquals(1, result.attemptsUsed)
+        } finally {
+            Thread.interrupted()
+            unmockkStatic(FileSystem::class)
+        }
+    }
+
+    @Test
     fun `copies multiple files preserving relative structure`() {
         val files =
             listOf(

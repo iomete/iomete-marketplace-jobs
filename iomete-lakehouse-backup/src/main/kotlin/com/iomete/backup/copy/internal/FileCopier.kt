@@ -87,7 +87,12 @@ class FileCopier(
 
                 if (isTerminal(e)) break
                 if (attempt < maxAttempts) {
-                    Thread.sleep(retryDelayMs)
+                    try {
+                        Thread.sleep(retryDelayMs)
+                    } catch (ie: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        break
+                    }
                 }
             }
         }
