@@ -1,6 +1,7 @@
 package com.iomete.backup.config.internal
 
 import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
 import org.junit.jupiter.api.Test
 import kotlin.test.assertIs
@@ -22,6 +23,18 @@ class ValidatorTest {
         secretKey = secretKey,
         endpoint = endpoint,
         pathStyleAccess = pathStyleAccess,
+    )
+
+    private fun hdfsConfig(
+        namenode: String = "isilon.example.com:8020",
+        path: String = "backups",
+        authentication: String = "simple",
+        user: String = "isilon-user",
+    ) = HdfsConfig(
+        namenode = namenode,
+        path = path,
+        authentication = authentication,
+        user = user,
     )
 
     @Test
@@ -77,5 +90,60 @@ class ValidatorTest {
 
         assertIs<ValidationResult.Invalid>(result)
         assertTrue(result.errors.any { it.contains("secretKey") && it.contains("target") })
+    }
+
+    @Test
+    fun `valid S3-to-HDFS config passes validation`() {
+        val config =
+            ApplicationConfig(
+                source = s3Config(bucket = "source-bucket"),
+                target = hdfsConfig(),
+            )
+
+        val result = Validator.validate(config)
+
+        assertIs<ValidationResult.Valid>(result)
+    }
+
+    @Test
+    fun `HDFS with blank namenode fails validation`() {
+        val config =
+            ApplicationConfig(
+                source = s3Config(),
+                target = hdfsConfig(namenode = ""),
+            )
+
+        val result = Validator.validate(config)
+
+        assertIs<ValidationResult.Invalid>(result)
+        assertTrue(result.errors.any { it.contains("namenode") && it.contains("target") })
+    }
+
+    @Test
+    fun `HDFS with blank user fails validation`() {
+        val config =
+            ApplicationConfig(
+                source = s3Config(),
+                target = hdfsConfig(user = ""),
+            )
+
+        val result = Validator.validate(config)
+
+        assertIs<ValidationResult.Invalid>(result)
+        assertTrue(result.errors.any { it.contains("user") && it.contains("target") })
+    }
+
+    @Test
+    fun `HDFS with unsupported authentication fails validation`() {
+        val config =
+            ApplicationConfig(
+                source = s3Config(),
+                target = hdfsConfig(authentication = "kerberos"),
+            )
+
+        val result = Validator.validate(config)
+
+        assertIs<ValidationResult.Invalid>(result)
+        assertTrue(result.errors.any { it.contains("authentication") && it.contains("target") })
     }
 }

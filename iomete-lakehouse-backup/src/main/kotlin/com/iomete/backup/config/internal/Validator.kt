@@ -1,6 +1,7 @@
 package com.iomete.backup.config.internal
 
 import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
 import com.iomete.backup.config.StorageConfig
 import org.slf4j.LoggerFactory
@@ -31,6 +32,25 @@ object Validator {
     ) {
         when (storage) {
             is S3Config -> validateS3Config(storage, location, errors)
+            is HdfsConfig -> validateHdfsConfig(storage, location, errors)
+        }
+    }
+
+    private fun validateHdfsConfig(
+        config: HdfsConfig,
+        location: String,
+        errors: MutableList<String>,
+    ) {
+        if (config.namenode.isBlank()) {
+            errors.add("HDFS $location: namenode is required and cannot be empty")
+        }
+
+        if (config.user.isBlank()) {
+            errors.add("HDFS $location: user is required and cannot be empty")
+        }
+
+        if (config.authentication != "simple") {
+            errors.add("HDFS $location: authentication '${config.authentication}' is not supported (only 'simple')")
         }
     }
 

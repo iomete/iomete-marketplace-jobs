@@ -1,5 +1,6 @@
 package com.iomete.backup.fs
 
+import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
@@ -128,6 +129,36 @@ class HadoopConfigBuilderTest {
             assertEquals("target-key", targetConf.get("fs.s3a.access.key"))
             assertEquals("target-secret", targetConf.get("fs.s3a.secret.key"))
             assertEquals("https://target.example.com", targetConf.get("fs.s3a.endpoint"))
+        }
+    }
+
+    @Nested
+    inner class HdfsConfigTests {
+        @Test
+        fun `HDFS config sets defaultFS and authentication`() {
+            val config =
+                HdfsConfig(
+                    namenode = "isilon.example.com:8020",
+                    path = "backups",
+                    authentication = "simple",
+                    user = "isilon-user",
+                )
+            val conf = HadoopConfigBuilder.build(config)
+
+            assertEquals("hdfs://isilon.example.com:8020", conf.get("fs.defaultFS"))
+            assertEquals("simple", conf.get("hadoop.security.authentication"))
+        }
+
+        @Test
+        fun `HDFS config does not set datanode hostname flag`() {
+            val config =
+                HdfsConfig(
+                    namenode = "isilon.example.com:8020",
+                    user = "isilon-user",
+                )
+            val conf = HadoopConfigBuilder.build(config)
+
+            assertNull(conf.get("dfs.client.use.datanode.hostname"))
         }
     }
 }

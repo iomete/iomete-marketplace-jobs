@@ -1,6 +1,7 @@
 package com.iomete.backup.config.internal
 
 import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
 import com.iomete.backup.config.StorageConfig
 
@@ -20,6 +21,10 @@ object Utils {
                     accessKey = MASKED_VALUE,
                     secretKey = MASKED_VALUE,
                 )
+            }
+
+            is HdfsConfig -> {
+                storage
             }
         }
 }
