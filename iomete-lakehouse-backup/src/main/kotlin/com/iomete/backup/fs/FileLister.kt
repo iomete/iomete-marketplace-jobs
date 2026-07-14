@@ -8,6 +8,7 @@ class FileLister(
 ) {
     fun listRecursively(rootPath: Path): Sequence<FileEntry> {
         val iterator = fileSystem.listFiles(rootPath, true)
+
         return generateSequence {
             if (iterator.hasNext()) {
                 val status = iterator.next()

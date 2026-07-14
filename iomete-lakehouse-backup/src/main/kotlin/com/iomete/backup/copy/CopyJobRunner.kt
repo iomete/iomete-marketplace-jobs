@@ -1,8 +1,8 @@
 package com.iomete.backup.copy
 
 import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.copy.internal.FileCopier
 import com.iomete.backup.fs.FileEntry
-import com.iomete.backup.fs.HadoopConfigBuilder
 import org.apache.spark.api.java.JavaSparkContext
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
@@ -18,8 +18,8 @@ object CopyJobRunner {
         val jsc = JavaSparkContext(spark.sparkContext())
 
         // Resolve root URIs
-        val sourceRoot = PathResolver.resolveRootUri(config.source)
-        val targetRoot = PathResolver.resolveRootUri(config.target)
+        val sourceRoot = config.source.rootUri
+        val targetRoot = config.target.rootUri
 
         logger.info("Source root: {}", sourceRoot)
         logger.info("Target root: {}", targetRoot)

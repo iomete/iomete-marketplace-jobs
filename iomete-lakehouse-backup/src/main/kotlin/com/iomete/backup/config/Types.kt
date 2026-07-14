@@ -16,7 +16,9 @@ data class ApplicationConfig(
 @JsonSubTypes(
     JsonSubTypes.Type(value = S3Config::class, name = "s3"),
 )
-sealed class StorageConfig : java.io.Serializable
+sealed class StorageConfig : java.io.Serializable {
+    abstract val rootUri: String
+}
 
 data class S3Config(
     val bucket: String,
@@ -26,4 +28,10 @@ data class S3Config(
     val accessKey: String,
     val secretKey: String,
     val region: String = "us-east-1",
-) : StorageConfig()
+) : StorageConfig() {
+    override val rootUri: String
+        get() {
+            val trimmedPrefix = prefix.trim('/')
+            return if (trimmedPrefix.isEmpty()) "s3a://$bucket" else "s3a://$bucket/$trimmedPrefix"
+        }
+}

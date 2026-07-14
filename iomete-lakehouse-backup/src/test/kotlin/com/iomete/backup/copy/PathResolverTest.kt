@@ -1,91 +1,12 @@
 package com.iomete.backup.copy
 
-import com.iomete.backup.config.S3Config
+import com.iomete.backup.copy.internal.PathResolver
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class PathResolverTest {
-    @Nested
-    inner class ResolveRootUri {
-        @Test
-        fun `S3 config with prefix produces s3a URI`() {
-            val config =
-                S3Config(
-                    bucket = "my-bucket",
-                    prefix = "data/warehouse/",
-                    accessKey = "key",
-                    secretKey = "secret",
-                )
-            assertEquals("s3a://my-bucket/data/warehouse", PathResolver.resolveRootUri(config))
-        }
-
-        @Test
-        fun `S3 config without prefix produces bucket-only URI`() {
-            val config =
-                S3Config(
-                    bucket = "my-bucket",
-                    prefix = "",
-                    accessKey = "key",
-                    secretKey = "secret",
-                )
-            assertEquals("s3a://my-bucket", PathResolver.resolveRootUri(config))
-        }
-
-        @Test
-        fun `S3 config trims leading and trailing slashes from prefix`() {
-            val config =
-                S3Config(
-                    bucket = "my-bucket",
-                    prefix = "/data/warehouse/",
-                    accessKey = "key",
-                    secretKey = "secret",
-                )
-            assertEquals("s3a://my-bucket/data/warehouse", PathResolver.resolveRootUri(config))
-        }
-
-//        @Test
-//        fun `HDFS config with namenode produces full URI`() {
-//            val config = HdfsConfig(
-//                path = "/data/warehouse",
-//                namenode = "hdfs://namenode:8020"
-//            )
-//            assertEquals("hdfs://namenode:8020/data/warehouse", PathResolver.resolveRootUri(config))
-//        }
-//
-//        @Test
-//        fun `HDFS config trims trailing slash from path`() {
-//            val config = HdfsConfig(
-//                path = "/data/warehouse/",
-//                namenode = "hdfs://namenode:8020"
-//            )
-//            assertEquals("hdfs://namenode:8020/data/warehouse", PathResolver.resolveRootUri(config))
-//        }
-//
-//        @Test
-//        fun `HDFS config with HA produces nameservice-based URI`() {
-//            val config = HdfsConfig(
-//                path = "/backups/warehouse",
-//                ha = HaConfig(
-//                    nameservice = "mycluster",
-//                    namenodes = listOf("nn1", "nn2"),
-//                    rpcAddresses = mapOf(
-//                        "nn1" to "namenode1:8020",
-//                        "nn2" to "namenode2:8020"
-//                    )
-//                )
-//            )
-//            assertEquals("hdfs://mycluster/backups/warehouse", PathResolver.resolveRootUri(config))
-//        }
-//
-//        @Test
-//        fun `HDFS config with neither namenode nor HA returns path only`() {
-//            val config = HdfsConfig(path = "/data/warehouse")
-//            assertEquals("/data/warehouse", PathResolver.resolveRootUri(config))
-//        }
-    }
-
     @Nested
     inner class ResolveTargetPath {
         @Test

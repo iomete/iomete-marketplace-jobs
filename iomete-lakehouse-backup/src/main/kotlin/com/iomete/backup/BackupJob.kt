@@ -2,7 +2,6 @@ package com.iomete.backup
 
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.copy.CopyJobRunner
-import com.iomete.backup.copy.PathResolver
 import com.iomete.backup.fs.FileEntry
 import com.iomete.backup.fs.FileLister
 import com.iomete.backup.fs.HadoopConfigBuilder
@@ -61,7 +60,7 @@ object BackupJob {
 
     private fun enumerateSource(config: ApplicationConfig): List<FileEntry> {
         val sourceConf = HadoopConfigBuilder.build(config.source)
-        val sourceRoot = PathResolver.resolveRootUri(config.source)
+        val sourceRoot = config.source.rootUri
 
         return FileSystem.newInstance(URI(sourceRoot), sourceConf).use { sourceFs ->
             FileLister(sourceFs).listRecursively(Path(sourceRoot)).toList()

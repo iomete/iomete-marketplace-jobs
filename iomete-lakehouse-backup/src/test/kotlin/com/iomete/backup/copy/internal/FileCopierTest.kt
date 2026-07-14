@@ -1,4 +1,4 @@
-package com.iomete.backup.copy
+package com.iomete.backup.copy.internal
 
 import com.iomete.backup.config.S3Config
 import io.mockk.every
@@ -16,7 +16,11 @@ import org.apache.hadoop.fs.Path
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.ObjectInputStream
+import java.io.ObjectOutputStream
 import java.net.URI
 import java.nio.file.Files
 import kotlin.test.assertEquals
@@ -230,15 +234,14 @@ class FileCopierTest {
             )
 
         // Serialize and deserialize
-        val baos = java.io.ByteArrayOutputStream()
-        java.io.ObjectOutputStream(baos).use { it.writeObject(copier) }
+        val baos = ByteArrayOutputStream()
+        ObjectOutputStream(baos).use { it.writeObject(copier) }
         val bytes = baos.toByteArray()
 
         val deserialized =
-            java.io
-                .ObjectInputStream(
-                    java.io.ByteArrayInputStream(bytes),
-                ).use { it.readObject() as FileCopier }
+            ObjectInputStream(
+                ByteArrayInputStream(bytes),
+            ).use { it.readObject() as FileCopier }
 
         // The deserialized copier should be usable (logger re-created lazily)
         // We can't easily test copy on a deserialized instance without real S3,

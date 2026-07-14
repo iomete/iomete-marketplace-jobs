@@ -1,10 +1,12 @@
-package com.iomete.backup.copy
+package com.iomete.backup.copy.internal
 
 import com.iomete.backup.config.StorageConfig
+import com.iomete.backup.copy.CopyResult
 import com.iomete.backup.fs.HadoopConfigBuilder
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.FileUtil
 import org.apache.hadoop.fs.Path
+import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.io.Serializable
 import java.net.URI
@@ -23,7 +25,7 @@ class FileCopier(
     /**
      * Lazily get or re-create the logger after deserialization.
      */
-    private fun log(): org.slf4j.Logger {
+    private fun log(): Logger {
         if (logger == null) {
             logger = LoggerFactory.getLogger(FileCopier::class.java)
         }
