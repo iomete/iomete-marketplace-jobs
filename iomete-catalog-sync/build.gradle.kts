@@ -52,6 +52,7 @@ allprojects {
 
         // Apache Spark
         compileOnly("org.apache.spark:spark-sql_2.12:3.5.7")
+        compileOnly("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.7.1")
 
         // Test dependencies
         testImplementation("io.quarkus:quarkus-junit5")

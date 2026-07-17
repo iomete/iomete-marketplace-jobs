@@ -15,14 +15,26 @@ object TestDataSetup {
         spark.sql(
             """
             CREATE TABLE IF NOT EXISTS test_catalog.test_db.users (
-                id BIGINT,
-                name STRING,
+                id BIGINT COMMENT 'user id',
+                name STRING COMMENT 'full name',
                 age INT,
                 salary DOUBLE,
                 is_active BOOLEAN,
                 created_at TIMESTAMP,
-                email STRING
+                email STRING COMMENT 'email address'
             ) USING iceberg
+            TBLPROPERTIES (
+                'comment'='Users table comment',
+                'hidden'='false'
+            )
+            """.trimIndent()
+        )
+        spark.sql(
+            """
+            ALTER TABLE test_catalog.test_db.users SET TBLPROPERTIES (
+                'comment'='Users table comment',
+                'hidden'='false'
+            )
             """.trimIndent()
         )
         spark.sql(

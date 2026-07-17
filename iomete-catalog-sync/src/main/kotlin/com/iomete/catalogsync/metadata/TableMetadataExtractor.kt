@@ -25,6 +25,7 @@ class TableMetadataExtractor(
     private val piiDetectionService: PIIDetectionService,
     private val applicationConfig: ApplicationConfig,
     private val sparkMetadataReader: SparkMetadataReader,
+    private val icebergMetadataReader: IcebergMetadataReader,
 ) {
     private val exclusionRules = applicationConfig.exclusionRules
 
@@ -34,10 +35,17 @@ class TableMetadataExtractor(
         schema: String,
         tableName: String,
         isTemp: Boolean,
+        useIcebergFastPath: Boolean = false,
     ): TableMetadata {
-        val table = sparkMetadataReader.describeTable(spark, catalog, schema, tableName)
+        val icebergMetadata =
+            if (useIcebergFastPath) {
+                loadIcebergMetadataSafe(spark, catalog, schema, tableName)
+            } else {
+                null
+            }
+        val table = icebergMetadata?.tableDescription ?: sparkMetadataReader.describeTable(spark, catalog, schema, tableName)
 
-        val tableProperties = parseIcebergPropertiesSafe(table.metadata["Table Properties"])
+        val tableProperties = icebergMetadata?.tableProperties ?: parseIcebergPropertiesSafe(table.metadata["Table Properties"])
 
         exclusionRules.enforceTableExclusionRules(
             table = tableName,
@@ -64,9 +72,13 @@ class TableMetadataExtractor(
             )
 
         val datasetStatistics: TableStatistics? =
-            when (tableExtractor) {
-                is SupportTableStatistics -> tableExtractor.extractTableStatistics()
-                else -> null
+            if (icebergMetadata != null) {
+                icebergMetadata.statistics
+            } else {
+                when (tableExtractor) {
+                    is SupportTableStatistics -> tableExtractor.extractTableStatistics()
+                    else -> null
+                }
             }
 
         val columnMetadataList: List<ColumnMetadata> = table.columns
@@ -146,6 +158,25 @@ class TableMetadataExtractor(
             sparkApplicationId = spark.sparkContext().applicationId(),
         )
     }
+
+    private fun loadIcebergMetadataSafe(
+        spark: SparkSession,
+        catalog: String,
+        schema: String,
+        tableName: String,
+    ): IcebergLoadedTableMetadata? =
+        try {
+            icebergMetadataReader.loadTableMetadata(spark, catalog, schema, tableName)
+        } catch (th: Throwable) {
+            logger.warn(
+                "Iceberg metadata fast path failed for {}.{}.{}, falling back to Spark DESCRIBE EXTENDED",
+                catalog,
+                schema,
+                tableName,
+                th,
+            )
+            null
+        }
 
     private fun parseIcebergPropertiesSafe(input: String?): Map<String, String> {
         if (input.isNullOrBlank()) return emptyMap()

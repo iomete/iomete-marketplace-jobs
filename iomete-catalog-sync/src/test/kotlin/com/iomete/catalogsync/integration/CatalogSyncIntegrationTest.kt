@@ -8,13 +8,16 @@ import com.iomete.catalogsync.config.ApplicationConfig
 import com.iomete.catalogsync.extract.TableExtractorFactory
 import com.iomete.catalogsync.extract.datasets.IcebergTableExtractor
 import com.iomete.catalogsync.metadata.CatalogMetadata
+import com.iomete.catalogsync.metadata.IcebergMetadataReader
 import com.iomete.catalogsync.metadata.MetadataScraper
 import com.iomete.catalogsync.metadata.SchemaMetadata
 import com.iomete.catalogsync.metadata.SparkMetadataReader
 import com.iomete.catalogsync.metadata.TableMetadata
 import com.iomete.catalogsync.metadata.TableMetadataExtractor
+import com.iomete.catalogsync.presidio.EntityType
 import com.iomete.catalogsync.presidio.PIIDetectionService
 import com.iomete.catalogsync.presidio.PresidioClient
+import com.iomete.catalogsync.presidio.PresidioResponse
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
@@ -59,6 +62,7 @@ class CatalogSyncIntegrationTest {
             piiDetectionService = piiDetectionService,
             applicationConfig = applicationConfig,
             sparkMetadataReader = sparkMetadataReader,
+            icebergMetadataReader = IcebergMetadataReader(),
         )
     }
 
@@ -162,6 +166,7 @@ class CatalogSyncIntegrationTest {
             schema = "test_db",
             tableName = "users",
             isTemp = false,
+            useIcebergFastPath = true,
         )
 
         assertEquals("test_catalog", metadata.catalog)
@@ -170,7 +175,10 @@ class CatalogSyncIntegrationTest {
         assertEquals("iceberg", metadata.provider)
         assertFalse(metadata.isView)
         assertFalse(metadata.isTemporary)
+        assertEquals("Users table comment", metadata.description)
         assertEquals(7, metadata.columns.size)
+        assertEquals("user id", metadata.columns.single { it.name == "id" }.description)
+        assertEquals("email address", metadata.columns.single { it.name == "email" }.description)
 
         // Stats should be present from real Iceberg snapshots
         assertNotNull(metadata.totalRecords, "totalRecords should be present")
@@ -188,6 +196,7 @@ class CatalogSyncIntegrationTest {
             schema = "test_db",
             tableName = "events",
             isTemp = false,
+            useIcebergFastPath = true,
         )
 
         val partitionCol = metadata.columns.find { it.name == "event_date" }
@@ -205,12 +214,88 @@ class CatalogSyncIntegrationTest {
             schema = "test_db",
             tableName = "empty_table",
             isTemp = false,
+            useIcebergFastPath = true,
         )
 
         assertEquals(2, metadata.columns.size, "empty_table should have 2 columns")
         assertNull(metadata.totalRecords, "empty_table should have null totalRecords")
         assertNull(metadata.sizeInBytes, "empty_table should have null sizeInBytes")
         assertNull(metadata.numFiles, "empty_table should have null numFiles")
+    }
+
+    @Test
+    fun `iceberg fast path preserves Spark path table metadata shape`() {
+        val sparkPath = tableMetadataExtractor.scrapeTable(
+            spark = spark,
+            catalog = "test_catalog",
+            schema = "test_db",
+            tableName = "users",
+            isTemp = false,
+            useIcebergFastPath = false,
+        )
+        val fastPath = tableMetadataExtractor.scrapeTable(
+            spark = spark,
+            catalog = "test_catalog",
+            schema = "test_db",
+            tableName = "users",
+            isTemp = false,
+            useIcebergFastPath = true,
+        )
+
+        assertEquals(sparkPath.catalog, fastPath.catalog)
+        assertEquals(sparkPath.schema, fastPath.schema)
+        assertEquals(sparkPath.name, fastPath.name)
+        assertEquals(sparkPath.tableType, fastPath.tableType)
+        assertEquals(sparkPath.provider, fastPath.provider)
+        assertEquals(sparkPath.isView, fastPath.isView)
+        assertEquals(sparkPath.columns.map { it.name }, fastPath.columns.map { it.name })
+        assertEquals(sparkPath.columns.map { it.dataType }, fastPath.columns.map { it.dataType })
+        assertEquals(sparkPath.columns.map { it.description }, fastPath.columns.map { it.description })
+        assertEquals(sparkPath.columns.map { it.sortOrder }, fastPath.columns.map { it.sortOrder })
+        assertEquals(sparkPath.columns.map { it.isPartitionKey }, fastPath.columns.map { it.isPartitionKey })
+        assertEquals(sparkPath.totalRecords, fastPath.totalRecords)
+        assertEquals(sparkPath.numFiles, fastPath.numFiles)
+        assertEquals(sparkPath.sizeInBytes, fastPath.sizeInBytes)
+        assertEquals(sparkPath.totalTableNumFiles, fastPath.totalTableNumFiles)
+        assertEquals(sparkPath.totalTableSizeInBytes, fastPath.totalTableSizeInBytes)
+    }
+
+    @Test
+    fun `iceberg fast path preserves PII tags`() {
+        System.setProperty("piiDetectionEnabled", "true")
+        try {
+            every { presidioClient.analyze(any()) } answers {
+                val text = firstArg<com.iomete.catalogsync.presidio.PresidioRequest>().text
+                if (text.contains("@")) {
+                    listOf(PresidioResponse(entityType = EntityType.EMAIL_ADDRESS, score = 0.95f))
+                } else {
+                    emptyList()
+                }
+            }
+            val piiEnabledExtractor = TableMetadataExtractor(
+                tableExtractorFactory = tableExtractorFactory,
+                piiDetectionService = PIIDetectionService(presidioClient),
+                applicationConfig = applicationConfig,
+                sparkMetadataReader = sparkMetadataReader,
+                icebergMetadataReader = IcebergMetadataReader(),
+            )
+
+            val metadata = piiEnabledExtractor.scrapeTable(
+                spark = spark,
+                catalog = "test_catalog",
+                schema = "test_db",
+                tableName = "users",
+                isTemp = false,
+                useIcebergFastPath = true,
+            )
+
+            val emailColumn = metadata.columns.single { it.name == "email" }
+            assertTrue(emailColumn.tags.contains("DETECTED:EMAIL_ADDRESS"))
+            assertTrue(emailColumn.tags.contains("DETECTED:PII"))
+            assertTrue(metadata.tags.contains("DETECTED:PII"))
+        } finally {
+            System.clearProperty("piiDetectionEnabled")
+        }
     }
 
     @Test
@@ -255,6 +340,21 @@ class CatalogSyncIntegrationTest {
             assertTrue(indexedTableNames.contains("test_db.events"))
             assertTrue(indexedTableNames.contains("test_db.empty_table"))
             assertTrue(indexedTableNames.contains("another_db.products"))
+
+            val indexedUsers = capturedTables.single { it.schema == "test_db" && it.name == "users" }
+            assertEquals("Users table comment", indexedUsers.description)
+            assertEquals(5L, indexedUsers.totalRecords)
+            assertTrue(indexedUsers.numFiles!! > 0)
+            assertTrue(indexedUsers.sizeInBytes!! > 0)
+            assertEquals("email address", indexedUsers.columns.single { it.name == "email" }.description)
+
+            val indexedEvents = capturedTables.single { it.schema == "test_db" && it.name == "events" }
+            assertTrue(indexedEvents.columns.single { it.name == "event_date" }.isPartitionKey)
+
+            val indexedEmptyTable = capturedTables.single { it.schema == "test_db" && it.name == "empty_table" }
+            assertNull(indexedEmptyTable.totalRecords)
+            assertNull(indexedEmptyTable.numFiles)
+            assertNull(indexedEmptyTable.sizeInBytes)
 
             // Verify 2 schemas were indexed
             assertEquals(2, capturedSchemas.size, "Should index 2 schemas")
