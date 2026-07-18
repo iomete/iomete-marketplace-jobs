@@ -46,7 +46,7 @@ quick logic-only debugging where exact-parity is not required.
 
 The image tag is derived from `gradle.properties`
 (`sparkVersion` + `sparkImageRevision`), matching the `FROM` line in the
-`Dockerfile`. At the time of writing that is `spark:3.5.7-v3`; use whatever the
+`Dockerfile`. At the time of writing that is `spark:3.5.7-v2`; use whatever the
 current values are.
 
 ## One-time setup
@@ -54,7 +54,7 @@ current values are.
 ### 1. Extract the exact Spark distribution from the image
 
 ```bash
-docker create --name spark-extract iomete.azurecr.io/iomete/spark:3.5.7-v3
+docker create --name spark-extract iomete.azurecr.io/iomete/spark:3.5.7-v2
 docker cp spark-extract:/opt/spark ./.local-spark
 docker rm spark-extract
 ```

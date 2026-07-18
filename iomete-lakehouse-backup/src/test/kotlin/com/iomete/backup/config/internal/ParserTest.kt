@@ -1,6 +1,7 @@
 package com.iomete.backup.config.internal
 
 import com.iomete.backup.config.ConfigParseException
+import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -48,6 +49,53 @@ class ParserTest {
         val target = config.target as S3Config
         assertEquals("target-bucket", target.bucket)
         assertEquals("backup/", target.prefix)
+    }
+
+    @Test
+    fun `parse S3-to-HDFS config binds HdfsConfig target`() {
+        val json =
+            """
+            {
+              "source": {
+                "type": "s3",
+                "bucket": "source-bucket",
+                "prefix": "data/",
+                "accessKey": "access123",
+                "secretKey": "secret456"
+              },
+              "target": {
+                "type": "hdfs",
+                "namenode": "isilon.example.com:8020",
+                "path": "backups",
+                "user": "isilon-user"
+              }
+            }
+            """.trimIndent()
+
+        val config = Parser.parse(json)
+
+        assertIs<S3Config>(config.source)
+        assertIs<HdfsConfig>(config.target)
+
+        val target = config.target as HdfsConfig
+        assertEquals("isilon.example.com:8020", target.namenode)
+        assertEquals("backups", target.path)
+        assertEquals("isilon-user", target.user)
+        assertEquals("simple", target.authentication) // default
+    }
+
+    @Test
+    fun `HDFS config missing user names the field`() {
+        val json =
+            """
+            {
+              "source": { "type": "s3", "bucket": "b", "accessKey": "k", "secretKey": "s" },
+              "target": { "type": "hdfs", "namenode": "isilon.example.com:8020" }
+            }
+            """.trimIndent()
+
+        val e = assertThrows<ConfigParseException> { Parser.parse(json) }
+        assertEquals("Missing required field 'target.user'", e.message)
     }
 
     @Test

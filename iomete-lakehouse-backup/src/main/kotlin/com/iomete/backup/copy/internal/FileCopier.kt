@@ -2,8 +2,8 @@ package com.iomete.backup.copy.internal
 
 import com.iomete.backup.config.StorageConfig
 import com.iomete.backup.copy.CopyResult
+import com.iomete.backup.fs.FileSystemFactory
 import com.iomete.backup.fs.HadoopConfigBuilder
-import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.FileUtil
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.security.AccessControlException
@@ -114,8 +114,8 @@ class FileCopier(
         val sourceConf = HadoopConfigBuilder.build(sourceConfig)
         val targetConf = HadoopConfigBuilder.build(targetConfig)
 
-        return FileSystem.newInstance(URI(sourceFilePath), sourceConf).use { sourceFs ->
-            FileSystem.newInstance(URI(targetFilePath), targetConf).use { targetFs ->
+        return FileSystemFactory.create(sourceConfig, URI(sourceFilePath), sourceConf).use { sourceFs ->
+            FileSystemFactory.create(targetConfig, URI(targetFilePath), targetConf).use { targetFs ->
                 val sourcePath = Path(sourceFilePath)
                 val targetPath = Path(targetFilePath)
 

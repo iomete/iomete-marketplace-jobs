@@ -15,6 +15,7 @@ data class ApplicationConfig(
 )
 @JsonSubTypes(
     JsonSubTypes.Type(value = S3Config::class, name = "s3"),
+    JsonSubTypes.Type(value = HdfsConfig::class, name = "hdfs"),
 )
 sealed class StorageConfig : java.io.Serializable {
     abstract val rootUri: String
@@ -33,5 +34,18 @@ data class S3Config(
         get() {
             val trimmedPrefix = prefix.trim('/')
             return if (trimmedPrefix.isEmpty()) "s3a://$bucket" else "s3a://$bucket/$trimmedPrefix"
+        }
+}
+
+data class HdfsConfig(
+    val namenode: String,
+    val path: String = "",
+    val authentication: String = "simple",
+    val user: String,
+) : StorageConfig() {
+    override val rootUri: String
+        get() {
+            val trimmedPath = path.trim('/')
+            return if (trimmedPath.isEmpty()) "hdfs://$namenode" else "hdfs://$namenode/$trimmedPath"
         }
 }

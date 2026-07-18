@@ -1,9 +1,11 @@
 package com.iomete.backup.config.internal
 
 import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertSame
 
 class UtilsTest {
     @Test
@@ -37,5 +39,30 @@ class UtilsTest {
         assertEquals("target-bucket", target.bucket)
         assertEquals("********", target.accessKey)
         assertEquals("********", target.secretKey)
+    }
+
+    @Test
+    fun `redactSecrets leaves HDFS target unchanged`() {
+        val hdfsTarget =
+            HdfsConfig(
+                namenode = "isilon.example.com:8020",
+                path = "backups",
+                user = "isilon-user",
+            )
+        val config =
+            ApplicationConfig(
+                source =
+                    S3Config(
+                        bucket = "source-bucket",
+                        accessKey = "AKIAIOSFODNN7EXAMPLE",
+                        secretKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                    ),
+                target = hdfsTarget,
+            )
+
+        val redacted = Utils.redactSecrets(config)
+
+        assertSame(hdfsTarget, redacted.target)
+        assertEquals("********", (redacted.source as S3Config).accessKey)
     }
 }
