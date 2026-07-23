@@ -19,6 +19,7 @@ data class ApplicationConfig(
 )
 sealed class StorageConfig : java.io.Serializable {
     abstract val rootUri: String
+    abstract val hadoopOptions: Map<String, String>
 }
 
 data class S3Config(
@@ -29,6 +30,7 @@ data class S3Config(
     val accessKey: String,
     val secretKey: String,
     val region: String = "us-east-1",
+    override val hadoopOptions: Map<String, String> = emptyMap(),
 ) : StorageConfig() {
     override val rootUri: String
         get() {
@@ -42,6 +44,7 @@ data class HdfsConfig(
     val path: String = "",
     val authentication: String = "simple",
     val user: String,
+    override val hadoopOptions: Map<String, String> = emptyMap(),
 ) : StorageConfig() {
     override val rootUri: String
         get() {

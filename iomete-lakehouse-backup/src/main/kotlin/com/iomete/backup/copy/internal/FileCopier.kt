@@ -2,8 +2,10 @@ package com.iomete.backup.copy.internal
 
 import com.iomete.backup.config.StorageConfig
 import com.iomete.backup.copy.CopyResult
+import com.iomete.backup.copy.TempFiles
 import com.iomete.backup.fs.FileSystemFactory
 import com.iomete.backup.fs.HadoopConfigBuilder
+import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.FileUtil
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.security.AccessControlException
@@ -88,7 +90,7 @@ class FileCopier(
                 if (isTerminal(e)) break
                 if (attempt < maxAttempts) {
                     try {
-                        Thread.sleep(retryDelayMs)
+                        Thread.sleep(fullJitterDelayMs(attempt, retryDelayMs))
                     } catch (ie: InterruptedException) {
                         Thread.currentThread().interrupt()
                         break
@@ -118,22 +120,49 @@ class FileCopier(
 
         return FileSystemFactory.create(sourceConfig, sourcePath.toUri(), sourceConf).use { sourceFs ->
             FileSystemFactory.create(targetConfig, targetPath.toUri(), targetConf).use { targetFs ->
+                val tempPath = TempFiles.pathFor(targetPath)
 
                 targetPath.parent?.let { if (!targetFs.exists(it)) targetFs.mkdirs(it) }
 
-                val fileSize = sourceFs.getFileStatus(sourcePath).len
-                val copied = FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, targetConf)
-                if (!copied) {
-                    throw IOException("FileUtil.copy reported failure: $sourceFilePath -> $targetFilePath")
-                }
+                val sourceLen = sourceFs.getFileStatus(sourcePath).len
 
-                val targetSize = targetFs.getFileStatus(targetPath).len
-                if (targetSize != fileSize) {
-                    throw IOException("Length mismatch: source=$fileSize bytes, target=$targetSize bytes")
-                }
+                try {
+                    val copied = FileUtil.copy(sourceFs, sourcePath, targetFs, tempPath, false, true, targetConf)
 
-                fileSize
+                    if (!copied) {
+                        throw IOException("FileUtil.copy reported failure: $sourceFilePath -> $tempPath")
+                    }
+
+                    val writtenLen = targetFs.getFileStatus(tempPath).len
+                    if (writtenLen != sourceLen) {
+                        throw IOException(
+                            "Length verification failed for $targetFilePath: " +
+                                "source=$sourceLen bytes, written=$writtenLen bytes",
+                        )
+                    }
+
+                    // Overwrite: Hadoop rename returns false on an existing destination.
+                    if (targetFs.exists(targetPath)) targetFs.delete(targetPath, false)
+                    if (!targetFs.rename(tempPath, targetPath)) {
+                        throw IOException("Rename failed: $tempPath -> $targetFilePath")
+                    }
+                    sourceLen
+                } catch (e: Exception) {
+                    deleteQuietly(targetFs, tempPath)
+                    throw e
+                }
             }
+        }
+    }
+
+    private fun deleteQuietly(
+        fs: FileSystem,
+        path: Path,
+    ) {
+        try {
+            fs.delete(path, false)
+        } catch (e: Exception) {
+            log().warn("Best-effort temp cleanup failed for {}: {}", path, e.toString())
         }
     }
 

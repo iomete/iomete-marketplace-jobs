@@ -9,6 +9,8 @@ object HadoopConfigBuilder {
     fun build(config: StorageConfig): Configuration {
         val conf = Configuration()
         configMap(config).forEach { (key, value) -> conf[key] = value }
+        // Applied last: overrides any built-in setting.
+        config.hadoopOptions.forEach { (key, value) -> conf[key] = value }
         return conf
     }
 

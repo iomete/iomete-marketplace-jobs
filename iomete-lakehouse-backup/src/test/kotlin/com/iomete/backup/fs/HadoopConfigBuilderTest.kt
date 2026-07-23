@@ -103,6 +103,25 @@ class HadoopConfigBuilderTest {
         }
 
         @Test
+        fun `S3 hadoopOptions override built-in settings and add new keys`() {
+            val config =
+                S3Config(
+                    bucket = "my-bucket",
+                    accessKey = "key",
+                    secretKey = "secret",
+                    hadoopOptions =
+                        mapOf(
+                            "fs.s3a.impl.disable.cache" to "false",
+                            "fs.s3a.custom.fault" to "on",
+                        ),
+                )
+            val conf = HadoopConfigBuilder.build(config)
+
+            assertEquals("false", conf.get("fs.s3a.impl.disable.cache"))
+            assertEquals("on", conf.get("fs.s3a.custom.fault"))
+        }
+
+        @Test
         fun `same bucket S3 configs keep credentials isolated in separate configurations`() {
             val sourceConf =
                 HadoopConfigBuilder.build(
@@ -147,6 +166,24 @@ class HadoopConfigBuilderTest {
 
             assertEquals("hdfs://isilon.example.com:8020", conf.get("fs.defaultFS"))
             assertEquals("simple", conf.get("hadoop.security.authentication"))
+        }
+
+        @Test
+        fun `HDFS hadoopOptions override built-in settings and add new keys`() {
+            val config =
+                HdfsConfig(
+                    namenode = "isilon.example.com:8020",
+                    user = "isilon-user",
+                    hadoopOptions =
+                        mapOf(
+                            "hadoop.security.authentication" to "kerberos",
+                            "fs.hdfs.custom.fault" to "on",
+                        ),
+                )
+            val conf = HadoopConfigBuilder.build(config)
+
+            assertEquals("kerberos", conf.get("hadoop.security.authentication"))
+            assertEquals("on", conf.get("fs.hdfs.custom.fault"))
         }
 
         @Test
