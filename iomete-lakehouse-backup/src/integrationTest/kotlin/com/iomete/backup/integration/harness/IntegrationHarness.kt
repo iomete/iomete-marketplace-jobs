@@ -10,6 +10,7 @@ import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3Client
+import java.io.File
 import java.net.URI
 import java.util.UUID
 
@@ -26,7 +27,7 @@ object IntegrationHarness {
 
     private val hdfsLazy =
         lazy {
-            val baseDir = java.io.File("build/test/minidfs-${UUID.randomUUID()}").absolutePath
+            val baseDir = File("build/test/minidfs-${UUID.randomUUID()}").absolutePath
             val conf = Configuration()
             conf.set("hdfs.minidfs.basedir", baseDir)
             MiniDFSCluster
