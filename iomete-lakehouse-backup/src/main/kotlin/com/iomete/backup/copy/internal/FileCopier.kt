@@ -12,7 +12,6 @@ import org.slf4j.LoggerFactory
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.Serializable
-import java.net.URI
 import java.nio.file.AccessDeniedException
 
 class FileCopier(
@@ -114,10 +113,11 @@ class FileCopier(
         val sourceConf = HadoopConfigBuilder.build(sourceConfig)
         val targetConf = HadoopConfigBuilder.build(targetConfig)
 
-        return FileSystemFactory.create(sourceConfig, URI(sourceFilePath), sourceConf).use { sourceFs ->
-            FileSystemFactory.create(targetConfig, URI(targetFilePath), targetConf).use { targetFs ->
-                val sourcePath = Path(sourceFilePath)
-                val targetPath = Path(targetFilePath)
+        val sourcePath = Path(sourceFilePath)
+        val targetPath = Path(targetFilePath)
+
+        return FileSystemFactory.create(sourceConfig, sourcePath.toUri(), sourceConf).use { sourceFs ->
+            FileSystemFactory.create(targetConfig, targetPath.toUri(), targetConf).use { targetFs ->
 
                 targetPath.parent?.let { if (!targetFs.exists(it)) targetFs.mkdirs(it) }
 

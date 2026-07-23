@@ -1,9 +1,9 @@
-import org.gradle.api.tasks.testing.Test
+import org.gradle.api.plugins.jvm.JvmTestSuite
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
-    kotlin("jvm") version "2.4.0"
+    kotlin("jvm") version "2.4.10"
     application
 }
 
@@ -34,29 +34,62 @@ repositories {
     mavenCentral()
 }
 
+testing {
+    suites {
+        val test by getting(JvmTestSuite::class) {
+            useJUnitJupiter("6.1.2")
+        }
+
+        // Own source set + classpath: keeps the unshaded Hadoop (see below) off the unit-test classpath.
+        register<JvmTestSuite>("integrationTest") {
+            useJUnitJupiter("6.1.2")
+            dependencies {
+                implementation(project())
+
+                // Spark's shaded hadoop-client (3.3.4) relocates protobuf and breaks MiniDFSCluster;
+                // exclude it and pull unshaded Hadoop 3.4.1 (matching the hadoop-aws pin) instead.
+                implementation("org.apache.spark:spark-sql_2.12:$sparkVersion") {
+                    exclude(group = "org.apache.hadoop", module = "hadoop-client-api")
+                    exclude(group = "org.apache.hadoop", module = "hadoop-client-runtime")
+                }
+                implementation("org.apache.hadoop:hadoop-client:$hadoopAwsVersion")
+                implementation("org.apache.hadoop:hadoop-aws:$hadoopAwsVersion")
+                implementation("org.apache.hadoop:hadoop-minicluster:$hadoopAwsVersion")
+                runtimeOnly("org.mockito:mockito-core:5.23.0") // MiniDFSCluster uses Mockito internally
+                implementation("org.testcontainers:junit-jupiter:1.21.4")
+                implementation("org.testcontainers:minio:1.21.4")
+                implementation("software.amazon.awssdk:s3:2.49.1")
+                implementation("org.jetbrains.kotlin:kotlin-test")
+            }
+            targets {
+                all {
+                    testTask.configure {
+                        jvmArgs(sparkJvmArgs)
+                        shouldRunAfter(test)
+                        testLogging {
+                            events("passed", "skipped", "failed")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 dependencies {
-    // JSON parsing
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.22.1")
 
-    // Logging
     implementation("org.slf4j:slf4j-api:2.0.18")
     runtimeOnly("org.apache.logging.log4j:log4j-slf4j2-impl:2.26.1")
     runtimeOnly("org.apache.logging.log4j:log4j-core:2.26.1")
 
-    // Provided at runtime by the Spark base image
+    // compileOnly: the Spark base image provides these at runtime.
     compileOnly("org.apache.spark:spark-sql_2.12:$sparkVersion")
     compileOnly("org.apache.hadoop:hadoop-aws:$hadoopAwsVersion")
 
-    // Testing
-    testImplementation("org.junit.jupiter:junit-jupiter:6.1.2")
     testImplementation("io.mockk:mockk:1.14.11")
     testImplementation("org.apache.spark:spark-sql_2.12:$sparkVersion")
-    testImplementation("org.apache.hadoop:hadoop-aws:$hadoopAwsVersion")
-    testImplementation("org.testcontainers:junit-jupiter:1.21.4")
-    testImplementation("org.testcontainers:minio:1.21.4")
-    testImplementation("software.amazon.awssdk:s3:2.47.5")
     testImplementation(kotlin("test"))
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 application {
@@ -73,27 +106,6 @@ tasks.withType<KotlinCompile> {
 
 tasks.test {
     jvmArgs(sparkJvmArgs)
-    useJUnitPlatform {
-        excludeTags("integration")
-    }
-    testLogging {
-        events("passed", "skipped", "failed")
-    }
-}
-
-tasks.register<Test>("integrationTest") {
-    description = "Runs Docker-backed integration tests."
-    group = "verification"
-    testClassesDirs =
-        sourceSets.test
-            .get()
-            .output.classesDirs
-    classpath = sourceSets.test.get().runtimeClasspath
-    jvmArgs(sparkJvmArgs)
-    shouldRunAfter(tasks.test)
-    useJUnitPlatform {
-        includeTags("integration")
-    }
     testLogging {
         events("passed", "skipped", "failed")
     }
