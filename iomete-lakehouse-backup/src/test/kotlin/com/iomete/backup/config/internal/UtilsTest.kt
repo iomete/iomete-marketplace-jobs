@@ -31,7 +31,7 @@ class UtilsTest {
         val redacted = Utils.redactSecrets(config)
 
         val source = redacted.source as S3Config
-        assertEquals("WRONG-bucket", source.bucket) // ponytail: temp break to validate CI report, revert
+        assertEquals("source-bucket", source.bucket) // Non-sensitive preserved
         assertEquals("********", source.accessKey)
         assertEquals("********", source.secretKey)
 
