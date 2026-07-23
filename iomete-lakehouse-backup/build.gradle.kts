@@ -89,6 +89,9 @@ dependencies {
 
     testImplementation("io.mockk:mockk:1.14.11")
     testImplementation("org.apache.spark:spark-sql_2.12:$sparkVersion")
+    // Pin the shaded Hadoop client to the base image's version (overrides Spark's transitive 3.3.4).
+    testImplementation("org.apache.hadoop:hadoop-client-api:$hadoopAwsVersion")
+    testImplementation("org.apache.hadoop:hadoop-client-runtime:$hadoopAwsVersion")
     testImplementation(kotlin("test"))
 }
 
