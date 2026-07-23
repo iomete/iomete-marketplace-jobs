@@ -20,42 +20,59 @@ import java.util.UUID
 object IntegrationHarness {
     private const val REGION = "us-east-1"
 
-    val minio: MinIOContainer by lazy {
-        MinIOContainer("minio/minio:RELEASE.2025-09-07T16-13-09Z").also { it.start() }
-    }
+    private val minioLazy =
+        lazy { MinIOContainer("minio/minio:RELEASE.2025-09-07T16-13-09Z").also { it.start() } }
+    val minio: MinIOContainer by minioLazy
 
-    val hdfs: MiniDFSCluster by lazy {
-        val baseDir = java.io.File("build/test/minidfs-${UUID.randomUUID()}").absolutePath
-        val conf = Configuration()
-        conf.set("hdfs.minidfs.basedir", baseDir)
-        MiniDFSCluster
-            .Builder(conf)
-            .numDataNodes(1)
-            .build()
-            .also { it.waitClusterUp() }
-    }
+    private val hdfsLazy =
+        lazy {
+            val baseDir = java.io.File("build/test/minidfs-${UUID.randomUUID()}").absolutePath
+            val conf = Configuration()
+            conf.set("hdfs.minidfs.basedir", baseDir)
+            MiniDFSCluster
+                .Builder(conf)
+                .numDataNodes(1)
+                .build()
+                .also { it.waitClusterUp() }
+        }
+    val hdfs: MiniDFSCluster by hdfsLazy
 
-    val spark: SparkSession by lazy {
-        SparkSession
-            .builder()
-            .appName("backup-integration")
-            .master("local[2]")
-            .config("spark.ui.enabled", "false")
-            .config("spark.sql.shuffle.partitions", "2")
-            .orCreate
-    }
+    private val sparkLazy =
+        lazy {
+            SparkSession
+                .builder()
+                .appName("backup-integration")
+                .master("local[2]")
+                .config("spark.ui.enabled", "false")
+                .config("spark.sql.shuffle.partitions", "2")
+                .orCreate
+        }
+    val spark: SparkSession by sparkLazy
 
-    val s3: S3Client by lazy {
-        S3Client
-            .builder()
-            .endpointOverride(URI(minio.s3URL))
-            .region(Region.of(REGION))
-            .forcePathStyle(true)
-            .credentialsProvider(
-                StaticCredentialsProvider.create(
-                    AwsBasicCredentials.create(minio.userName, minio.password),
-                ),
-            ).build()
+    private val s3Lazy =
+        lazy {
+            S3Client
+                .builder()
+                .endpointOverride(URI(minio.s3URL))
+                .region(Region.of(REGION))
+                .forcePathStyle(true)
+                .credentialsProvider(
+                    StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create(minio.userName, minio.password),
+                    ),
+                ).build()
+        }
+    val s3: S3Client by s3Lazy
+
+    // No hdfs.shutdown(): calling it from a JVM hook races Hadoop's own ShutdownHookManager.
+    init {
+        Runtime.getRuntime().addShutdownHook(
+            Thread {
+                if (s3Lazy.isInitialized()) runCatching { s3.close() }
+                if (sparkLazy.isInitialized()) runCatching { spark.stop() }
+                if (minioLazy.isInitialized()) runCatching { minio.stop() }
+            },
+        )
     }
 
     fun s3Config(bucket: String): S3Config =
