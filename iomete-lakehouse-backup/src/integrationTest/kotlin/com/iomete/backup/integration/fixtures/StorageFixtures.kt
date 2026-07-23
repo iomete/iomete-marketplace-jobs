@@ -69,10 +69,10 @@ fun readHdfs(path: String): Map<String, ByteArray> {
 
     val result = linkedMapOf<String, ByteArray>()
     val rootStr = root.toUri().path.trimEnd('/')
-    val it = fs.listFiles(root, true)
+    val iter = fs.listFiles(root, true)
 
-    while (it.hasNext()) {
-        val status = it.next()
+    while (iter.hasNext()) {
+        val status = iter.next()
         val key =
             status.path
                 .toUri()
