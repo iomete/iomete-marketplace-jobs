@@ -13,6 +13,8 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.Arguments
 import org.junit.jupiter.params.provider.MethodSource
+import java.util.UUID
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class BackupJobIntegrationTest {
@@ -58,6 +60,22 @@ class BackupJobIntegrationTest {
         )
 
         assertTrue(readS3(target).isEmpty(), "empty source must not write to target")
+    }
+
+    @Test
+    fun `a failed copy surfaces as IllegalStateException from the entry point`() {
+        val source = IntegrationHarness.freshBucket()
+        seedS3(source, mapOf("root.txt" to "payload".toByteArray()))
+
+        // Target bucket is never created, so every write fails -> the job's failure check throws.
+        val missingTarget = IntegrationHarness.s3Config("missing-${UUID.randomUUID()}")
+
+        assertFailsWith<IllegalStateException> {
+            BackupJob.run(
+                IntegrationHarness.spark,
+                ApplicationConfig(source = IntegrationHarness.s3Config(source), target = missingTarget),
+            )
+        }
     }
 
     companion object {
