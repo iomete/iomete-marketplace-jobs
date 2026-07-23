@@ -17,6 +17,9 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
     defaults:
       run:
         working-directory: iomete-lakehouse-backup
@@ -50,6 +53,12 @@ jobs:
       - name: Run integration tests
         run: ./gradlew integrationTest
 
+      - name: Publish test report
+        if: always()
+        uses: mikepenz/action-junit-report@v6
+        with:
+          report_paths: 'iomete-lakehouse-backup/build/test-results/**/*.xml'
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -58,4 +67,4 @@ jobs:
           path: |
             iomete-lakehouse-backup/build/reports/tests/test/
             iomete-lakehouse-backup/build/reports/tests/integrationTest/
-          retention-days: 7
+          retention-days: 3
