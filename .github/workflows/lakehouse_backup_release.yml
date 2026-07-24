@@ -1,4 +1,4 @@
-name: Lakehouse Backup Image
+name: Lakehouse Backup Release
 
 on:
   workflow_dispatch:
