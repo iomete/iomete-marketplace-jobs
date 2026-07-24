@@ -3,6 +3,7 @@ package com.iomete.backup.fs
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import org.apache.hadoop.fs.FileStatus
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.LocatedFileStatus
 import org.apache.hadoop.fs.Path
@@ -101,7 +102,63 @@ class FileListerTest {
         verify(exactly = 1) { fileSystem.listFiles(root, true) }
     }
 
+    @Test
+    fun `lists an empty leaf directory`() {
+        val root = Path("hdfs://namenode:8020/warehouse")
+        val empty = Path(root, "empty")
+        every { fileSystem.listStatus(root) } returns arrayOf(directoryStatus(empty))
+        every { fileSystem.listStatus(empty) } returns emptyArray()
+
+        val result = fileLister.listLeafEmptyDirectories(root)
+
+        assertEquals(listOf(empty), result)
+    }
+
+    @Test
+    fun `lists only the deepest directory in a nested empty chain`() {
+        val root = Path("hdfs://namenode:8020/warehouse")
+        val parent = Path(root, "parent")
+        val empty = Path(parent, "empty")
+        every { fileSystem.listStatus(root) } returns arrayOf(directoryStatus(parent))
+        every { fileSystem.listStatus(parent) } returns arrayOf(directoryStatus(empty))
+        every { fileSystem.listStatus(empty) } returns emptyArray()
+
+        val result = fileLister.listLeafEmptyDirectories(root)
+
+        assertEquals(listOf(empty), result)
+    }
+
+    @Test
+    fun `returns only empty leaves, skipping file-bearing dirs`() {
+        val root = Path("hdfs://namenode:8020/warehouse")
+        val withFile = Path(root, "withFile")
+        val emptyA = Path(root, "emptyA")
+        val emptyB = Path(root, "emptyB")
+        every { fileSystem.listStatus(root) } returns
+            arrayOf(directoryStatus(withFile), directoryStatus(emptyA), directoryStatus(emptyB))
+        every { fileSystem.listStatus(withFile) } returns
+            arrayOf(FileStatus(10L, false, 1, 0L, 0L, Path(withFile, "f.parquet")))
+        every { fileSystem.listStatus(emptyA) } returns emptyArray()
+        every { fileSystem.listStatus(emptyB) } returns emptyArray()
+
+        val result = fileLister.listLeafEmptyDirectories(root)
+
+        assertEquals(listOf(emptyA, emptyB), result)
+    }
+
+    @Test
+    fun `an empty root returns itself`() {
+        val root = Path("hdfs://namenode:8020/warehouse")
+        every { fileSystem.listStatus(root) } returns emptyArray()
+
+        val result = fileLister.listLeafEmptyDirectories(root)
+
+        assertEquals(listOf(root), result)
+    }
+
     // -- helpers --
+
+    private fun directoryStatus(path: Path): FileStatus = FileStatus(0L, true, 1, 0L, 0L, path)
 
     private fun mockFileStatus(
         path: String,

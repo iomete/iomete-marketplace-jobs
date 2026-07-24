@@ -4,9 +4,12 @@ import com.iomete.backup.BackupJob
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.StorageConfig
 import com.iomete.backup.integration.fixtures.assertMatches
+import com.iomete.backup.integration.fixtures.directoryExists
 import com.iomete.backup.integration.fixtures.fixture
 import com.iomete.backup.integration.fixtures.readHdfs
 import com.iomete.backup.integration.fixtures.readS3
+import com.iomete.backup.integration.fixtures.seedHdfs
+import com.iomete.backup.integration.fixtures.seedHdfsDirectories
 import com.iomete.backup.integration.fixtures.seedS3
 import com.iomete.backup.integration.harness.IntegrationHarness
 import org.junit.jupiter.api.Test
@@ -25,7 +28,7 @@ class BackupJobIntegrationTest {
 
     @ParameterizedTest(name = "s3 to {0} happy path copies every file byte-for-byte")
     @MethodSource("targets")
-    fun happyPath(
+    fun s3SourceHappyPath(
         @Suppress("UNUSED_PARAMETER") name: String,
         makeTarget: () -> Target,
     ) {
@@ -44,6 +47,76 @@ class BackupJobIntegrationTest {
         )
 
         assertMatches(tree, target.read())
+    }
+
+    @ParameterizedTest(name = "hdfs to {0} happy path copies every file byte-for-byte")
+    @MethodSource("targets")
+    fun hdfsSourceHappyPath(
+        @Suppress("UNUSED_PARAMETER") name: String,
+        makeTarget: () -> Target,
+    ) {
+        val source = IntegrationHarness.freshHdfsPath()
+        val tree = fixture()
+
+        seedHdfs(source, tree)
+
+        val target = makeTarget()
+        BackupJob.run(
+            IntegrationHarness.spark,
+            ApplicationConfig(
+                source = IntegrationHarness.hdfsConfig(source),
+                target = target.config,
+            ),
+        )
+
+        assertMatches(tree, target.read())
+    }
+
+    @ParameterizedTest(name = "hdfs to {0} copies files and recreates empty directories together")
+    @MethodSource("targets")
+    fun hdfsSourceFilesAndEmptyDirectories(
+        @Suppress("UNUSED_PARAMETER") name: String,
+        makeTarget: () -> Target,
+    ) {
+        val source = IntegrationHarness.freshHdfsPath()
+        val tree = fixture()
+        seedHdfs(source, tree)
+        seedHdfsDirectories(source, "empty", "nested/empty")
+        val target = makeTarget()
+
+        BackupJob.run(
+            IntegrationHarness.spark,
+            ApplicationConfig(
+                source = IntegrationHarness.hdfsConfig(source),
+                target = target.config,
+            ),
+        )
+
+        assertMatches(tree, target.read())
+        assertTrue(directoryExists(target.config, "empty"))
+        assertTrue(directoryExists(target.config, "nested/empty"))
+    }
+
+    @ParameterizedTest(name = "hdfs to {0} recreates empty directories")
+    @MethodSource("targets")
+    fun hdfsSourceEmptyDirectories(
+        @Suppress("UNUSED_PARAMETER") name: String,
+        makeTarget: () -> Target,
+    ) {
+        val source = IntegrationHarness.freshHdfsPath()
+        seedHdfsDirectories(source, "empty", "nested/empty")
+        val target = makeTarget()
+
+        BackupJob.run(
+            IntegrationHarness.spark,
+            ApplicationConfig(
+                source = IntegrationHarness.hdfsConfig(source),
+                target = target.config,
+            ),
+        )
+
+        assertTrue(directoryExists(target.config, "empty"))
+        assertTrue(directoryExists(target.config, "nested/empty"))
     }
 
     @Test
