@@ -103,6 +103,16 @@ class FileListerTest {
     }
 
     @Test
+    fun `fully empty root returns no directories`() {
+        val root = Path("hdfs://namenode:8020/warehouse")
+        every { fileSystem.listStatus(root) } returns emptyArray()
+
+        val result = fileLister.listLeafEmptyDirectories(root)
+
+        assertEquals(emptyList(), result)
+    }
+
+    @Test
     fun `lists an empty leaf directory`() {
         val root = Path("hdfs://namenode:8020/warehouse")
         val empty = Path(root, "empty")
@@ -144,16 +154,6 @@ class FileListerTest {
         val result = fileLister.listLeafEmptyDirectories(root)
 
         assertEquals(listOf(emptyA, emptyB), result)
-    }
-
-    @Test
-    fun `an empty root returns itself`() {
-        val root = Path("hdfs://namenode:8020/warehouse")
-        every { fileSystem.listStatus(root) } returns emptyArray()
-
-        val result = fileLister.listLeafEmptyDirectories(root)
-
-        assertEquals(listOf(root), result)
     }
 
     // -- helpers --
