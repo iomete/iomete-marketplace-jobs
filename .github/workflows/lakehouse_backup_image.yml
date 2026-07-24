@@ -69,8 +69,10 @@ jobs:
         run: az acr login --name ${{ secrets.ACR_NAME }}
 
       - name: Build and push image
+        env:
+          REF: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.ref_name }}" = "main" ]; then
+          if [ "$REF" = "main" ]; then
             # Main release: immutable version + short-sha tags.
             tag=$(sed -n 's/^projectVersion=//p' gradle.properties)
             sha=$(git rev-parse --short HEAD)
@@ -86,6 +88,6 @@ jobs:
             done
           else
             # Branch test build: single mutable branch-name tag.
-            branch_tag=$(echo "${{ github.ref_name }}" | tr '/' '-')
+            branch_tag=$(echo "$REF" | tr '/' '-')
             make docker-push tag="$branch_tag"
           fi
