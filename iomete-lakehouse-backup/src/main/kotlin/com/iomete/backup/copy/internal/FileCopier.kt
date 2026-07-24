@@ -126,6 +126,12 @@ class FileCopier(
                 if (!copied) {
                     throw IOException("FileUtil.copy reported failure: $sourceFilePath -> $targetFilePath")
                 }
+
+                val targetSize = targetFs.getFileStatus(targetPath).len
+                if (targetSize != fileSize) {
+                    throw IOException("Length mismatch: source=$fileSize bytes, target=$targetSize bytes")
+                }
+
                 fileSize
             }
         }

@@ -22,4 +22,13 @@ class FileLister(
             }
         }
     }
+
+    fun listLeafEmptyDirectories(rootPath: Path): List<Path> {
+        val children = fileSystem.listStatus(rootPath)
+        if (children.isEmpty()) return listOf(rootPath)
+
+        return children
+            .filter { it.isDirectory }
+            .flatMap { listLeafEmptyDirectories(it.path) }
+    }
 }

@@ -1,6 +1,7 @@
 package com.iomete.backup
 
 import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.copy.CopyJobRunner
 import com.iomete.backup.fs.FileEntry
 import com.iomete.backup.fs.FileLister
@@ -20,17 +21,22 @@ object BackupJob {
     ) {
         logger.info("Enumerating source files...")
         val files = enumerateSource(config)
+        val emptyDirs = enumerateEmptyDirectories(config)
 
         logger.info("Found {} files to copy", files.size)
+        if (emptyDirs.isNotEmpty()) {
+            logger.info("Found {} empty directories to replicate", emptyDirs.size)
+        }
+
         val totalBytes = files.sumOf { it.size }
         logger.info("Total size: {} bytes ({} MB)", totalBytes, totalBytes / (1024 * 1024))
 
-        if (files.isEmpty()) {
+        if (files.isEmpty() && emptyDirs.isEmpty()) {
             logger.info("No files found in source. Nothing to copy.")
             return
         }
 
-        val copyJobResult = CopyJobRunner.run(spark, config, files)
+        val copyJobResult = CopyJobRunner.run(spark, config, files, emptyDirs)
         val summary = copyJobResult.summary
 
         logger.info(
@@ -63,6 +69,17 @@ object BackupJob {
 
         return FileSystemFactory.create(config.source, URI(sourceRoot), sourceConf).use { sourceFs ->
             FileLister(sourceFs).listRecursively(Path(sourceRoot)).toList()
+        }
+    }
+
+    private fun enumerateEmptyDirectories(config: ApplicationConfig): List<String> {
+        if (config.source !is HdfsConfig) return emptyList()
+
+        val sourceConf = HadoopConfigBuilder.build(config.source)
+        val sourceRoot = config.source.rootUri
+
+        return FileSystemFactory.create(config.source, URI(sourceRoot), sourceConf).use { sourceFs ->
+            FileLister(sourceFs).listLeafEmptyDirectories(Path(sourceRoot)).map { it.toString() }
         }
     }
 }

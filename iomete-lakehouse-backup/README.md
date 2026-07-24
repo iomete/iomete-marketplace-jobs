@@ -1,19 +1,21 @@
 # IOMETE Lakehouse Backup
 
-Copy your data from an S3 source to an S3 or HDFS (Dell Isilon / OneFS) target,
-as a Spark job on IOMETE.
+Copy your data between any S3-compatible object store (AWS S3, Dell ECS, Ceph)
+and any HDFS-compatible storage (Dell Isilon / OneFS, or a Hadoop cluster) as a
+Spark job on IOMETE.
 
 ## Overview
 
-This job copies all the files from a source S3 location to a target location
-(another S3 bucket, or an HDFS filesystem such as Dell Isilon). It runs the copy
+This job copies all files between S3 and HDFS locations. It runs the copy
 in parallel across your Spark cluster, so it scales with the size of the data.
 You set it up with a single JSON file and run it as a scheduled job on the
 IOMETE platform.
 
 ## What it does
 
-- Copies files from an S3 source to an S3 or HDFS target
+- Copies files between S3 and HDFS locations
+- Verifies every copied file by comparing its source and target length
+- Recreates empty directories when reading from HDFS
 - Copies a folder and everything under it
 - Uses separate credentials for the source and the target (for example, a
   production account and a separate backup account)
@@ -60,9 +62,10 @@ The remaining S3 fields are optional and have sensible defaults: `prefix`
 (`us-east-1`). The job scales automatically with your Spark cluster, so there is
 nothing extra to tune.
 
-### HDFS target (Dell Isilon / OneFS)
+### HDFS source or target (any HDFS-compatible storage, e.g. Dell Isilon / OneFS)
 
-To back up into an HDFS filesystem, set the `target` to `type: "hdfs"`:
+Use `type: "hdfs"` for either side of a backup or restore. To back up into an
+HDFS filesystem, configure the `target`:
 
 ```json
 {
@@ -89,10 +92,30 @@ To back up into an HDFS filesystem, set the `target` to `type: "hdfs"`:
 | `user` | yes | The identity the files are written as. HDFS `simple` authentication has no password — the job connects as this user and OneFS applies that user's POSIX permissions. Choose a user with write access to `path`. |
 | `authentication` | no (default `simple`) | Only `simple` is supported; any other value is rejected at validation. Kerberos/secure clusters are not yet supported. |
 
+To restore an HDFS backup to S3, swap the storage types:
+
+```json
+{
+  "source": {
+    "type": "hdfs",
+    "namenode": "<host:port>",
+    "path": "<backup-path>",
+    "user": "<hdfs-user>"
+  },
+  "target": {
+    "type": "s3",
+    "bucket": "<target-bucket>",
+    "prefix": "<target-prefix>",
+    "accessKey": "${TARGET_ACCESS_KEY}",
+    "secretKey": "${TARGET_SECRET_KEY}"
+  }
+}
+```
+
 > **Credentials for HDFS.** Simple authentication carries no secret or password
-> — only the `user` name — so there is nothing to store in IOMETE Secrets for
-> the target. Ensure the run has network reachability to the NameNode and every
-> DataNode in the cluster.
+> — only the `user` name — so there is nothing to store in IOMETE Secrets.
+> Ensure the run has network reachability to the NameNode and every DataNode in
+> the cluster.
 
 ## Set up as a job in IOMETE
 
