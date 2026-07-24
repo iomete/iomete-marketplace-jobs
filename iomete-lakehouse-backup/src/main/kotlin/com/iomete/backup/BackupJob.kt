@@ -3,10 +3,10 @@ package com.iomete.backup
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.copy.CopyJobRunner
-import com.iomete.backup.fs.FileEntry
 import com.iomete.backup.fs.FileLister
 import com.iomete.backup.fs.FileSystemFactory
 import com.iomete.backup.fs.HadoopConfigBuilder
+import com.iomete.backup.model.SourceListing
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
@@ -20,8 +20,7 @@ object BackupJob {
         config: ApplicationConfig,
     ) {
         logger.info("Enumerating source files...")
-        val files = enumerateSource(config)
-        val emptyDirs = enumerateEmptyDirectories(config)
+        val (files, emptyDirs) = enumerateSource(config)
 
         logger.info("Found {} files to copy", files.size)
         if (emptyDirs.isNotEmpty()) {
@@ -63,23 +62,20 @@ object BackupJob {
         }
     }
 
-    private fun enumerateSource(config: ApplicationConfig): List<FileEntry> {
+    private fun enumerateSource(config: ApplicationConfig): SourceListing {
         val sourceConf = HadoopConfigBuilder.build(config.source)
         val sourceRoot = config.source.rootUri
 
         return FileSystemFactory.create(config.source, URI(sourceRoot), sourceConf).use { sourceFs ->
-            FileLister(sourceFs).listRecursively(Path(sourceRoot)).toList()
-        }
-    }
-
-    private fun enumerateEmptyDirectories(config: ApplicationConfig): List<String> {
-        if (config.source !is HdfsConfig) return emptyList()
-
-        val sourceConf = HadoopConfigBuilder.build(config.source)
-        val sourceRoot = config.source.rootUri
-
-        return FileSystemFactory.create(config.source, URI(sourceRoot), sourceConf).use { sourceFs ->
-            FileLister(sourceFs).listLeafEmptyDirectories(Path(sourceRoot)).map { it.toString() }
+            val lister = FileLister(sourceFs)
+            val files = lister.listRecursively(Path(sourceRoot)).toList()
+            val emptyDirectories =
+                if (config.source is HdfsConfig) {
+                    lister.listLeafEmptyDirectories(Path(sourceRoot)).map { it.toString() }
+                } else {
+                    emptyList()
+                }
+            SourceListing(files, emptyDirectories)
         }
     }
 }
