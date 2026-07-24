@@ -53,7 +53,7 @@ object CopyJobRunner {
         val aggregate = directoryResults.fold(fileResults) { acc, result -> acc.add(result) }
         val summary =
             CopyJobSummary(
-                totalFiles = aggregate.successCount + aggregate.failureCount,
+                totalEntries = aggregate.successCount + aggregate.failureCount,
                 successCount = aggregate.successCount,
                 failureCount = aggregate.failureCount,
                 totalBytesCopied = aggregate.totalBytesCopied,

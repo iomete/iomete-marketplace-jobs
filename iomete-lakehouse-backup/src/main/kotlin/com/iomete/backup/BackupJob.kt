@@ -41,7 +41,7 @@ object BackupJob {
 
         logger.info(
             "Copy summary: {} total, {} succeeded, {} failed, {} bytes copied",
-            summary.totalFiles,
+            summary.totalEntries,
             summary.successCount,
             summary.failureCount,
             summary.totalBytesCopied,
@@ -59,7 +59,7 @@ object BackupJob {
             }
 
         check(summary.failureCount == 0) {
-            "${summary.failureCount} file(s) failed to copy"
+            "${summary.failureCount} entr${if (summary.failureCount == 1) "y" else "ies"} failed to copy"
         }
     }
 
