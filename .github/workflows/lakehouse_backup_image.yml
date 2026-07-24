@@ -76,6 +76,10 @@ jobs:
             # Main release: immutable version + short-sha tags.
             tag=$(sed -n 's/^projectVersion=//p' gradle.properties)
             sha=$(git rev-parse --short HEAD)
+            if [ -z "$tag" ]; then
+              echo "::error::projectVersion not found in gradle.properties"
+              exit 1
+            fi
             if az acr repository show --name ${{ secrets.ACR_NAME }} --image iomete/iomete-lakehouse-backup:$tag >/dev/null 2>&1; then
               echo "::error::version $tag already published — bump projectVersion in gradle.properties"
               exit 1
