@@ -4,7 +4,7 @@ import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.copy.internal.FileCopier
 import com.iomete.backup.copy.internal.PathResolver
 import com.iomete.backup.copy.internal.aggregateCopyResults
-import com.iomete.backup.fs.FileEntry
+import com.iomete.backup.model.FileEntry
 import com.iomete.backup.fs.FileSystemFactory
 import com.iomete.backup.fs.HadoopConfigBuilder
 import org.apache.hadoop.fs.Path

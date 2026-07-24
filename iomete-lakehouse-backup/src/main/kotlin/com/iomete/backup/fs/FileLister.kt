@@ -1,5 +1,6 @@
 package com.iomete.backup.fs
 
+import com.iomete.backup.model.FileEntry
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
 
