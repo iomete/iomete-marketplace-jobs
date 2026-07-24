@@ -9,6 +9,7 @@ on:
     branches: [main]
     paths:
       - 'iomete-lakehouse-backup/**'
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

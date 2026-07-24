@@ -17,9 +17,13 @@ docker-build: build
 
 .PHONY: docker-push
 docker-push: build
-	docker buildx build --platform linux/amd64,linux/arm64 --build-arg SPARK_IMAGE=$(spark_image) -f Dockerfile -t ${image}:${tag} $(if $(extra_tag),-t ${image}:$(extra_tag)) --push . --sbom=true --provenance=true
-	@echo ${image}
-	@echo ${tag} $(extra_tag)
+	docker buildx build --platform linux/amd64,linux/arm64 --build-arg SPARK_IMAGE=$(spark_image) -f Dockerfile -t ${image}:${tag} --push . --sbom=true --provenance=true
+	@echo ${image}:${tag}
+
+.PHONY: docker-push-tag
+docker-push-tag: build
+	docker buildx build --platform linux/amd64,linux/arm64 --build-arg SPARK_IMAGE=$(spark_image) -f Dockerfile -t ${image}:${tag} -t ${image}:$(extra_tag) --push . --sbom=true --provenance=true
+	@echo ${image}:${tag} ${image}:$(extra_tag)
 
 .PHONY: docker-push-latest
 docker-push-latest: build
