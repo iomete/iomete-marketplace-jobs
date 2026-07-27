@@ -1,0 +1,97 @@
+name: Lakehouse Backup Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: 'Skip tests (branch builds only; ignored on main)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  tests:
+    # Always run on main; on a branch, honour skip_tests.
+    if: ${{ github.ref_name == 'main' || !inputs.skip_tests }}
+    uses: ./.github/workflows/lakehouse_backup_tests.yml
+    secrets: inherit
+
+  build-and-push:
+    needs: tests
+    # Build if tests passed or were legitimately skipped (branch), never if they failed.
+    if: ${{ always() && (needs.tests.result == 'success' || needs.tests.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: iomete-lakehouse-backup
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Cache Gradle packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('iomete-lakehouse-backup/**/*.gradle*', 'iomete-lakehouse-backup/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to Azure
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          creds: ${{ secrets.AZURE_ACR_CREDENTIALS }}
+
+      - name: Log in to ACR
+        run: az acr login --name ${{ secrets.ACR_NAME }}
+
+      - name: Build and push image
+        env:
+          REF: ${{ github.ref_name }}
+        run: |
+          if [ "$REF" = "main" ]; then
+            # Main release: immutable version + short-sha tags.
+            tag=$(sed -n 's/^projectVersion=//p' gradle.properties)
+            sha=$(git rev-parse --short HEAD)
+            if [ -z "$tag" ]; then
+              echo "::error::projectVersion not found in gradle.properties"
+              exit 1
+            fi
+            if az acr repository show --name ${{ secrets.ACR_NAME }} --image iomete/iomete-lakehouse-backup:$tag >/dev/null 2>&1; then
+              echo "::error::version $tag already published — bump projectVersion in gradle.properties"
+              exit 1
+            fi
+            make docker-push-tag extra_tag=$sha
+            for t in "$tag" "$sha"; do
+              az acr repository update --name ${{ secrets.ACR_NAME }} \
+                --image iomete/iomete-lakehouse-backup:$t \
+                --write-enabled false --delete-enabled false
+            done
+          else
+            # Branch test build: single mutable branch-name tag.
+            branch_tag=$(echo "$REF" | tr '/' '-')
+            make docker-push tag="$branch_tag"
+          fi
