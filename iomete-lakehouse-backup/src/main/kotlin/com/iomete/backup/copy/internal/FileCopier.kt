@@ -141,7 +141,8 @@ class FileCopier(
                         )
                     }
 
-                    // Overwrite: Hadoop rename returns false on an existing destination.
+                    // Overwrite deletes first (rename returns false on an existing destination), so
+                    // targetPath is briefly absent; an atomic swap needs FileContext, and HDFS only.
                     if (targetFs.exists(targetPath)) targetFs.delete(targetPath, false)
                     if (!targetFs.rename(tempPath, targetPath)) {
                         throw IOException("Rename failed: $tempPath -> $targetFilePath")
