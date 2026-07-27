@@ -19,6 +19,9 @@ data class ApplicationConfig(
 )
 sealed class StorageConfig : java.io.Serializable {
     abstract val rootUri: String
+
+    // Test seam only: Validator rejects it on the load path, so it is reachable
+    // solely by callers driving BackupJob directly.
     abstract val hadoopOptions: Map<String, String>
 }
 
