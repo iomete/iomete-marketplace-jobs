@@ -14,12 +14,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * Config-driven fault injection for integration tests. Registered through the `hadoopOptions` seam
- * (`fs.<scheme>.impl`), each subclass wraps the target temp-file write in a stream that throws after
- * a fixed number of bytes, simulating a mid-copy failure. Failure count is keyed by a per-test id so
- * a test can fail once then recover, or fail forever.
- */
+/** Reaches the job by registering these filesystems as `fs.<scheme>.impl` via the hadoopOptions seam. */
 object FaultInjection {
     const val ID_KEY = "iomete.test.fault.id"
     const val AFTER_BYTES_KEY = "iomete.test.fault.afterBytes"

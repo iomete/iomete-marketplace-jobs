@@ -16,10 +16,7 @@ import kotlin.random.Random
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-/**
- * Verify-before-visible under induced mid-copy failure, on both target schemes. Faults are injected
- * through the `hadoopOptions` seam registering a test-only FileSystem that throws mid-write.
- */
+/** Verify-before-visible under induced mid-copy failure, on both target schemes. */
 class AtomicCopyIntegrationTest {
     class Target(
         val config: StorageConfig,
