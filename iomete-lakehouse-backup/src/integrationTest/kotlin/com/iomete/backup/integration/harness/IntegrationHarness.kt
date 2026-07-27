@@ -76,7 +76,10 @@ object IntegrationHarness {
         )
     }
 
-    fun s3Config(bucket: String): S3Config =
+    fun s3Config(
+        bucket: String,
+        hadoopOptions: Map<String, String> = emptyMap(),
+    ): S3Config =
         S3Config(
             bucket = bucket,
             endpoint = minio.s3URL,
@@ -84,11 +87,20 @@ object IntegrationHarness {
             accessKey = minio.userName,
             secretKey = minio.password,
             region = REGION,
+            hadoopOptions = hadoopOptions,
         )
 
-    fun hdfsConfig(path: String): HdfsConfig {
+    fun hdfsConfig(
+        path: String,
+        hadoopOptions: Map<String, String> = emptyMap(),
+    ): HdfsConfig {
         val namenode = "localhost:${hdfs.nameNodePort}"
-        return HdfsConfig(namenode = namenode, path = path, user = System.getProperty("user.name"))
+        return HdfsConfig(
+            namenode = namenode,
+            path = path,
+            user = System.getProperty("user.name"),
+            hadoopOptions = hadoopOptions,
+        )
     }
 
     /** A fresh, empty bucket for one test. */
