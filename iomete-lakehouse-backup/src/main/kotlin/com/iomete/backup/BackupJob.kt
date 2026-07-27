@@ -3,7 +3,6 @@ package com.iomete.backup
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.copy.CopyJobRunner
-import com.iomete.backup.copy.TempFiles
 import com.iomete.backup.fs.FileLister
 import com.iomete.backup.fs.FileSystemFactory
 import com.iomete.backup.fs.HadoopConfigBuilder
@@ -11,7 +10,6 @@ import com.iomete.backup.model.SourceListing
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
-import java.io.IOException
 import java.net.URI
 
 object BackupJob {
@@ -21,8 +19,6 @@ object BackupJob {
         spark: SparkSession,
         config: ApplicationConfig,
     ) {
-        sweepOrphanTemps(config)
-
         logger.info("Enumerating source files...")
         val (files, emptyDirs) = enumerateSource(config)
 
@@ -63,21 +59,6 @@ object BackupJob {
 
         check(summary.failureCount == 0) {
             "${summary.failureCount} entr${if (summary.failureCount == 1) "y" else "ies"} failed to copy"
-        }
-    }
-
-    // Assumes non-overlapping runs.
-    private fun sweepOrphanTemps(config: ApplicationConfig) {
-        val targetConf = HadoopConfigBuilder.build(config.target)
-        val targetRoot = config.target.rootUri
-
-        try {
-            FileSystemFactory.create(config.target, URI(targetRoot), targetConf).use { targetFs ->
-                val deleted = TempFiles.sweep(targetFs, Path(targetRoot))
-                if (deleted > 0) logger.info("Start-of-run sweep removed {} orphaned temp file(s)", deleted)
-            }
-        } catch (e: IOException) {
-            logger.warn("Start-of-run orphan sweep skipped: could not enumerate target {}", targetRoot, e)
         }
     }
 

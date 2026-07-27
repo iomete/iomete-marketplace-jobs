@@ -1,7 +1,5 @@
 package com.iomete.backup.copy
 
-import com.iomete.backup.fs.FileLister
-import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
 import org.apache.spark.TaskContext
 import java.util.UUID
@@ -18,16 +16,4 @@ object TempFiles {
     }
 
     fun isTemp(name: String): Boolean = name.startsWith(PREFIX)
-
-    fun sweep(
-        fs: FileSystem,
-        root: Path,
-    ): Int {
-        if (!fs.exists(root)) return 0
-
-        return FileLister(fs)
-            .listRecursively(root)
-            .filter { isTemp(Path(it.path).name) }
-            .count { fs.delete(Path(it.path), false) }
-    }
 }
