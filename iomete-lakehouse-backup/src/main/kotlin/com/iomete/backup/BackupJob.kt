@@ -11,6 +11,7 @@ import com.iomete.backup.model.SourceListing
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
+import java.io.IOException
 import java.net.URI
 
 object BackupJob {
@@ -70,9 +71,13 @@ object BackupJob {
         val targetConf = HadoopConfigBuilder.build(config.target)
         val targetRoot = config.target.rootUri
 
-        FileSystemFactory.create(config.target, URI(targetRoot), targetConf).use { targetFs ->
-            val deleted = TempFiles.sweep(targetFs, Path(targetRoot))
-            if (deleted > 0) logger.info("Start-of-run sweep removed {} orphaned temp file(s)", deleted)
+        try {
+            FileSystemFactory.create(config.target, URI(targetRoot), targetConf).use { targetFs ->
+                val deleted = TempFiles.sweep(targetFs, Path(targetRoot))
+                if (deleted > 0) logger.info("Start-of-run sweep removed {} orphaned temp file(s)", deleted)
+            }
+        } catch (e: IOException) {
+            logger.warn("Start-of-run orphan sweep skipped: could not enumerate target {}", targetRoot, e)
         }
     }
 
