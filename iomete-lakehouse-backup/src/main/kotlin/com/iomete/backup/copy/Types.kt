@@ -17,7 +17,7 @@ data class CopyJobResult(
 )
 
 data class CopyJobSummary(
-    val totalFiles: Int,
+    val totalEntries: Int,
     val successCount: Int,
     val failureCount: Int,
     val totalBytesCopied: Long,

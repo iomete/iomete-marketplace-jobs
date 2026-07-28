@@ -208,6 +208,7 @@ class FileCopierTest {
                 java.io.IOException("transient 2") andThen
                 FileStatus(42L, false, 1, 1024L, 0L, sourcePath)
             every { FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, any()) } returns true
+            every { targetFs.getFileStatus(targetPath) } returns FileStatus(42L, false, 1, 1024L, 0L, targetPath)
             every { sourceFs.close() } just runs
             every { targetFs.close() } just runs
 
@@ -228,6 +229,57 @@ class FileCopierTest {
             assertEquals(42L, result.bytesCopied)
             verify(exactly = 3) { sourceFs.getFileStatus(sourcePath) }
             verify(exactly = 1) { FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, any()) }
+        } finally {
+            unmockkStatic(FileUtil::class)
+            unmockkStatic(FileSystem::class)
+        }
+    }
+
+    @Test
+    fun `length mismatch fails the copy after retrying`() {
+        val sourcePathString = "s3a://bucket/in/file.txt"
+        val targetPathString = "hdfs://namenode:8020/out/file.txt"
+        val sourcePath = Path(sourcePathString)
+        val targetPath = Path(targetPathString)
+        val sourceFs = mockk<FileSystem>()
+        val targetFs = mockk<FileSystem>()
+
+        mockkStatic(FileSystem::class)
+        mockkStatic(FileUtil::class)
+        try {
+            every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
+            every { FileSystem.newInstance(URI(targetPathString), any<Configuration>(), "backup-user") } returns targetFs
+            every { targetFs.exists(any()) } returns true
+            every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(42L, false, 1, 1024L, 0L, sourcePath)
+            every { FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, any()) } returns true
+            every { targetFs.getFileStatus(targetPath) } returns FileStatus(41L, false, 1, 1024L, 0L, targetPath)
+            every { sourceFs.close() } just runs
+            every { targetFs.close() } just runs
+
+            val copier =
+                FileCopier(
+                    sourceConfig = dummyConfig,
+                    targetConfig =
+                        HdfsConfig(
+                            namenode = "namenode:8020",
+                            path = "out",
+                            user = "backup-user",
+                        ),
+                    sourceRoot = "s3a://bucket/in",
+                    targetRoot = "hdfs://namenode:8020/out",
+                    maxAttempts = 3,
+                    retryDelayMs = 0,
+                )
+
+            val result = copier.copySingleFile(sourcePathString)
+
+            assertFalse(result.success)
+            assertEquals(3, result.attemptsUsed)
+            val error = result.error.orEmpty()
+            assertTrue(error.contains("Length mismatch"))
+            assertTrue(error.contains("42"))
+            assertTrue(error.contains("41"))
+            verify(exactly = 3) { targetFs.getFileStatus(targetPath) }
         } finally {
             unmockkStatic(FileUtil::class)
             unmockkStatic(FileSystem::class)
@@ -407,6 +459,7 @@ class FileCopierTest {
             every { targetFs.exists(targetParent) } returns true
             every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(19L, false, 1, 1024L, 0L, sourcePath)
             every { FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, any()) } returns true
+            every { targetFs.getFileStatus(targetPath) } returns FileStatus(19L, false, 1, 1024L, 0L, targetPath)
             every { sourceFs.close() } just runs
             every { targetFs.close() } just runs
 
@@ -465,6 +518,7 @@ class FileCopierTest {
             every { targetFs.exists(targetParent) } returns true
             every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(11L, false, 1, 1024L, 0L, sourcePath)
             every { FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, any()) } returns true
+            every { targetFs.getFileStatus(targetPath) } returns FileStatus(11L, false, 1, 1024L, 0L, targetPath)
             every { sourceFs.close() } just runs
             every { targetFs.close() } just runs
 

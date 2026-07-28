@@ -1,5 +1,8 @@
 package com.iomete.backup.integration.fixtures
 
+import com.iomete.backup.config.StorageConfig
+import com.iomete.backup.fs.FileSystemFactory
+import com.iomete.backup.fs.HadoopConfigBuilder
 import com.iomete.backup.integration.harness.IntegrationHarness
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
@@ -60,10 +63,43 @@ fun readS3(bucket: String): Map<String, ByteArray> {
     return result
 }
 
+fun seedHdfs(
+    path: String,
+    tree: Map<String, ByteArray>,
+) {
+    val fs = IntegrationHarness.hdfs.fileSystem
+    val root = hdfsRoot(path)
+    fs.mkdirs(root)
+
+    tree.forEach { (key, bytes) ->
+        val file = Path(root, key)
+        fs.mkdirs(file.parent)
+        fs.create(file, true).use { it.write(bytes) }
+    }
+}
+
+fun seedHdfsDirectories(
+    path: String,
+    vararg directories: String,
+) {
+    val root = hdfsRoot(path)
+    directories.forEach { IntegrationHarness.hdfs.fileSystem.mkdirs(Path(root, it)) }
+}
+
+fun directoryExists(
+    config: StorageConfig,
+    relativePath: String,
+): Boolean {
+    val path = Path(config.rootUri.trimEnd('/') + "/" + relativePath.trim('/'))
+    return FileSystemFactory
+        .create(config, path.toUri(), HadoopConfigBuilder.build(config))
+        .use { it.getFileStatus(path).isDirectory }
+}
+
 /** Read every file under an HDFS path back as key -> bytes, keyed relative to the path. */
 fun readHdfs(path: String): Map<String, ByteArray> {
     val fs = IntegrationHarness.hdfs.fileSystem
-    val root = Path("hdfs://localhost:${IntegrationHarness.hdfs.nameNodePort}/$path")
+    val root = hdfsRoot(path)
 
     if (!fs.exists(root)) return emptyMap()
 
@@ -83,6 +119,8 @@ fun readHdfs(path: String): Map<String, ByteArray> {
 
     return result
 }
+
+private fun hdfsRoot(path: String): Path = Path("hdfs://localhost:${IntegrationHarness.hdfs.nameNodePort}/${path.trim('/')}")
 
 private fun readAll(
     fs: FileSystem,

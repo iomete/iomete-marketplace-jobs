@@ -1,11 +1,12 @@
 package com.iomete.backup
 
 import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.copy.CopyJobRunner
-import com.iomete.backup.fs.FileEntry
 import com.iomete.backup.fs.FileLister
 import com.iomete.backup.fs.FileSystemFactory
 import com.iomete.backup.fs.HadoopConfigBuilder
+import com.iomete.backup.model.SourceListing
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
@@ -19,23 +20,27 @@ object BackupJob {
         config: ApplicationConfig,
     ) {
         logger.info("Enumerating source files...")
-        val files = enumerateSource(config)
+        val (files, emptyDirs) = enumerateSource(config)
 
         logger.info("Found {} files to copy", files.size)
+        if (emptyDirs.isNotEmpty()) {
+            logger.info("Found {} empty directories to replicate", emptyDirs.size)
+        }
+
         val totalBytes = files.sumOf { it.size }
         logger.info("Total size: {} bytes ({} MB)", totalBytes, totalBytes / (1024 * 1024))
 
-        if (files.isEmpty()) {
+        if (files.isEmpty() && emptyDirs.isEmpty()) {
             logger.info("No files found in source. Nothing to copy.")
             return
         }
 
-        val copyJobResult = CopyJobRunner.run(spark, config, files)
+        val copyJobResult = CopyJobRunner.run(spark, config, files, emptyDirs)
         val summary = copyJobResult.summary
 
         logger.info(
             "Copy summary: {} total, {} succeeded, {} failed, {} bytes copied",
-            summary.totalFiles,
+            summary.totalEntries,
             summary.successCount,
             summary.failureCount,
             summary.totalBytesCopied,
@@ -53,16 +58,24 @@ object BackupJob {
             }
 
         check(summary.failureCount == 0) {
-            "${summary.failureCount} file(s) failed to copy"
+            "${summary.failureCount} entr${if (summary.failureCount == 1) "y" else "ies"} failed to copy"
         }
     }
 
-    private fun enumerateSource(config: ApplicationConfig): List<FileEntry> {
+    private fun enumerateSource(config: ApplicationConfig): SourceListing {
         val sourceConf = HadoopConfigBuilder.build(config.source)
         val sourceRoot = config.source.rootUri
 
         return FileSystemFactory.create(config.source, URI(sourceRoot), sourceConf).use { sourceFs ->
-            FileLister(sourceFs).listRecursively(Path(sourceRoot)).toList()
+            val lister = FileLister(sourceFs)
+            val files = lister.listRecursively(Path(sourceRoot)).toList()
+            val emptyDirectories =
+                if (config.source is HdfsConfig) {
+                    lister.listLeafEmptyDirectories(Path(sourceRoot)).map { it.toString() }
+                } else {
+                    emptyList()
+                }
+            SourceListing(files, emptyDirectories)
         }
     }
 }
