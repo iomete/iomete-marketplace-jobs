@@ -134,6 +134,34 @@ class ValidatorTest {
     }
 
     @Test
+    fun `S3 with hadoopOptions fails validation`() {
+        val config =
+            ApplicationConfig(
+                source = S3Config(bucket = "b", accessKey = "k", secretKey = "s", hadoopOptions = mapOf("fs.s3a.impl" to "x")),
+                target = s3Config(),
+            )
+
+        val result = Validator.validate(config)
+
+        assertIs<ValidationResult.Invalid>(result)
+        assertTrue(result.errors.any { it.contains("hadoopOptions") && it.contains("source") })
+    }
+
+    @Test
+    fun `HDFS with hadoopOptions fails validation`() {
+        val config =
+            ApplicationConfig(
+                source = s3Config(),
+                target = HdfsConfig(namenode = "nn:8020", user = "u", hadoopOptions = mapOf("fs.hdfs.impl" to "x")),
+            )
+
+        val result = Validator.validate(config)
+
+        assertIs<ValidationResult.Invalid>(result)
+        assertTrue(result.errors.any { it.contains("hadoopOptions") && it.contains("target") })
+    }
+
+    @Test
     fun `HDFS with unsupported authentication fails validation`() {
         val config =
             ApplicationConfig(

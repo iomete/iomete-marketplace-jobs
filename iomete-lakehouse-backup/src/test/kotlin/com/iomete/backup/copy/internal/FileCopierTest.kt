@@ -2,11 +2,13 @@ package com.iomete.backup.copy.internal
 
 import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
+import com.iomete.backup.copy.TempFiles
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.runs
+import io.mockk.slot
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import org.apache.hadoop.conf.Configuration
@@ -203,12 +205,14 @@ class FileCopierTest {
             every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
             every { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) } returns targetFs
             every { targetFs.exists(any()) } returns true
+            every { targetFs.delete(any(), any()) } returns true
+            every { targetFs.rename(any(), targetPath) } returns true
+            every { targetFs.getFileStatus(any()) } returns FileStatus(42L, false, 1, 1024L, 0L, targetPath)
             every { sourceFs.getFileStatus(sourcePath) } throws
                 java.io.IOException("transient 1") andThenThrows
                 java.io.IOException("transient 2") andThen
                 FileStatus(42L, false, 1, 1024L, 0L, sourcePath)
-            every { FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, any()) } returns true
-            every { targetFs.getFileStatus(targetPath) } returns FileStatus(42L, false, 1, 1024L, 0L, targetPath)
+            every { FileUtil.copy(sourceFs, sourcePath, targetFs, any(), false, true, any()) } returns true
             every { sourceFs.close() } just runs
             every { targetFs.close() } just runs
 
@@ -228,58 +232,8 @@ class FileCopierTest {
             assertEquals(3, result.attemptsUsed)
             assertEquals(42L, result.bytesCopied)
             verify(exactly = 3) { sourceFs.getFileStatus(sourcePath) }
-            verify(exactly = 1) { FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, any()) }
-        } finally {
-            unmockkStatic(FileUtil::class)
-            unmockkStatic(FileSystem::class)
-        }
-    }
-
-    @Test
-    fun `length mismatch fails the copy after retrying`() {
-        val sourcePathString = "s3a://bucket/in/file.txt"
-        val targetPathString = "hdfs://namenode:8020/out/file.txt"
-        val sourcePath = Path(sourcePathString)
-        val targetPath = Path(targetPathString)
-        val sourceFs = mockk<FileSystem>()
-        val targetFs = mockk<FileSystem>()
-
-        mockkStatic(FileSystem::class)
-        mockkStatic(FileUtil::class)
-        try {
-            every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
-            every { FileSystem.newInstance(URI(targetPathString), any<Configuration>(), "backup-user") } returns targetFs
-            every { targetFs.exists(any()) } returns true
-            every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(42L, false, 1, 1024L, 0L, sourcePath)
-            every { FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, any()) } returns true
-            every { targetFs.getFileStatus(targetPath) } returns FileStatus(41L, false, 1, 1024L, 0L, targetPath)
-            every { sourceFs.close() } just runs
-            every { targetFs.close() } just runs
-
-            val copier =
-                FileCopier(
-                    sourceConfig = dummyConfig,
-                    targetConfig =
-                        HdfsConfig(
-                            namenode = "namenode:8020",
-                            path = "out",
-                            user = "backup-user",
-                        ),
-                    sourceRoot = "s3a://bucket/in",
-                    targetRoot = "hdfs://namenode:8020/out",
-                    maxAttempts = 3,
-                    retryDelayMs = 0,
-                )
-
-            val result = copier.copySingleFile(sourcePathString)
-
-            assertFalse(result.success)
-            assertEquals(3, result.attemptsUsed)
-            val error = result.error.orEmpty()
-            assertTrue(error.contains("Length mismatch"))
-            assertTrue(error.contains("42"))
-            assertTrue(error.contains("41"))
-            verify(exactly = 3) { targetFs.getFileStatus(targetPath) }
+            verify(exactly = 1) { FileUtil.copy(sourceFs, sourcePath, targetFs, any(), false, true, any()) }
+            verify(exactly = 1) { targetFs.rename(any(), targetPath) }
         } finally {
             unmockkStatic(FileUtil::class)
             unmockkStatic(FileSystem::class)
@@ -457,9 +411,11 @@ class FileCopierTest {
             every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
             every { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) } returns targetFs
             every { targetFs.exists(targetParent) } returns true
+            every { targetFs.exists(targetPath) } returns false
+            every { targetFs.rename(any(), targetPath) } returns true
+            every { targetFs.getFileStatus(any()) } returns FileStatus(19L, false, 1, 1024L, 0L, targetPath)
             every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(19L, false, 1, 1024L, 0L, sourcePath)
-            every { FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, any()) } returns true
-            every { targetFs.getFileStatus(targetPath) } returns FileStatus(19L, false, 1, 1024L, 0L, targetPath)
+            every { FileUtil.copy(sourceFs, sourcePath, targetFs, any(), false, true, any()) } returns true
             every { sourceFs.close() } just runs
             every { targetFs.close() } just runs
 
@@ -516,9 +472,11 @@ class FileCopierTest {
                 FileSystem.newInstance(URI(targetPathString), any<Configuration>(), "isilon-user")
             } returns targetFs
             every { targetFs.exists(targetParent) } returns true
+            every { targetFs.exists(targetPath) } returns false
+            every { targetFs.rename(any(), targetPath) } returns true
+            every { targetFs.getFileStatus(any()) } returns FileStatus(11L, false, 1, 1024L, 0L, targetPath)
             every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(11L, false, 1, 1024L, 0L, sourcePath)
-            every { FileUtil.copy(sourceFs, sourcePath, targetFs, targetPath, false, true, any()) } returns true
-            every { targetFs.getFileStatus(targetPath) } returns FileStatus(11L, false, 1, 1024L, 0L, targetPath)
+            every { FileUtil.copy(sourceFs, sourcePath, targetFs, any(), false, true, any()) } returns true
             every { sourceFs.close() } just runs
             every { targetFs.close() } just runs
 
@@ -555,5 +513,164 @@ class FileCopierTest {
             unmockkStatic(FileUtil::class)
             unmockkStatic(FileSystem::class)
         }
+    }
+
+    @Test
+    fun `length mismatch deletes temp and fails without renaming`() {
+        val sourcePathString = "s3a://bucket/in/file.txt"
+        val targetPathString = "s3a://bucket/out/file.txt"
+        val sourcePath = Path(sourcePathString)
+        val sourceFs = mockk<FileSystem>()
+        val targetFs = mockk<FileSystem>()
+        val tempSlot = slot<Path>()
+
+        mockkStatic(FileSystem::class)
+        mockkStatic(FileUtil::class)
+        try {
+            every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
+            every { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) } returns targetFs
+            every { targetFs.exists(any()) } returns true
+            every { targetFs.delete(any(), any()) } returns true
+            every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(100L, false, 1, 1024L, 0L, sourcePath)
+            every { targetFs.getFileStatus(any()) } returns FileStatus(50L, false, 1, 1024L, 0L, Path(targetPathString))
+            every { FileUtil.copy(sourceFs, sourcePath, targetFs, capture(tempSlot), false, true, any()) } returns true
+            every { sourceFs.close() } just runs
+            every { targetFs.close() } just runs
+
+            val copier =
+                FileCopier(
+                    sourceConfig = dummyConfig,
+                    targetConfig = dummyConfig,
+                    sourceRoot = "s3a://bucket/in",
+                    targetRoot = "s3a://bucket/out",
+                    maxAttempts = 2,
+                    retryDelayMs = 0,
+                )
+
+            val result = copier.copySingleFile(sourcePathString)
+
+            assertFalse(result.success)
+            assertEquals(2, result.attemptsUsed)
+            assertTrue(result.error!!.contains("Length verification failed"))
+            assertTrue(tempSlot.captured.name.startsWith(TempFiles.PREFIX))
+            verify(atLeast = 1) { targetFs.delete(any(), any()) }
+            verify(exactly = 0) { targetFs.rename(any(), any()) }
+        } finally {
+            unmockkStatic(FileUtil::class)
+            unmockkStatic(FileSystem::class)
+        }
+    }
+
+    @Test
+    fun `rename failure deletes temp and fails`() {
+        val sourcePathString = "s3a://bucket/in/file.txt"
+        val targetPathString = "s3a://bucket/out/file.txt"
+        val sourcePath = Path(sourcePathString)
+        val targetPath = Path(targetPathString)
+        val sourceFs = mockk<FileSystem>()
+        val targetFs = mockk<FileSystem>()
+
+        mockkStatic(FileSystem::class)
+        mockkStatic(FileUtil::class)
+        try {
+            every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
+            every { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) } returns targetFs
+            every { targetFs.exists(any()) } returns false
+            every { targetFs.mkdirs(any()) } returns true
+            every { targetFs.delete(any(), any()) } returns true
+            every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(11L, false, 1, 1024L, 0L, sourcePath)
+            every { targetFs.getFileStatus(any()) } returns FileStatus(11L, false, 1, 1024L, 0L, targetPath)
+            every { FileUtil.copy(sourceFs, sourcePath, targetFs, any(), false, true, any()) } returns true
+            every { targetFs.rename(any(), targetPath) } returns false
+            every { sourceFs.close() } just runs
+            every { targetFs.close() } just runs
+
+            val copier =
+                FileCopier(
+                    sourceConfig = dummyConfig,
+                    targetConfig = dummyConfig,
+                    sourceRoot = "s3a://bucket/in",
+                    targetRoot = "s3a://bucket/out",
+                    maxAttempts = 1,
+                    retryDelayMs = 0,
+                )
+
+            val result = copier.copySingleFile(sourcePathString)
+
+            assertFalse(result.success)
+            assertTrue(result.error!!.contains("Rename failed"))
+            verify(exactly = 1) { targetFs.delete(any(), any()) }
+        } finally {
+            unmockkStatic(FileUtil::class)
+            unmockkStatic(FileSystem::class)
+        }
+    }
+
+    @Test
+    fun `best-effort temp deletion when copy stream fails mid-write`() {
+        val sourcePathString = "s3a://bucket/in/file.txt"
+        val targetPathString = "s3a://bucket/out/file.txt"
+        val sourcePath = Path(sourcePathString)
+        val sourceFs = mockk<FileSystem>()
+        val targetFs = mockk<FileSystem>()
+
+        mockkStatic(FileSystem::class)
+        mockkStatic(FileUtil::class)
+        try {
+            every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
+            every { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) } returns targetFs
+            every { targetFs.exists(any()) } returns true
+            every { targetFs.delete(any(), any()) } returns true
+            every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(11L, false, 1, 1024L, 0L, sourcePath)
+            every { FileUtil.copy(sourceFs, sourcePath, targetFs, any(), false, true, any()) } throws
+                java.io.IOException("mid-stream boom")
+            every { sourceFs.close() } just runs
+            every { targetFs.close() } just runs
+
+            val copier =
+                FileCopier(
+                    sourceConfig = dummyConfig,
+                    targetConfig = dummyConfig,
+                    sourceRoot = "s3a://bucket/in",
+                    targetRoot = "s3a://bucket/out",
+                    maxAttempts = 1,
+                    retryDelayMs = 0,
+                )
+
+            val result = copier.copySingleFile(sourcePathString)
+
+            assertFalse(result.success)
+            verify(exactly = 1) { targetFs.delete(any(), any()) }
+            verify(exactly = 0) { targetFs.rename(any(), any()) }
+        } finally {
+            unmockkStatic(FileUtil::class)
+            unmockkStatic(FileSystem::class)
+        }
+    }
+
+    @Test
+    fun `leaves no temp residue at target after successful copy`() {
+        val sourceFile =
+            File(sourceDir, "data/file.txt").apply {
+                parentFile.mkdirs()
+                writeText("hello world")
+            }
+        val sourceRoot = sourceDir.toURI().toString().trimEnd('/')
+        val targetRoot = targetDir.toURI().toString().trimEnd('/')
+
+        val copier =
+            FileCopier(
+                sourceConfig = dummyConfig,
+                targetConfig = dummyConfig,
+                sourceRoot = sourceRoot,
+                targetRoot = targetRoot,
+            )
+
+        assertTrue(copier.copySingleFile(sourceFile.toURI().toString()).success)
+
+        val residue =
+            File(targetDir, "data").listFiles()?.filter { it.name.startsWith(TempFiles.PREFIX) } ?: emptyList()
+        assertTrue(residue.isEmpty(), "expected no temp residue, found: $residue")
+        assertEquals("hello world", File(targetDir, "data/file.txt").readText())
     }
 }

@@ -30,6 +30,10 @@ object Validator {
         location: String,
         errors: MutableList<String>,
     ) {
+        if (storage.hadoopOptions.isNotEmpty()) {
+            errors.add("$location: 'hadoopOptions' is not a supported configuration option")
+        }
+
         when (storage) {
             is S3Config -> validateS3Config(storage, location, errors)
             is HdfsConfig -> validateHdfsConfig(storage, location, errors)
