@@ -98,10 +98,11 @@ object CopyJobRunner {
     ): List<FileEntry> =
         try {
             useFileLister(config.target, targetRoot) { it.listRecursively(Path(targetRoot)).toList() }
-        } catch (e: FileNotFoundException) {
+        } catch (_: FileNotFoundException) {
+            // Target root absent is the normal first run, not an error.
             emptyList()
         } catch (e: Exception) {
-            logger.warn("Target listing failed, copying every file: {}", e.toString())
+            logger.warn("Target listing failed, copying every file: {}: {}", e.javaClass.simpleName, e.message)
             emptyList()
         }
 
