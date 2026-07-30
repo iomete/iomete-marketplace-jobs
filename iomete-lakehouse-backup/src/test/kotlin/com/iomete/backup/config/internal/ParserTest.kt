@@ -52,20 +52,52 @@ class ParserTest {
     }
 
     @Test
-    fun `copy block binds, and defaults when absent`() {
-        fun json(copyBlock: String) =
+    fun `parse copy block binds clock skew tolerance`() {
+        val json =
             """
             {
-              "source": { "type": "s3", "bucket": "src", "accessKey": "a", "secretKey": "b" },
-              "target": { "type": "s3", "bucket": "dst", "accessKey": "a", "secretKey": "b" }$copyBlock
+              "source": {
+                "type": "s3",
+                "bucket": "source-bucket",
+                "accessKey": "access123",
+                "secretKey": "secret456"
+              },
+              "target": {
+                "type": "s3",
+                "bucket": "target-bucket",
+                "accessKey": "access789",
+                "secretKey": "secret012"
+              },
+              "copy": {
+                "clockSkewToleranceMs": 0
+              }
             }
             """.trimIndent()
 
-        assertEquals(30_000, Parser.parse(json("")).copy.clockSkewToleranceMs)
-        assertEquals(
-            0,
-            Parser.parse(json(",\n  \"copy\": { \"clockSkewToleranceMs\": 0 }")).copy.clockSkewToleranceMs,
-        )
+        assertEquals(0, Parser.parse(json).copy.clockSkewToleranceMs)
+    }
+
+    @Test
+    fun `parse config without copy block defaults the clock skew tolerance`() {
+        val json =
+            """
+            {
+              "source": {
+                "type": "s3",
+                "bucket": "source-bucket",
+                "accessKey": "access123",
+                "secretKey": "secret456"
+              },
+              "target": {
+                "type": "s3",
+                "bucket": "target-bucket",
+                "accessKey": "access789",
+                "secretKey": "secret012"
+              }
+            }
+            """.trimIndent()
+
+        assertEquals(30_000, Parser.parse(json).copy.clockSkewToleranceMs)
     }
 
     @Test
