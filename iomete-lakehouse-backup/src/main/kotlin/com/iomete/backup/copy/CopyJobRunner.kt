@@ -45,11 +45,11 @@ object CopyJobRunner {
 
         val plan =
             planCopy(
-                files,
-                sourceRoot,
-                listTarget(config, targetRoot),
-                targetRoot,
-                config.copy.clockSkewToleranceMs,
+                sourceFiles = files,
+                sourceRoot = sourceRoot,
+                targetFiles = listTarget(config, targetRoot),
+                targetRoot = targetRoot,
+                clockSkewToleranceMs = config.copy.clockSkewToleranceMs,
             )
         val skippedBytes = plan.skipped.sumOf { it.size }
 
