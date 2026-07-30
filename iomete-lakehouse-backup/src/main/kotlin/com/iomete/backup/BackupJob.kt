@@ -3,6 +3,7 @@ package com.iomete.backup
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.copy.CopyJobRunner
+import com.iomete.backup.copy.CopyJobSummary
 import com.iomete.backup.fs.FileLister
 import com.iomete.backup.fs.FileSystemFactory
 import com.iomete.backup.fs.HadoopConfigBuilder
@@ -18,7 +19,7 @@ object BackupJob {
     fun run(
         spark: SparkSession,
         config: ApplicationConfig,
-    ) {
+    ): CopyJobSummary {
         logger.info("Enumerating source files...")
         val (files, emptyDirs) = enumerateSource(config)
 
@@ -32,18 +33,20 @@ object BackupJob {
 
         if (files.isEmpty() && emptyDirs.isEmpty()) {
             logger.info("No files found in source. Nothing to copy.")
-            return
+            return CopyJobSummary()
         }
 
         val copyJobResult = CopyJobRunner.run(spark, config, files, emptyDirs)
         val summary = copyJobResult.summary
 
         logger.info(
-            "Copy summary: {} total, {} succeeded, {} failed, {} bytes copied",
+            "Copy summary: {} total, {} succeeded, {} failed, {} skipped, {} bytes copied, {} bytes skipped",
             summary.totalEntries,
             summary.successCount,
             summary.failureCount,
+            summary.skippedCount,
             summary.totalBytesCopied,
+            summary.skippedBytes,
         )
 
         copyJobResult.failedResults
@@ -60,6 +63,8 @@ object BackupJob {
         check(summary.failureCount == 0) {
             "${summary.failureCount} entr${if (summary.failureCount == 1) "y" else "ies"} failed to copy"
         }
+
+        return summary
     }
 
     private fun enumerateSource(config: ApplicationConfig): SourceListing {

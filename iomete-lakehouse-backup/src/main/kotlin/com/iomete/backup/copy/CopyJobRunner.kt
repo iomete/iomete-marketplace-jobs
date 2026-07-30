@@ -4,6 +4,8 @@ import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.copy.internal.FileCopier
 import com.iomete.backup.copy.internal.PathResolver
 import com.iomete.backup.copy.internal.aggregateCopyResults
+import com.iomete.backup.copy.internal.planCopy
+import com.iomete.backup.fs.FileLister
 import com.iomete.backup.fs.FileSystemFactory
 import com.iomete.backup.fs.HadoopConfigBuilder
 import com.iomete.backup.model.FileEntry
@@ -11,6 +13,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.api.java.JavaSparkContext
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
+import java.io.FileNotFoundException
 import java.io.IOException
 import java.net.URI
 
@@ -40,12 +43,25 @@ object CopyJobRunner {
                 targetRoot = targetRoot,
             )
 
-        val filePaths = files.map { it.path }
+        val plan =
+            planCopy(
+                files,
+                sourceRoot,
+                listTarget(config, targetRoot),
+                targetRoot,
+                config.copy.clockSkewToleranceMs,
+            )
+        val skippedBytes = plan.skipped.sumOf { it.size }
+
+        logger.info("Skipping {} files already at the target ({} bytes)", plan.skipped.size, skippedBytes)
+        plan.skipped.forEach { logger.debug("Skipped, already at target: {}", it.path) }
+
+        val filePaths = plan.toCopy.map { it.path }
         // Interim: one partition per executor core (Spark default parallelism).
         // Byte-balanced partitioning will come later.
         val rdd = jsc.parallelize(filePaths, jsc.defaultParallelism())
 
-        logger.info("Copying {} files across {} partitions", files.size, rdd.getNumPartitions())
+        logger.info("Copying {} files across {} partitions", filePaths.size, rdd.getNumPartitions())
 
         val fileResults = aggregateCopyResults(rdd.map { path -> copier.copySingleFile(path) })
         val directoryResults = createDirectories(config, sourceRoot, targetRoot, emptyDirectories)
@@ -53,17 +69,20 @@ object CopyJobRunner {
         val aggregate = directoryResults.fold(fileResults) { acc, result -> acc.add(result) }
         val summary =
             CopyJobSummary(
-                totalEntries = aggregate.successCount + aggregate.failureCount,
+                totalEntries = aggregate.successCount + aggregate.failureCount + plan.skipped.size,
                 successCount = aggregate.successCount,
                 failureCount = aggregate.failureCount,
+                skippedCount = plan.skipped.size,
                 totalBytesCopied = aggregate.totalBytesCopied,
+                skippedBytes = skippedBytes,
                 errors = aggregate.failures.map { "${it.sourcePath}: ${it.error}" },
             )
 
         logger.info(
-            "Copy job completed: {} succeeded, {} failed, {} bytes copied",
+            "Copy job completed: {} succeeded, {} failed, {} skipped, {} bytes copied",
             summary.successCount,
             summary.failureCount,
+            summary.skippedCount,
             summary.totalBytesCopied,
         )
 
@@ -71,6 +90,24 @@ object CopyJobRunner {
             summary = summary,
             failedResults = aggregate.failures,
         )
+    }
+
+    private fun listTarget(
+        config: ApplicationConfig,
+        targetRoot: String,
+    ): List<FileEntry> {
+        val targetConf = HadoopConfigBuilder.build(config.target)
+
+        return try {
+            FileSystemFactory.create(config.target, URI(targetRoot), targetConf).use { targetFs ->
+                FileLister(targetFs).listRecursively(Path(targetRoot)).toList()
+            }
+        } catch (e: FileNotFoundException) {
+            emptyList()
+        } catch (e: Exception) {
+            logger.warn("Target listing failed, copying every file: {}", e.toString())
+            emptyList()
+        }
     }
 
     private fun createDirectories(

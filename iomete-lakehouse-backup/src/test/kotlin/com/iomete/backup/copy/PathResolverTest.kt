@@ -109,7 +109,7 @@ class PathResolverTest {
                 }
 
             assertEquals(
-                "Source file path 's3a://other-bucket/somewhere/file.csv' is not under source root 's3a://bucket/root'",
+                "Path 's3a://other-bucket/somewhere/file.csv' is not under root 's3a://bucket/root'",
                 error.message,
             )
         }

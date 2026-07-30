@@ -17,9 +17,11 @@ data class CopyJobResult(
 )
 
 data class CopyJobSummary(
-    val totalEntries: Int,
-    val successCount: Int,
-    val failureCount: Int,
-    val totalBytesCopied: Long,
-    val errors: List<String>,
+    val totalEntries: Int = 0,
+    val successCount: Int = 0,
+    val failureCount: Int = 0,
+    val skippedCount: Int = 0,
+    val totalBytesCopied: Long = 0,
+    val skippedBytes: Long = 0,
+    val errors: List<String> = emptyList(),
 )

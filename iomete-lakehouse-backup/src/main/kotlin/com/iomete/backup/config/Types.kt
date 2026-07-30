@@ -6,6 +6,14 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo
 data class ApplicationConfig(
     val source: StorageConfig,
     val target: StorageConfig,
+    val copy: CopyConfig = CopyConfig(),
+)
+
+data class CopyConfig(
+    // A file already at the target is only treated as identical when its copy is newer than the
+    // source by this margin: the two clocks are independent and S3 truncates to whole seconds.
+    // Tests writing fixtures and copying them within one second set it to zero.
+    val clockSkewToleranceMs: Long = 30_000,
 )
 
 @JsonTypeInfo(

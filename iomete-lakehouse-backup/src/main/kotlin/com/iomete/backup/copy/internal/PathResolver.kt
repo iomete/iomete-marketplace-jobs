@@ -6,23 +6,27 @@ object PathResolver {
         sourceRoot: String,
         targetRoot: String,
     ): String {
-        // Normalize: ensure sourceRoot ends without slash for clean stripping
-        val normalizedSourceRoot = sourceRoot.trimEnd('/')
         val normalizedTargetRoot = targetRoot.trimEnd('/')
-        val normalizedFilePath = sourceFilePath.trimEnd('/')
+        val relativePath = relativize(sourceFilePath, sourceRoot)
 
-        require(normalizedFilePath.startsWith(normalizedSourceRoot)) {
-            "Source file path '$sourceFilePath' is not under source root '$sourceRoot'"
-        }
-
-        // Strip source root to get relative path
-        val relativePath = normalizedFilePath.removePrefix(normalizedSourceRoot)
-
-        // relativePath starts with "/" or is empty
         return if (relativePath.isEmpty()) {
             normalizedTargetRoot
         } else {
-            "$normalizedTargetRoot$relativePath"
+            "$normalizedTargetRoot/$relativePath"
         }
+    }
+
+    fun relativize(
+        path: String,
+        root: String,
+    ): String {
+        val normalizedRoot = root.trimEnd('/')
+        val normalizedPath = path.trimEnd('/')
+
+        require(normalizedPath.startsWith(normalizedRoot)) {
+            "Path '$path' is not under root '$root'"
+        }
+
+        return normalizedPath.removePrefix(normalizedRoot).trimStart('/')
     }
 }
