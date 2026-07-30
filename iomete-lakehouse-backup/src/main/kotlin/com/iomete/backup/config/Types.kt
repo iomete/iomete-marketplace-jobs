@@ -10,9 +10,8 @@ data class ApplicationConfig(
 )
 
 data class CopyConfig(
-    // A file already at the target is only treated as identical when its copy is newer than the
-    // source by this margin: the two clocks are independent and S3 truncates to whole seconds.
-    // Tests writing fixtures and copying them within one second set it to zero.
+    // Only treat a target copy as identical when it is newer than the source by this margin: the
+    // two clocks are independent and S3 truncates to whole seconds.
     val clockSkewToleranceMs: Long = 30_000,
 )
 
