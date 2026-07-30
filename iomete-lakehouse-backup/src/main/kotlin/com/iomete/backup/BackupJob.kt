@@ -4,14 +4,11 @@ import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.copy.CopyJobRunner
 import com.iomete.backup.copy.CopyJobSummary
-import com.iomete.backup.fs.FileLister
-import com.iomete.backup.fs.FileSystemFactory
-import com.iomete.backup.fs.HadoopConfigBuilder
+import com.iomete.backup.fs.useFileLister
 import com.iomete.backup.model.SourceListing
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
-import java.net.URI
 
 object BackupJob {
     private val logger = LoggerFactory.getLogger(BackupJob::class.java)
@@ -68,11 +65,9 @@ object BackupJob {
     }
 
     private fun enumerateSource(config: ApplicationConfig): SourceListing {
-        val sourceConf = HadoopConfigBuilder.build(config.source)
         val sourceRoot = config.source.rootUri
 
-        return FileSystemFactory.create(config.source, URI(sourceRoot), sourceConf).use { sourceFs ->
-            val lister = FileLister(sourceFs)
+        return useFileLister(config.source, sourceRoot) { lister ->
             val files = lister.listRecursively(Path(sourceRoot)).toList()
             val emptyDirectories =
                 if (config.source is HdfsConfig) {

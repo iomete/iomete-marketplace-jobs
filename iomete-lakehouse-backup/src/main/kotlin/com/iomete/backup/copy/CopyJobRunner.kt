@@ -5,9 +5,9 @@ import com.iomete.backup.copy.internal.FileCopier
 import com.iomete.backup.copy.internal.PathResolver
 import com.iomete.backup.copy.internal.aggregateCopyResults
 import com.iomete.backup.copy.internal.planCopy
-import com.iomete.backup.fs.FileLister
 import com.iomete.backup.fs.FileSystemFactory
 import com.iomete.backup.fs.HadoopConfigBuilder
+import com.iomete.backup.fs.useFileLister
 import com.iomete.backup.model.FileEntry
 import org.apache.hadoop.fs.Path
 import org.apache.spark.api.java.JavaSparkContext
@@ -95,20 +95,15 @@ object CopyJobRunner {
     private fun listTarget(
         config: ApplicationConfig,
         targetRoot: String,
-    ): List<FileEntry> {
-        val targetConf = HadoopConfigBuilder.build(config.target)
-
-        return try {
-            FileSystemFactory.create(config.target, URI(targetRoot), targetConf).use { targetFs ->
-                FileLister(targetFs).listRecursively(Path(targetRoot)).toList()
-            }
+    ): List<FileEntry> =
+        try {
+            useFileLister(config.target, targetRoot) { it.listRecursively(Path(targetRoot)).toList() }
         } catch (e: FileNotFoundException) {
             emptyList()
         } catch (e: Exception) {
             logger.warn("Target listing failed, copying every file: {}", e.toString())
             emptyList()
         }
-    }
 
     private fun createDirectories(
         config: ApplicationConfig,
