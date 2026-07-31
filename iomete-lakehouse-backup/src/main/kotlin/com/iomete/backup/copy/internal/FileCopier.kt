@@ -8,21 +8,18 @@ import com.iomete.backup.fs.HadoopConfigBuilder
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.FileUtil
 import org.apache.hadoop.fs.Path
-import org.apache.hadoop.security.AccessControlException
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
-import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.Serializable
-import java.nio.file.AccessDeniedException
 
 class FileCopier(
     private val sourceConfig: StorageConfig,
     private val targetConfig: StorageConfig,
     private val sourceRoot: String,
     private val targetRoot: String,
-    private val maxAttempts: Int = 3,
-    private val retryDelayMs: Long = 1000L,
+    private val maxAttempts: Int = RetryPolicy.COPY_MAX_ATTEMPTS,
+    private val retryDelayMs: Long = RetryPolicy.DELAY_MS,
 ) : Serializable {
     @Transient
     private var logger = LoggerFactory.getLogger(FileCopier::class.java)
@@ -166,10 +163,4 @@ class FileCopier(
             log().warn("Best-effort temp cleanup failed for {}: {}", path, e.toString())
         }
     }
-
-    private fun isTerminal(e: Throwable): Boolean =
-        e is FileNotFoundException ||
-            e is AccessDeniedException ||
-            e is AccessControlException ||
-            e is IllegalArgumentException
 }
