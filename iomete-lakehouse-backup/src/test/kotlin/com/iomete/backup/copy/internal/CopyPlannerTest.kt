@@ -2,7 +2,10 @@ package com.iomete.backup.copy.internal
 
 import com.iomete.backup.copy.TempFiles
 import com.iomete.backup.model.FileEntry
+import org.apache.hadoop.security.AccessControlException
 import org.junit.jupiter.api.Test
+import java.io.FileNotFoundException
+import java.io.IOException
 import kotlin.test.assertEquals
 
 class CopyPlannerTest {
@@ -109,5 +112,65 @@ class CopyPlannerTest {
 
         assertEquals(2, result.toCopy.size)
         assertEquals(emptyList(), result.skipped)
+    }
+
+    private fun listing(list: () -> List<FileEntry>) = listTargetWithRetries(retryDelayMs = 0, list = list)
+
+    @Test
+    fun `a transient listing failure is retried until it succeeds`() {
+        var attempts = 0
+        val entries = listOf(target("file.txt"))
+
+        val result =
+            listing {
+                attempts++
+                if (attempts < 3) throw IOException("namenode failing over")
+                entries
+            }
+
+        assertEquals(entries, result)
+        assertEquals(3, attempts)
+    }
+
+    @Test
+    fun `exhausted listing retries degrade to an empty index`() {
+        var attempts = 0
+
+        val result =
+            listing {
+                attempts++
+                throw IOException("still down")
+            }
+
+        assertEquals(emptyList(), result)
+        assertEquals(RetryPolicy.LISTING_MAX_ATTEMPTS, attempts)
+    }
+
+    @Test
+    fun `an absent target root is not retried`() {
+        var attempts = 0
+
+        val result =
+            listing {
+                attempts++
+                throw FileNotFoundException(targetRoot)
+            }
+
+        assertEquals(emptyList(), result)
+        assertEquals(1, attempts)
+    }
+
+    @Test
+    fun `permission denied is not retried`() {
+        var attempts = 0
+
+        val result =
+            listing {
+                attempts++
+                throw AccessControlException("denied")
+            }
+
+        assertEquals(emptyList(), result)
+        assertEquals(1, attempts)
     }
 }

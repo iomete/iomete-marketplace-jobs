@@ -4,6 +4,7 @@ import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.copy.internal.FileCopier
 import com.iomete.backup.copy.internal.PathResolver
 import com.iomete.backup.copy.internal.aggregateCopyResults
+import com.iomete.backup.copy.internal.listTargetWithRetries
 import com.iomete.backup.copy.internal.planCopy
 import com.iomete.backup.fs.FileSystemFactory
 import com.iomete.backup.fs.HadoopConfigBuilder
@@ -13,7 +14,6 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.api.java.JavaSparkContext
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
-import java.io.FileNotFoundException
 import java.io.IOException
 import java.net.URI
 
@@ -96,14 +96,8 @@ object CopyJobRunner {
         config: ApplicationConfig,
         targetRoot: String,
     ): List<FileEntry> =
-        try {
+        listTargetWithRetries {
             useFileLister(config.target, targetRoot) { it.listRecursively(Path(targetRoot)).toList() }
-        } catch (_: FileNotFoundException) {
-            // Target root absent is the normal first run, not an error.
-            emptyList()
-        } catch (e: Exception) {
-            logger.warn("Target listing failed, copying every file: {}: {}", e.javaClass.simpleName, e.message)
-            emptyList()
         }
 
     private fun createDirectories(
