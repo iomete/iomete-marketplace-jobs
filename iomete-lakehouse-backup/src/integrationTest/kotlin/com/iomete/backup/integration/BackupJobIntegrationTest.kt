@@ -164,6 +164,27 @@ class BackupJobIntegrationTest {
     }
 
     @Test
+    fun `skipIdentical disabled copies every file on every run`() {
+        val source = IntegrationHarness.freshBucket()
+        val tree = fixture()
+        seedS3(source, tree)
+
+        val config =
+            ApplicationConfig(
+                source = IntegrationHarness.s3Config(source),
+                target = IntegrationHarness.s3Config(IntegrationHarness.freshBucket()),
+                copy = CopyConfig(skipIdentical = false, clockSkewToleranceMs = 0),
+            )
+
+        val first = BackupJob.run(IntegrationHarness.spark, config)
+        assertEquals(tree.size, first.successCount)
+
+        val second = BackupJob.run(IntegrationHarness.spark, config)
+        assertEquals(tree.size, second.successCount, "a disabled skip must copy everything again")
+        assertEquals(0, second.skippedCount)
+    }
+
+    @Test
     fun `empty source is a no-op and writes nothing`() {
         val source = IntegrationHarness.freshBucket()
         val target = IntegrationHarness.freshBucket()

@@ -10,6 +10,7 @@ data class ApplicationConfig(
 )
 
 data class CopyConfig(
+    val skipIdentical: Boolean = true,
     // Only treat a target copy as identical when it is newer than the source by this margin: the
     // two clocks are independent and S3 truncates to whole seconds.
     val clockSkewToleranceMs: Long = 30_000,

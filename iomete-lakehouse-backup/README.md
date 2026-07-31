@@ -62,6 +62,18 @@ The remaining S3 fields are optional and have sensible defaults: `prefix`
 (`us-east-1`). The job scales automatically with your Spark cluster, so there is
 nothing extra to tune.
 
+### Re-copying everything
+
+A re-run skips files already at the target with the same length and a newer
+timestamp. If you suspect the target contents are wrong, force a full copy by
+adding a `copy` block — no need to delete the target:
+
+```json
+{
+  "copy": { "skipIdentical": false }
+}
+```
+
 ### HDFS source or target (any HDFS-compatible storage, e.g. Dell Isilon / OneFS)
 
 Use `type: "hdfs"` for either side of a backup or restore. To back up into an

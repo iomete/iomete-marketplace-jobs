@@ -45,7 +45,7 @@ object CopyJobRunner {
             planCopy(
                 sourceFiles = files,
                 sourceRoot = sourceRoot,
-                targetFiles = listTarget(config, targetRoot),
+                targetFiles = if (config.copy.skipIdentical) listTarget(config, targetRoot) else emptyList(),
                 targetRoot = targetRoot,
                 clockSkewToleranceMs = config.copy.clockSkewToleranceMs,
             )
