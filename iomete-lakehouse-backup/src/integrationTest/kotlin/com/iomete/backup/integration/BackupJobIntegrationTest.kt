@@ -2,6 +2,7 @@ package com.iomete.backup.integration
 
 import com.iomete.backup.BackupJob
 import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.CopyConfig
 import com.iomete.backup.config.StorageConfig
 import com.iomete.backup.integration.fixtures.assertMatches
 import com.iomete.backup.integration.fixtures.directoryExists
@@ -17,6 +18,7 @@ import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.Arguments
 import org.junit.jupiter.params.provider.MethodSource
 import java.util.UUID
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
@@ -117,6 +119,69 @@ class BackupJobIntegrationTest {
 
         assertTrue(directoryExists(target.config, "empty"))
         assertTrue(directoryExists(target.config, "nested/empty"))
+    }
+
+    @ParameterizedTest(name = "s3 to {0} re-run skips identical files and copies only what changed")
+    @MethodSource("targets")
+    fun rerunSkipsIdenticalFiles(
+        @Suppress("UNUSED_PARAMETER") name: String,
+        makeTarget: () -> Target,
+    ) {
+        val source = IntegrationHarness.freshBucket()
+        val tree = fixture()
+        seedS3(source, tree)
+
+        val target = makeTarget()
+        val config =
+            ApplicationConfig(
+                source = IntegrationHarness.s3Config(source),
+                target = target.config,
+                copy = CopyConfig(clockSkewToleranceMs = 0),
+            )
+
+        // MinIO truncates timestamps to whole seconds, so a copy taken within the same second as its
+        // source can be reported as older than it; wait the truncation out before each run.
+        Thread.sleep(1_100)
+
+        val first = BackupJob.run(IntegrationHarness.spark, config)
+        assertEquals(tree.size, first.successCount, "first run must copy everything")
+        assertEquals(0, first.skippedCount)
+
+        val second = BackupJob.run(IntegrationHarness.spark, config)
+        assertEquals(0, second.successCount, "re-run against an unchanged source must copy nothing")
+        assertEquals(tree.size, second.skippedCount)
+        assertEquals(tree.size, second.totalEntries)
+        assertEquals(tree.values.sumOf { it.size.toLong() }, second.skippedBytes)
+
+        Thread.sleep(1_100)
+        val changed = tree + ("root.txt" to "ROOT FILE".toByteArray())
+        seedS3(source, mapOf("root.txt" to changed.getValue("root.txt")))
+
+        val third = BackupJob.run(IntegrationHarness.spark, config)
+        assertEquals(1, third.successCount, "only the rewritten file must be copied again")
+        assertEquals(tree.size - 1, third.skippedCount)
+        assertMatches(changed, target.read())
+    }
+
+    @Test
+    fun `skipIdentical disabled copies every file on every run`() {
+        val source = IntegrationHarness.freshBucket()
+        val tree = fixture()
+        seedS3(source, tree)
+
+        val config =
+            ApplicationConfig(
+                source = IntegrationHarness.s3Config(source),
+                target = IntegrationHarness.s3Config(IntegrationHarness.freshBucket()),
+                copy = CopyConfig(skipIdentical = false, clockSkewToleranceMs = 0),
+            )
+
+        val first = BackupJob.run(IntegrationHarness.spark, config)
+        assertEquals(tree.size, first.successCount)
+
+        val second = BackupJob.run(IntegrationHarness.spark, config)
+        assertEquals(tree.size, second.successCount, "a disabled skip must copy everything again")
+        assertEquals(0, second.skippedCount)
     }
 
     @Test

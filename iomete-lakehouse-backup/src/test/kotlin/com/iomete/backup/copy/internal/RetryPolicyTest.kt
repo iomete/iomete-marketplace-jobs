@@ -4,7 +4,7 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-class BackoffTest {
+class RetryPolicyTest {
     @Test
     fun `delay is zero when base is non-positive`() {
         assertEquals(0L, fullJitterDelayMs(attempt = 5, baseMs = 0L, rnd = 1.0))

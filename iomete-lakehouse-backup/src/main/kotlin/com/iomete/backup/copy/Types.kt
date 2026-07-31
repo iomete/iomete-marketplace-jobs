@@ -20,6 +20,12 @@ data class CopyJobSummary(
     val totalEntries: Int,
     val successCount: Int,
     val failureCount: Int,
+    val skippedCount: Int,
     val totalBytesCopied: Long,
+    val skippedBytes: Long,
     val errors: List<String>,
-)
+) {
+    companion object {
+        val EMPTY = CopyJobSummary(0, 0, 0, 0, 0, 0, emptyList())
+    }
+}

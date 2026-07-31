@@ -52,6 +52,104 @@ class ParserTest {
     }
 
     @Test
+    fun `parse copy block binds clock skew tolerance`() {
+        val json =
+            """
+            {
+              "source": {
+                "type": "s3",
+                "bucket": "source-bucket",
+                "accessKey": "access123",
+                "secretKey": "secret456"
+              },
+              "target": {
+                "type": "s3",
+                "bucket": "target-bucket",
+                "accessKey": "access789",
+                "secretKey": "secret012"
+              },
+              "copy": {
+                "clockSkewToleranceMs": 0
+              }
+            }
+            """.trimIndent()
+
+        assertEquals(0, Parser.parse(json).copy.clockSkewToleranceMs)
+    }
+
+    @Test
+    fun `parse copy block binds the skip-identical flag`() {
+        val json =
+            """
+            {
+              "source": {
+                "type": "s3",
+                "bucket": "source-bucket",
+                "accessKey": "access123",
+                "secretKey": "secret456"
+              },
+              "target": {
+                "type": "s3",
+                "bucket": "target-bucket",
+                "accessKey": "access789",
+                "secretKey": "secret012"
+              },
+              "copy": {
+                "skipIdentical": false
+              }
+            }
+            """.trimIndent()
+
+        assertEquals(false, Parser.parse(json).copy.skipIdentical)
+    }
+
+    @Test
+    fun `parse config without copy block defaults to skipping identical files`() {
+        val json =
+            """
+            {
+              "source": {
+                "type": "s3",
+                "bucket": "source-bucket",
+                "accessKey": "access123",
+                "secretKey": "secret456"
+              },
+              "target": {
+                "type": "s3",
+                "bucket": "target-bucket",
+                "accessKey": "access789",
+                "secretKey": "secret012"
+              }
+            }
+            """.trimIndent()
+
+        assertEquals(true, Parser.parse(json).copy.skipIdentical)
+    }
+
+    @Test
+    fun `parse config without copy block defaults the clock skew tolerance`() {
+        val json =
+            """
+            {
+              "source": {
+                "type": "s3",
+                "bucket": "source-bucket",
+                "accessKey": "access123",
+                "secretKey": "secret456"
+              },
+              "target": {
+                "type": "s3",
+                "bucket": "target-bucket",
+                "accessKey": "access789",
+                "secretKey": "secret012"
+              }
+            }
+            """.trimIndent()
+
+        assertEquals(30_000, Parser.parse(json).copy.clockSkewToleranceMs)
+    }
+
+    @Test
     fun `parse S3-to-HDFS config binds HdfsConfig target`() {
         val json =
             """
