@@ -30,7 +30,7 @@ object BackupJob {
 
         if (files.isEmpty() && emptyDirs.isEmpty()) {
             logger.info("No files found in source. Nothing to copy.")
-            return CopyJobSummary()
+            return CopyJobSummary.EMPTY
         }
 
         val copyJobResult = CopyJobRunner.run(spark, config, files, emptyDirs)

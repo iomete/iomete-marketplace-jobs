@@ -17,11 +17,15 @@ data class CopyJobResult(
 )
 
 data class CopyJobSummary(
-    val totalEntries: Int = 0,
-    val successCount: Int = 0,
-    val failureCount: Int = 0,
-    val skippedCount: Int = 0,
-    val totalBytesCopied: Long = 0,
-    val skippedBytes: Long = 0,
-    val errors: List<String> = emptyList(),
-)
+    val totalEntries: Int,
+    val successCount: Int,
+    val failureCount: Int,
+    val skippedCount: Int,
+    val totalBytesCopied: Long,
+    val skippedBytes: Long,
+    val errors: List<String>,
+) {
+    companion object {
+        val EMPTY = CopyJobSummary(0, 0, 0, 0, 0, 0, emptyList())
+    }
+}
