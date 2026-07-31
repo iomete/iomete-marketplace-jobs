@@ -6,16 +6,14 @@ import com.iomete.backup.copy.internal.PathResolver
 import com.iomete.backup.copy.internal.aggregateCopyResults
 import com.iomete.backup.copy.internal.listTargetWithRetries
 import com.iomete.backup.copy.internal.planCopy
-import com.iomete.backup.fs.FileSystemFactory
-import com.iomete.backup.fs.HadoopConfigBuilder
 import com.iomete.backup.fs.useFileLister
+import com.iomete.backup.fs.useFileSystem
 import com.iomete.backup.model.FileEntry
 import org.apache.hadoop.fs.Path
 import org.apache.spark.api.java.JavaSparkContext
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
 import java.io.IOException
-import java.net.URI
 
 object CopyJobRunner {
     private val logger = LoggerFactory.getLogger(CopyJobRunner::class.java)
@@ -110,9 +108,7 @@ object CopyJobRunner {
 
         logger.info("Replicating {} empty directories", directories.size)
 
-        val targetConf = HadoopConfigBuilder.build(config.target)
-
-        return FileSystemFactory.create(config.target, URI(targetRoot), targetConf).use { targetFs ->
+        return useFileSystem(config.target, targetRoot) { targetFs ->
             directories.map { sourcePath ->
                 val targetPath = PathResolver.resolveTargetPath(sourcePath, sourceRoot, targetRoot)
 
