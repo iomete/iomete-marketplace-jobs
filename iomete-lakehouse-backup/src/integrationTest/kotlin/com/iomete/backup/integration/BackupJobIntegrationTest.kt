@@ -151,6 +151,7 @@ class BackupJobIntegrationTest {
         assertEquals(0, second.successCount, "re-run against an unchanged source must copy nothing")
         assertEquals(tree.size, second.skippedCount)
         assertEquals(tree.size, second.totalEntries)
+        assertEquals(tree.values.sumOf { it.size.toLong() }, second.skippedBytes)
 
         Thread.sleep(1_100)
         val changed = tree + ("root.txt" to "ROOT FILE".toByteArray())
