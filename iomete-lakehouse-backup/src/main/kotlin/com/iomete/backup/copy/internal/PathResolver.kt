@@ -23,7 +23,7 @@ object PathResolver {
         val normalizedRoot = root.trimEnd('/')
         val normalizedPath = path.trimEnd('/')
 
-        require(normalizedPath.startsWith(normalizedRoot)) {
+        require(normalizedPath == normalizedRoot || normalizedPath.startsWith("$normalizedRoot/")) {
             "Path '$path' is not under root '$root'"
         }
 

@@ -113,5 +113,16 @@ class PathResolverTest {
                 error.message,
             )
         }
+
+        @Test
+        fun `rejects a sibling root sharing the root name as a prefix`() {
+            assertFailsWith<IllegalArgumentException> {
+                PathResolver.resolveTargetPath(
+                    sourceFilePath = "s3a://bucket/root2/file.parquet",
+                    sourceRoot = "s3a://bucket/root",
+                    targetRoot = "s3a://backup/dest",
+                )
+            }
+        }
     }
 }
