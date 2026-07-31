@@ -13,6 +13,34 @@ internal object RetryPolicy {
     const val LISTING_MAX_ATTEMPTS = 5
 }
 
+// Retries every non-terminal failure, then rethrows the last one. onFailedAttempt fires for every
+// failed attempt, terminal ones included.
+internal fun <T> withRetries(
+    maxAttempts: Int,
+    retryDelayMs: Long,
+    onFailedAttempt: (attempt: Int, e: Exception) -> Unit = { _, _ -> },
+    block: (attempt: Int) -> T,
+): T {
+    for (attempt in 1..maxAttempts) {
+        try {
+            return block(attempt)
+        } catch (e: Exception) {
+            onFailedAttempt(attempt, e)
+
+            if (isTerminal(e) || attempt == maxAttempts) throw e
+
+            try {
+                Thread.sleep(fullJitterDelayMs(attempt, retryDelayMs))
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw e
+            }
+        }
+    }
+
+    error("withRetries needs maxAttempts of at least 1, got $maxAttempts")
+}
+
 internal fun fullJitterDelayMs(
     attempt: Int,
     baseMs: Long,

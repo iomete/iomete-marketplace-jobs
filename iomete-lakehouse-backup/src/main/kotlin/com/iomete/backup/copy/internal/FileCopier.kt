@@ -48,61 +48,53 @@ class FileCopier(
                 )
             }
 
-        var lastError: String? = null
-        var attemptsMade = 0
+        var attemptsUsed = 0
 
-        for (attempt in 1..maxAttempts) {
-            attemptsMade = attempt
-
-            try {
-                val bytesCopied = copyOnce(sourceFilePath, targetFilePath)
-
-                log().debug(
-                    "Copied on attempt {}/{}: {} -> {} ({} bytes)",
-                    attempt,
-                    maxAttempts,
-                    sourceFilePath,
-                    targetFilePath,
-                    bytesCopied,
-                )
-                return CopyResult(
-                    sourcePath = sourceFilePath,
-                    targetPath = targetFilePath,
-                    success = true,
-                    bytesCopied = bytesCopied,
-                    attemptsUsed = attempt,
-                )
-            } catch (e: Exception) {
-                lastError = "${e.javaClass.simpleName}: ${e.message}"
-
-                log().warn(
-                    "Attempt {}/{} failed for {} -> {}: {}",
-                    attempt,
-                    maxAttempts,
-                    sourceFilePath,
-                    targetFilePath,
-                    lastError,
-                )
-
-                if (isTerminal(e)) break
-                if (attempt < maxAttempts) {
-                    try {
-                        Thread.sleep(fullJitterDelayMs(attempt, retryDelayMs))
-                    } catch (ie: InterruptedException) {
-                        Thread.currentThread().interrupt()
-                        break
-                    }
+        return try {
+            val bytesCopied =
+                withRetries(
+                    maxAttempts = maxAttempts,
+                    retryDelayMs = retryDelayMs,
+                    onFailedAttempt = { attempt, e ->
+                        log().warn(
+                            "Attempt {}/{} failed for {} -> {}: {}: {}",
+                            attempt,
+                            maxAttempts,
+                            sourceFilePath,
+                            targetFilePath,
+                            e.javaClass.simpleName,
+                            e.message,
+                        )
+                    },
+                ) { attempt ->
+                    attemptsUsed = attempt
+                    copyOnce(sourceFilePath, targetFilePath)
                 }
-            }
-        }
 
-        return CopyResult(
-            sourcePath = sourceFilePath,
-            targetPath = targetFilePath,
-            success = false,
-            error = lastError ?: "Unknown copy failure",
-            attemptsUsed = attemptsMade,
-        )
+            log().debug(
+                "Copied on attempt {}/{}: {} -> {} ({} bytes)",
+                attemptsUsed,
+                maxAttempts,
+                sourceFilePath,
+                targetFilePath,
+                bytesCopied,
+            )
+            CopyResult(
+                sourcePath = sourceFilePath,
+                targetPath = targetFilePath,
+                success = true,
+                bytesCopied = bytesCopied,
+                attemptsUsed = attemptsUsed,
+            )
+        } catch (e: Exception) {
+            CopyResult(
+                sourcePath = sourceFilePath,
+                targetPath = targetFilePath,
+                success = false,
+                error = "${e.javaClass.simpleName}: ${e.message}",
+                attemptsUsed = attemptsUsed,
+            )
+        }
     }
 
     private fun copyOnce(
