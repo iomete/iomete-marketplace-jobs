@@ -64,7 +64,9 @@ object CopyJobRunner {
                 CopyAggregate()
             } else {
                 val rdd = jsc.parallelize(batches, batches.size)
-                aggregateCopyResults(rdd.flatMap { batch -> batch.map { copier.copySingleFile(it) }.iterator() })
+                aggregateCopyResults(
+                    rdd.flatMap { batch -> batch.asSequence().map { copier.copySingleFile(it) }.iterator() },
+                )
             }
         val directoryResults = createDirectories(config, sourceRoot, targetRoot, emptyDirectories)
 
