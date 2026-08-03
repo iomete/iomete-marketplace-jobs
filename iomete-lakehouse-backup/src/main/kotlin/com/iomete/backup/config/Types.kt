@@ -13,7 +13,7 @@ data class CopyConfig(
     val skipIdentical: Boolean = true,
     // Only treat a target copy as identical when it is newer than the source by this margin: the
     // two clocks are independent and S3 truncates to whole seconds.
-    val clockSkewToleranceMs: Long = 30_000,
+    val clockSkewToleranceMs: Long = 30L * 1000,
     val bytesPerTask: Long = 1024L * 1024 * 1024,
     // A byte target alone does not bound task cost: every file pays a fresh filesystem build, so a
     // batch of tiny files runs long while staying far below the byte target.
