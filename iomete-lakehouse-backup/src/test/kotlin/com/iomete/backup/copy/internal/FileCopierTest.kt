@@ -25,6 +25,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.ObjectInputStream
 import java.io.ObjectOutputStream
+import java.io.OutputStream
 import java.net.URI
 import java.nio.file.Files
 import java.util.UUID
@@ -56,6 +57,23 @@ class FileCopierTest {
     }
 
     private fun sinkStream(): FSDataOutputStream = FSDataOutputStream(ByteArrayOutputStream(), null)
+
+    /** A sink that accepts the first chunk and then fails, so the pump is interrupted with bytes already written. */
+    private fun failingSinkStream(onWrite: () -> Int): FSDataOutputStream =
+        FSDataOutputStream(
+            object : OutputStream() {
+                override fun write(b: Int) = Unit
+
+                override fun write(
+                    b: ByteArray,
+                    off: Int,
+                    len: Int,
+                ) {
+                    if (onWrite() > 0) throw java.io.IOException("mid-write boom")
+                }
+            },
+            null,
+        )
 
     @AfterEach
     fun tearDown() {
@@ -614,7 +632,7 @@ class FileCopierTest {
     }
 
     @Test
-    fun `best-effort temp deletion when copy stream fails mid-write`() {
+    fun `best-effort temp deletion when the target stream cannot be opened`() {
         val sourcePathString = "s3a://bucket/in/file.txt"
         val targetPathString = "s3a://bucket/out/file.txt"
         val sourcePath = Path(sourcePathString)
@@ -646,6 +664,50 @@ class FileCopierTest {
             val result = copier.copySingleFile(sourcePathString)
 
             assertFalse(result.success)
+            verify(exactly = 1) { targetFs.delete(any(), any()) }
+            verify(exactly = 0) { targetFs.rename(any(), any()) }
+        } finally {
+            unmockkStatic(FileSystem::class)
+        }
+    }
+
+    @Test
+    fun `best-effort temp deletion when the copy fails mid-write`() {
+        val sourcePathString = "s3a://bucket/in/file.txt"
+        val targetPathString = "s3a://bucket/out/file.txt"
+        val sourcePath = Path(sourcePathString)
+        val sourceLen = 96L * 1024
+        val sourceFs = mockk<FileSystem>()
+        val targetFs = mockk<FileSystem>()
+        var chunksWritten = 0
+
+        mockkStatic(FileSystem::class)
+        try {
+            every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
+            every { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) } returns targetFs
+            every { targetFs.exists(any()) } returns true
+            every { targetFs.delete(any(), any()) } returns true
+            every { sourceFs.getFileStatus(sourcePath) } returns
+                FileStatus(sourceLen, false, 1, 1024L, 0L, sourcePath)
+            every { sourceFs.open(sourcePath, any()) } answers { sourceStream(sourceLen.toInt()) }
+            every { targetFs.create(any(), any<Boolean>(), any<Int>()) } answers { failingSinkStream { chunksWritten++ } }
+            every { sourceFs.close() } just runs
+            every { targetFs.close() } just runs
+
+            val copier =
+                FileCopier(
+                    sourceConfig = dummyConfig,
+                    targetConfig = dummyConfig,
+                    sourceRoot = "s3a://bucket/in",
+                    targetRoot = "s3a://bucket/out",
+                    maxAttempts = 1,
+                    retryDelayMs = 0,
+                )
+
+            val result = copier.copySingleFile(sourcePathString)
+
+            assertFalse(result.success)
+            assertTrue(chunksWritten > 1, "expected bytes in flight before the failure, wrote $chunksWritten chunk(s)")
             verify(exactly = 1) { targetFs.delete(any(), any()) }
             verify(exactly = 0) { targetFs.rename(any(), any()) }
         } finally {
