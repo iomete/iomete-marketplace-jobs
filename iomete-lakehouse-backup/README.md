@@ -74,6 +74,27 @@ adding a `copy` block — no need to delete the target:
 }
 ```
 
+### Tuning how the work is split (advanced)
+
+The job divides the files into units of work of about 1 GB and copies them in
+parallel. The defaults suit most backups, so skip this section unless your run
+matches one of the cases below.
+
+```json
+{
+  "copy": { "bytesPerTask": 1073741824, "filesPerTask": 1000 }
+}
+```
+
+| Field | Default | Lower it when |
+|---|---|---|
+| `bytesPerTask` | `1073741824` (1 GB) | Your backup is a few large files and most of the cluster sits idle. Avoid going below 100 MB, as very small units cost more than they save. |
+| `filesPerTask` | `1000` | Your backup is hundreds of thousands of small files and tasks are slow despite copying little data. Try `250`. |
+
+A file larger than `bytesPerTask` is copied by a single executor and is never
+split, so a run can never finish faster than its largest file. The job logs that
+file's size when it starts.
+
 ### HDFS source or target (any HDFS-compatible storage, e.g. Dell Isilon / OneFS)
 
 Use `type: "hdfs"` for either side of a backup or restore. To back up into an

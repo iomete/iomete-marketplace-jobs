@@ -1,9 +1,11 @@
 package com.iomete.backup.copy
 
 import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.copy.internal.CopyAggregate
 import com.iomete.backup.copy.internal.FileCopier
 import com.iomete.backup.copy.internal.PathResolver
 import com.iomete.backup.copy.internal.aggregateCopyResults
+import com.iomete.backup.copy.internal.batchFiles
 import com.iomete.backup.copy.internal.listTargetWithRetries
 import com.iomete.backup.copy.internal.planCopy
 import com.iomete.backup.fs.useFileLister
@@ -54,14 +56,18 @@ object CopyJobRunner {
         logger.info("Skipping {} files already at the target ({} bytes)", plan.skipped.size, skippedBytes)
         plan.skipped.forEach { logger.debug("Skipped, already at target: {}", it.path) }
 
-        val filePaths = plan.toCopy.map { it.path }
-        // Interim: one partition per executor core (Spark default parallelism).
-        // Byte-balanced partitioning will come later.
-        val rdd = jsc.parallelize(filePaths, jsc.defaultParallelism())
+        val batches = batchFiles(plan.toCopy, config.copy.bytesPerTask, config.copy.filesPerTask)
+        logCopyPlan(plan.toCopy, batches.size, config.copy.bytesPerTask)
 
-        logger.info("Copying {} files across {} partitions", filePaths.size, rdd.getNumPartitions())
-
-        val fileResults = aggregateCopyResults(rdd.map { path -> copier.copySingleFile(path) })
+        val fileResults =
+            if (batches.isEmpty()) {
+                CopyAggregate()
+            } else {
+                val rdd = jsc.parallelize(batches, batches.size)
+                aggregateCopyResults(
+                    rdd.flatMap { batch -> batch.asSequence().map { copier.copySingleFile(it) }.iterator() },
+                )
+            }
         val directoryResults = createDirectories(config, sourceRoot, targetRoot, emptyDirectories)
 
         val aggregate = directoryResults.fold(fileResults) { acc, result -> acc.add(result) }
@@ -87,6 +93,25 @@ object CopyJobRunner {
         return CopyJobResult(
             summary = summary,
             failedResults = aggregate.failures,
+        )
+    }
+
+    private fun logCopyPlan(
+        toCopy: List<FileEntry>,
+        batchCount: Int,
+        bytesPerTask: Long,
+    ) {
+        val largest = toCopy.maxOfOrNull { it.size } ?: 0
+        val oversized = toCopy.count { it.size > bytesPerTask }
+
+        logger.info(
+            "Copying {} files ({} bytes) across {} tasks; largest single file {} bytes, {} files above the {} byte target",
+            toCopy.size,
+            toCopy.sumOf { it.size },
+            batchCount,
+            largest,
+            oversized,
+            bytesPerTask,
         )
     }
 
