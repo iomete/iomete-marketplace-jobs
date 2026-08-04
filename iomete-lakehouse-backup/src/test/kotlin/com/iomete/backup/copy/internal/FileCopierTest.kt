@@ -30,6 +30,7 @@ import java.net.URI
 import java.nio.file.Files
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -292,7 +293,7 @@ class FileCopierTest {
     }
 
     @Test
-    fun `interrupt during retry backoff stops retrying and preserves interrupt flag`() {
+    fun `interrupt during retry backoff kills the task instead of recording a failed copy`() {
         val sourcePathString = "s3a://bucket/in/file.txt"
         val sourcePath = Path(sourcePathString)
         val sourceFs = mockk<FileSystem>()
@@ -318,11 +319,9 @@ class FileCopierTest {
                 )
 
             Thread.currentThread().interrupt()
-            val result = copier.copySingleFile(sourcePathString)
+            assertFailsWith<InterruptedException> { copier.copySingleFile(sourcePathString) }
 
             assertTrue(Thread.interrupted(), "interrupt flag should be restored")
-            assertFalse(result.success)
-            assertEquals(1, result.attemptsUsed)
         } finally {
             Thread.interrupted()
             unmockkStatic(FileSystem::class)
