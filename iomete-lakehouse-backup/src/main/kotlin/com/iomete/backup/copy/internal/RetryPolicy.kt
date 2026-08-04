@@ -53,7 +53,8 @@ internal fun fullJitterDelayMs(
 }
 
 internal fun isTerminal(e: Throwable): Boolean =
-    e is FileNotFoundException ||
+    e is InterruptedException ||
+        e is FileNotFoundException ||
         e is AccessDeniedException ||
         e is AccessControlException ||
         e is IllegalArgumentException

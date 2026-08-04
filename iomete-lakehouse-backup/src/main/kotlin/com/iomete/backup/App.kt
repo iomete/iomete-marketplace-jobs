@@ -19,9 +19,10 @@ object App {
 
             val config = ConfigLoader.load(configPath)
             val spark = SparkSessionProvider.sparkSession
+            val internalConfig = ConfigLoader.loadInternalConfig(config, spark.sparkContext().getConf())
 
             try {
-                BackupJob.run(spark, config)
+                BackupJob.run(spark, config, internalConfig)
             } finally {
                 SparkSessionProvider.stop()
             }

@@ -18,6 +18,12 @@ data class CopyConfig(
     // A byte target alone does not bound task cost: every file pays a fresh filesystem build, so a
     // batch of tiny files runs long while staying far below the byte target.
     val filesPerTask: Int = 1000,
+    // Aggregate ceiling across every executor, unlike DistCp's per-map -bandwidth. Null is uncapped.
+    val maxBandwidthMbPerSec: Double? = null,
+)
+
+data class InternalConfig(
+    val bytesPerSecPerExecutor: Double? = null,
 )
 
 @JsonTypeInfo(

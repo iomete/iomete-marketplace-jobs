@@ -95,6 +95,57 @@ A file larger than `bytesPerTask` is copied by a single executor and is never
 split, so a run can never finish faster than its largest file. The job logs that
 file's size when it starts.
 
+### Limiting bandwidth
+
+The backup copies as fast as your network allows, and that can get in the way of
+other work sharing the same connection. If you would rather keep some room free,
+configure the maximum speed the job is allowed to use with
+`maxBandwidthMbPerSec`:
+
+```json
+{
+  "copy": { "maxBandwidthMbPerSec": 600 }
+}
+```
+
+With this setting the job as a whole stays under 600 MB/s, however many
+executors it runs on. Treat it as a ceiling rather than a target: the copy can
+still be slower than the configured limit, and it usually is when the data is
+made up of many small files.
+
+The limit is shared across the executors, so the job also needs the number of
+executors it will run with. Configure one of these on the job alongside the
+limit:
+
+| Your cluster | Setting |
+|---|---|
+| Fixed size | `spark.executor.instances` |
+| Autoscaling | `spark.dynamicAllocation.maxExecutors` |
+
+If neither is configured, the run fails straight away with the name of the
+setting to add, so the problem never surfaces halfway through a backup. And if
+you leave `maxBandwidthMbPerSec` out altogether, the copy runs at full speed and
+none of this applies. Once a limit is configured, the driver log reports the
+speed allowed per executor and the executor count it was calculated from.
+
+A few things worth knowing before you settle on a number:
+
+- **Every byte crosses the network twice**, once on the way in from the source
+  and once on the way out to the target, but the limit only counts it once. So
+  if both sides share the same link, set the limit to about half of what you can
+  spare on it. If the source and target sit on separate links, say reading from
+  Isilon and writing to S3, then each side sees the number you set.
+- **On an autoscaling cluster the limit is divided by `maxExecutors`**, so the
+  full limit is only reached once the cluster has scaled up to that many
+  executors. While it is still scaling, the copy runs slower than the limit
+  rather than faster, so the network is never at risk; it just means a run that
+  never gets its full allocation stays below the speed you configured. If that
+  matters, set `spark.dynamicAllocation.minExecutors` to the same value as
+  `maxExecutors`, or use a fixed `spark.executor.instances` instead.
+- **Going slower means holding the cluster longer.** A backup that finished in
+  an hour at full speed will take roughly two hours at half of it, and the
+  instance stays busy for all of that time.
+
 ### HDFS source or target (any HDFS-compatible storage, e.g. Dell Isilon / OneFS)
 
 Use `type: "hdfs"` for either side of a backup or restore. To back up into an
