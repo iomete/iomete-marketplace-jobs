@@ -31,9 +31,10 @@ internal fun <T> withRetries(
 
             try {
                 Thread.sleep(fullJitterDelayMs(attempt, retryDelayMs))
-            } catch (_: InterruptedException) {
+            } catch (interrupted: InterruptedException) {
                 Thread.currentThread().interrupt()
-                throw e
+                interrupted.addSuppressed(e)
+                throw interrupted
             }
         }
     }

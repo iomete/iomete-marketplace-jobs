@@ -41,6 +41,19 @@ class RetryPolicyTest {
     }
 
     @Test
+    fun `an interrupted backoff surfaces as an interruption, not the failure it was retrying`() {
+        Thread.currentThread().interrupt()
+
+        val e =
+            assertFailsWith<InterruptedException> {
+                withRetries(maxAttempts = 3, retryDelayMs = 1000) { throw java.io.IOException("connection reset") }
+            }
+
+        assertTrue(Thread.interrupted(), "interrupt flag must be restored")
+        assertTrue(e.suppressed.any { it is java.io.IOException })
+    }
+
+    @Test
     fun `random draws never exceed the bound`() {
         repeat(1000) {
             val d = fullJitterDelayMs(attempt = 4, baseMs = 1000L, capMs = 30_000L)
