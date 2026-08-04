@@ -1,7 +1,11 @@
 package com.iomete.backup.integration.harness
 
+import com.iomete.backup.BackupJob
+import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.ConfigLoader
 import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
+import com.iomete.backup.copy.CopyJobSummary
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.hdfs.MiniDFSCluster
 import org.apache.spark.sql.SparkSession
@@ -75,6 +79,9 @@ object IntegrationHarness {
             },
         )
     }
+
+    fun runBackup(config: ApplicationConfig): CopyJobSummary =
+        BackupJob.run(spark, config, ConfigLoader.loadInternalConfig(config, spark.sparkContext().getConf()))
 
     fun s3Config(
         bucket: String,

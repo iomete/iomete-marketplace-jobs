@@ -12,9 +12,10 @@ import io.mockk.slot
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.FSDataInputStream
+import org.apache.hadoop.fs.FSDataOutputStream
 import org.apache.hadoop.fs.FileStatus
 import org.apache.hadoop.fs.FileSystem
-import org.apache.hadoop.fs.FileUtil
 import org.apache.hadoop.fs.Path
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -26,6 +27,7 @@ import java.io.ObjectInputStream
 import java.io.ObjectOutputStream
 import java.net.URI
 import java.nio.file.Files
+import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -37,13 +39,23 @@ class FileCopierTest {
     private lateinit var tempDir: File
     private lateinit var sourceDir: File
     private lateinit var targetDir: File
+    private lateinit var localFs: FileSystem
 
     @BeforeEach
     fun setup() {
         tempDir = Files.createTempDirectory("file-copier-test").toFile()
         sourceDir = File(tempDir, "source").apply { mkdirs() }
         targetDir = File(tempDir, "target").apply { mkdirs() }
+        localFs = FileSystem.getLocal(Configuration())
     }
+
+    /** A real stream over a real file, so a mocked FileSystem can serve the copier's reads. */
+    private fun sourceStream(size: Int): FSDataInputStream {
+        val file = File(tempDir, "stream-${UUID.randomUUID()}").apply { writeBytes(ByteArray(size)) }
+        return localFs.open(Path(file.toURI()))
+    }
+
+    private fun sinkStream(): FSDataOutputStream = FSDataOutputStream(ByteArrayOutputStream(), null)
 
     @AfterEach
     fun tearDown() {
@@ -200,7 +212,6 @@ class FileCopierTest {
         val targetFs = mockk<FileSystem>()
 
         mockkStatic(FileSystem::class)
-        mockkStatic(FileUtil::class)
         try {
             every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
             every { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) } returns targetFs
@@ -212,7 +223,8 @@ class FileCopierTest {
                 java.io.IOException("transient 1") andThenThrows
                 java.io.IOException("transient 2") andThen
                 FileStatus(42L, false, 1, 1024L, 0L, sourcePath)
-            every { FileUtil.copy(sourceFs, sourcePath, targetFs, any(), false, true, any()) } returns true
+            every { sourceFs.open(sourcePath, any()) } answers { sourceStream(42) }
+            every { targetFs.create(any(), any<Boolean>(), any<Int>()) } answers { sinkStream() }
             every { sourceFs.close() } just runs
             every { targetFs.close() } just runs
 
@@ -232,10 +244,9 @@ class FileCopierTest {
             assertEquals(3, result.attemptsUsed)
             assertEquals(42L, result.bytesCopied)
             verify(exactly = 3) { sourceFs.getFileStatus(sourcePath) }
-            verify(exactly = 1) { FileUtil.copy(sourceFs, sourcePath, targetFs, any(), false, true, any()) }
+            verify(exactly = 1) { sourceFs.open(sourcePath, any()) }
             verify(exactly = 1) { targetFs.rename(any(), targetPath) }
         } finally {
-            unmockkStatic(FileUtil::class)
             unmockkStatic(FileSystem::class)
         }
     }
@@ -405,7 +416,6 @@ class FileCopierTest {
         val targetFs = mockk<FileSystem>()
 
         mockkStatic(FileSystem::class)
-        mockkStatic(FileUtil::class)
 
         try {
             every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
@@ -415,7 +425,8 @@ class FileCopierTest {
             every { targetFs.rename(any(), targetPath) } returns true
             every { targetFs.getFileStatus(any()) } returns FileStatus(19L, false, 1, 1024L, 0L, targetPath)
             every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(19L, false, 1, 1024L, 0L, sourcePath)
-            every { FileUtil.copy(sourceFs, sourcePath, targetFs, any(), false, true, any()) } returns true
+            every { sourceFs.open(sourcePath, any()) } answers { sourceStream(19) }
+            every { targetFs.create(any(), any<Boolean>(), any<Int>()) } answers { sinkStream() }
             every { sourceFs.close() } just runs
             every { targetFs.close() } just runs
 
@@ -448,7 +459,6 @@ class FileCopierTest {
             verify(exactly = 1) { targetFs.close() }
             verify(exactly = 1) { sourceFs.close() }
         } finally {
-            unmockkStatic(FileUtil::class)
             unmockkStatic(FileSystem::class)
         }
     }
@@ -464,7 +474,6 @@ class FileCopierTest {
         val targetFs = mockk<FileSystem>()
 
         mockkStatic(FileSystem::class)
-        mockkStatic(FileUtil::class)
 
         try {
             every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
@@ -476,7 +485,8 @@ class FileCopierTest {
             every { targetFs.rename(any(), targetPath) } returns true
             every { targetFs.getFileStatus(any()) } returns FileStatus(11L, false, 1, 1024L, 0L, targetPath)
             every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(11L, false, 1, 1024L, 0L, sourcePath)
-            every { FileUtil.copy(sourceFs, sourcePath, targetFs, any(), false, true, any()) } returns true
+            every { sourceFs.open(sourcePath, any()) } answers { sourceStream(11) }
+            every { targetFs.create(any(), any<Boolean>(), any<Int>()) } answers { sinkStream() }
             every { sourceFs.close() } just runs
             every { targetFs.close() } just runs
 
@@ -510,7 +520,6 @@ class FileCopierTest {
             verify(exactly = 1) { targetFs.close() }
             verify(exactly = 1) { sourceFs.close() }
         } finally {
-            unmockkStatic(FileUtil::class)
             unmockkStatic(FileSystem::class)
         }
     }
@@ -525,7 +534,6 @@ class FileCopierTest {
         val tempSlot = slot<Path>()
 
         mockkStatic(FileSystem::class)
-        mockkStatic(FileUtil::class)
         try {
             every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
             every { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) } returns targetFs
@@ -533,7 +541,8 @@ class FileCopierTest {
             every { targetFs.delete(any(), any()) } returns true
             every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(100L, false, 1, 1024L, 0L, sourcePath)
             every { targetFs.getFileStatus(any()) } returns FileStatus(50L, false, 1, 1024L, 0L, Path(targetPathString))
-            every { FileUtil.copy(sourceFs, sourcePath, targetFs, capture(tempSlot), false, true, any()) } returns true
+            every { sourceFs.open(sourcePath, any()) } answers { sourceStream(100) }
+            every { targetFs.create(capture(tempSlot), any<Boolean>(), any<Int>()) } answers { sinkStream() }
             every { sourceFs.close() } just runs
             every { targetFs.close() } just runs
 
@@ -556,7 +565,6 @@ class FileCopierTest {
             verify(atLeast = 1) { targetFs.delete(any(), any()) }
             verify(exactly = 0) { targetFs.rename(any(), any()) }
         } finally {
-            unmockkStatic(FileUtil::class)
             unmockkStatic(FileSystem::class)
         }
     }
@@ -571,7 +579,6 @@ class FileCopierTest {
         val targetFs = mockk<FileSystem>()
 
         mockkStatic(FileSystem::class)
-        mockkStatic(FileUtil::class)
         try {
             every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
             every { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) } returns targetFs
@@ -580,7 +587,8 @@ class FileCopierTest {
             every { targetFs.delete(any(), any()) } returns true
             every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(11L, false, 1, 1024L, 0L, sourcePath)
             every { targetFs.getFileStatus(any()) } returns FileStatus(11L, false, 1, 1024L, 0L, targetPath)
-            every { FileUtil.copy(sourceFs, sourcePath, targetFs, any(), false, true, any()) } returns true
+            every { sourceFs.open(sourcePath, any()) } answers { sourceStream(11) }
+            every { targetFs.create(any(), any<Boolean>(), any<Int>()) } answers { sinkStream() }
             every { targetFs.rename(any(), targetPath) } returns false
             every { sourceFs.close() } just runs
             every { targetFs.close() } just runs
@@ -601,7 +609,6 @@ class FileCopierTest {
             assertTrue(result.error!!.contains("Rename failed"))
             verify(exactly = 1) { targetFs.delete(any(), any()) }
         } finally {
-            unmockkStatic(FileUtil::class)
             unmockkStatic(FileSystem::class)
         }
     }
@@ -615,15 +622,14 @@ class FileCopierTest {
         val targetFs = mockk<FileSystem>()
 
         mockkStatic(FileSystem::class)
-        mockkStatic(FileUtil::class)
         try {
             every { FileSystem.newInstance(URI(sourcePathString), any<Configuration>()) } returns sourceFs
             every { FileSystem.newInstance(URI(targetPathString), any<Configuration>()) } returns targetFs
             every { targetFs.exists(any()) } returns true
             every { targetFs.delete(any(), any()) } returns true
             every { sourceFs.getFileStatus(sourcePath) } returns FileStatus(11L, false, 1, 1024L, 0L, sourcePath)
-            every { FileUtil.copy(sourceFs, sourcePath, targetFs, any(), false, true, any()) } throws
-                java.io.IOException("mid-stream boom")
+            every { sourceFs.open(sourcePath, any()) } answers { sourceStream(11) }
+            every { targetFs.create(any(), any<Boolean>(), any<Int>()) } throws java.io.IOException("mid-stream boom")
             every { sourceFs.close() } just runs
             every { targetFs.close() } just runs
 
@@ -643,7 +649,6 @@ class FileCopierTest {
             verify(exactly = 1) { targetFs.delete(any(), any()) }
             verify(exactly = 0) { targetFs.rename(any(), any()) }
         } finally {
-            unmockkStatic(FileUtil::class)
             unmockkStatic(FileSystem::class)
         }
     }

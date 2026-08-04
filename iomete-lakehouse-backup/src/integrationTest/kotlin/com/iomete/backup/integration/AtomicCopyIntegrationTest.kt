@@ -1,6 +1,5 @@
 package com.iomete.backup.integration
 
-import com.iomete.backup.BackupJob
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.StorageConfig
 import com.iomete.backup.integration.fixtures.assertMatches
@@ -45,8 +44,7 @@ class AtomicCopyIntegrationTest {
         val target = scheme.target(scheme.faultOptions(afterBytes = FAIL_AT, maxFailures = -1))
 
         assertFailsWith<IllegalStateException> {
-            BackupJob.run(
-                IntegrationHarness.spark,
+            IntegrationHarness.runBackup(
                 ApplicationConfig(source = IntegrationHarness.s3Config(source), target = target.config),
             )
         }
@@ -71,8 +69,7 @@ class AtomicCopyIntegrationTest {
         val target = scheme.target(scheme.faultOptions(afterBytes = FAIL_AT, maxFailures = -1, targetName = "c.bin"))
 
         assertFailsWith<IllegalStateException> {
-            BackupJob.run(
-                IntegrationHarness.spark,
+            IntegrationHarness.runBackup(
                 ApplicationConfig(source = IntegrationHarness.s3Config(source), target = target.config),
             )
         }
@@ -93,8 +90,7 @@ class AtomicCopyIntegrationTest {
 
         val target = scheme.target(scheme.faultOptions(afterBytes = FAIL_AT, maxFailures = 1))
 
-        BackupJob.run(
-            IntegrationHarness.spark,
+        IntegrationHarness.runBackup(
             ApplicationConfig(source = IntegrationHarness.s3Config(source), target = target.config),
         )
 

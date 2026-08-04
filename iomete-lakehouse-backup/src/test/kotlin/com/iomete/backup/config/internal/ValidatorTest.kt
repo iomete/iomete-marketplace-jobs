@@ -1,6 +1,7 @@
 package com.iomete.backup.config.internal
 
 import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.CopyConfig
 import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
 import org.junit.jupiter.api.Test
@@ -173,5 +174,32 @@ class ValidatorTest {
 
         assertIs<ValidationResult.Invalid>(result)
         assertTrue(result.errors.any { it.contains("authentication") && it.contains("target") })
+    }
+
+    @Test
+    fun `a non-positive bandwidth cap fails validation`() {
+        val config =
+            ApplicationConfig(
+                source = s3Config(),
+                target = s3Config(),
+                copy = CopyConfig(maxBandwidthMbPerSec = 0.0),
+            )
+
+        val result = Validator.validate(config)
+
+        assertIs<ValidationResult.Invalid>(result)
+        assertTrue(result.errors.any { it.contains("maxBandwidthMbPerSec") })
+    }
+
+    @Test
+    fun `a positive bandwidth cap passes validation`() {
+        val config =
+            ApplicationConfig(
+                source = s3Config(),
+                target = s3Config(),
+                copy = CopyConfig(maxBandwidthMbPerSec = 600.0),
+            )
+
+        assertIs<ValidationResult.Valid>(Validator.validate(config))
     }
 }

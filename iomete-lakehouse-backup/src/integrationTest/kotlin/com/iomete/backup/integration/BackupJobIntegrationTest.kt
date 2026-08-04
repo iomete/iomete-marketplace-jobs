@@ -1,6 +1,5 @@
 package com.iomete.backup.integration
 
-import com.iomete.backup.BackupJob
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.CopyConfig
 import com.iomete.backup.config.StorageConfig
@@ -40,8 +39,7 @@ class BackupJobIntegrationTest {
         seedS3(source, tree)
 
         val target = makeTarget()
-        BackupJob.run(
-            IntegrationHarness.spark,
+        IntegrationHarness.runBackup(
             ApplicationConfig(
                 source = IntegrationHarness.s3Config(source),
                 target = target.config,
@@ -63,8 +61,7 @@ class BackupJobIntegrationTest {
         seedHdfs(source, tree)
 
         val target = makeTarget()
-        BackupJob.run(
-            IntegrationHarness.spark,
+        IntegrationHarness.runBackup(
             ApplicationConfig(
                 source = IntegrationHarness.hdfsConfig(source),
                 target = target.config,
@@ -86,8 +83,7 @@ class BackupJobIntegrationTest {
         seedHdfsDirectories(source, "empty", "nested/empty")
         val target = makeTarget()
 
-        BackupJob.run(
-            IntegrationHarness.spark,
+        IntegrationHarness.runBackup(
             ApplicationConfig(
                 source = IntegrationHarness.hdfsConfig(source),
                 target = target.config,
@@ -109,8 +105,7 @@ class BackupJobIntegrationTest {
         seedHdfsDirectories(source, "empty", "nested/empty")
         val target = makeTarget()
 
-        BackupJob.run(
-            IntegrationHarness.spark,
+        IntegrationHarness.runBackup(
             ApplicationConfig(
                 source = IntegrationHarness.hdfsConfig(source),
                 target = target.config,
@@ -143,11 +138,11 @@ class BackupJobIntegrationTest {
         // source can be reported as older than it; wait the truncation out before each run.
         Thread.sleep(1_100)
 
-        val first = BackupJob.run(IntegrationHarness.spark, config)
+        val first = IntegrationHarness.runBackup(config)
         assertEquals(tree.size, first.successCount, "first run must copy everything")
         assertEquals(0, first.skippedCount)
 
-        val second = BackupJob.run(IntegrationHarness.spark, config)
+        val second = IntegrationHarness.runBackup(config)
         assertEquals(0, second.successCount, "re-run against an unchanged source must copy nothing")
         assertEquals(tree.size, second.skippedCount)
         assertEquals(tree.size, second.totalEntries)
@@ -157,7 +152,7 @@ class BackupJobIntegrationTest {
         val changed = tree + ("root.txt" to "ROOT FILE".toByteArray())
         seedS3(source, mapOf("root.txt" to changed.getValue("root.txt")))
 
-        val third = BackupJob.run(IntegrationHarness.spark, config)
+        val third = IntegrationHarness.runBackup(config)
         assertEquals(1, third.successCount, "only the rewritten file must be copied again")
         assertEquals(tree.size - 1, third.skippedCount)
         assertMatches(changed, target.read())
@@ -176,10 +171,10 @@ class BackupJobIntegrationTest {
                 copy = CopyConfig(skipIdentical = false, clockSkewToleranceMs = 0),
             )
 
-        val first = BackupJob.run(IntegrationHarness.spark, config)
+        val first = IntegrationHarness.runBackup(config)
         assertEquals(tree.size, first.successCount)
 
-        val second = BackupJob.run(IntegrationHarness.spark, config)
+        val second = IntegrationHarness.runBackup(config)
         assertEquals(tree.size, second.successCount, "a disabled skip must copy everything again")
         assertEquals(0, second.skippedCount)
     }
@@ -189,8 +184,7 @@ class BackupJobIntegrationTest {
         val source = IntegrationHarness.freshBucket()
         val target = IntegrationHarness.freshBucket()
 
-        BackupJob.run(
-            IntegrationHarness.spark,
+        IntegrationHarness.runBackup(
             ApplicationConfig(
                 source = IntegrationHarness.s3Config(source),
                 target = IntegrationHarness.s3Config(target),
@@ -209,8 +203,7 @@ class BackupJobIntegrationTest {
         val missingTarget = IntegrationHarness.s3Config("missing-${UUID.randomUUID()}")
 
         assertFailsWith<IllegalStateException> {
-            BackupJob.run(
-                IntegrationHarness.spark,
+            IntegrationHarness.runBackup(
                 ApplicationConfig(source = IntegrationHarness.s3Config(source), target = missingTarget),
             )
         }
