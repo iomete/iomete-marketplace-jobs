@@ -12,6 +12,8 @@ import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.io.Serializable
 
+private const val BUFFER_SIZE = 64 * 1024
+
 class FileCopier(
     private val sourceConfig: StorageConfig,
     private val targetConfig: StorageConfig,
@@ -175,9 +177,5 @@ class FileCopier(
         } catch (e: Exception) {
             log().warn("Best-effort temp cleanup failed for {}: {}", path, e.toString())
         }
-    }
-
-    companion object {
-        private const val BUFFER_SIZE = 64 * 1024
     }
 }
