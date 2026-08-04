@@ -10,9 +10,8 @@ object SparkRuntime {
 
     fun bytesPerSecPerExecutor(
         capMbPerSec: Double,
-        sparkConf: SparkConf,
-    ): Double? {
-        val executors = executorCount(sparkConf) ?: return null
+        executors: Int,
+    ): Double {
         val rate = capMbPerSec * BYTES_PER_MB / executors
 
         logger.info(

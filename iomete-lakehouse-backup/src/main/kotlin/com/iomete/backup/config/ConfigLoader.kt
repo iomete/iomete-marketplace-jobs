@@ -38,9 +38,10 @@ object ConfigLoader {
         }
 
         val maxBandwidthMbPerSec = config.copy.maxBandwidthMbPerSec ?: return InternalConfig()
+        val executors = checkNotNull(SparkRuntime.executorCount(sparkConf))
 
         return InternalConfig(
-            bytesPerSecPerExecutor = SparkRuntime.bytesPerSecPerExecutor(maxBandwidthMbPerSec, sparkConf),
+            bytesPerSecPerExecutor = SparkRuntime.bytesPerSecPerExecutor(maxBandwidthMbPerSec, executors),
         )
     }
 }
