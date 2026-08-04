@@ -130,6 +130,11 @@ speed allowed per executor and the executor count it was calculated from.
 
 A few things worth knowing before you settle on a number:
 
+- **If you are replacing DistCp, the number means something different here.** Its
+  `-bandwidth` applied to each map task, so the real load on the link was that
+  value multiplied by however many mappers happened to be running, and it had to
+  be worked out again every time the cluster changed size. Here you set what the
+  whole job may use. Cluster size does not come into it.
 - **Every byte crosses the network twice**, once on the way in from the source
   and once on the way out to the target, but the limit only counts it once. So
   if both sides share the same link, set the limit to about half of what you can
