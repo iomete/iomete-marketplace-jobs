@@ -42,6 +42,8 @@ object IntegrationHarness {
         }
     val hdfs: MiniDFSCluster by hdfsLazy
 
+    const val STATS_DATABASE = "itcat.backup_stats"
+
     private val sparkLazy =
         lazy {
             SparkSession
@@ -50,7 +52,17 @@ object IntegrationHarness {
                 .master("local[2]")
                 .config("spark.ui.enabled", "false")
                 .config("spark.sql.shuffle.partitions", "2")
-                .orCreate
+                .config(
+                    "spark.sql.extensions",
+                    "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+                ).config("spark.sql.catalog.itcat", "org.apache.iceberg.spark.SparkCatalog")
+                .config("spark.sql.catalog.itcat.type", "hadoop")
+                // Runs write from their own session; a cached table would hide their rows from the reader.
+                .config("spark.sql.catalog.itcat.cache-enabled", "false")
+                .config(
+                    "spark.sql.catalog.itcat.warehouse",
+                    File("build/test/iceberg-${UUID.randomUUID()}").absolutePath,
+                ).orCreate
         }
     val spark: SparkSession by sparkLazy
 
@@ -80,8 +92,14 @@ object IntegrationHarness {
         )
     }
 
-    fun runBackup(config: ApplicationConfig): CopyJobSummary =
-        BackupJob.run(spark, config, ConfigLoader.loadInternalConfig(config, spark.sparkContext().getConf()))
+    fun runBackup(
+        config: ApplicationConfig,
+        session: SparkSession = spark,
+    ): CopyJobSummary = BackupJob.run(session, config, ConfigLoader.loadInternalConfig(config, session.sparkContext().getConf()))
+
+    /** One platform run: same context, own `spark.app.name`, which is where the run ID comes from. */
+    fun runSession(runId: String = UUID.randomUUID().toString()): SparkSession =
+        spark.newSession().also { it.conf().set("spark.app.name", runId) }
 
     fun s3Config(
         bucket: String,
