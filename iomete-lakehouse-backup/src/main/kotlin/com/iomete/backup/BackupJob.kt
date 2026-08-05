@@ -7,9 +7,13 @@ import com.iomete.backup.copy.CopyJobRunner
 import com.iomete.backup.copy.CopyJobSummary
 import com.iomete.backup.fs.useFileLister
 import com.iomete.backup.model.SourceListing
+import com.iomete.backup.stats.RunProgress
+import com.iomete.backup.stats.StatsRecorder
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
+import java.time.Instant
+import kotlin.time.measureTimedValue
 
 object BackupJob {
     private val logger = LoggerFactory.getLogger(BackupJob::class.java)
@@ -19,24 +23,57 @@ object BackupJob {
         config: ApplicationConfig,
         internalConfig: InternalConfig,
     ): CopyJobSummary {
+        val recorder = StatsRecorder(spark, config)
+        val startedAt = Instant.now()
+        val progress = RunProgress()
+
+        // Claimed before the source listing, which is the long single-threaded phase.
+        recorder.claim(startedAt)
+
+        try {
+            val summary = copy(spark, config, internalConfig, progress)
+            recorder.finalise(startedAt, progress, null)
+            return summary
+        } catch (e: Throwable) {
+            recorder.finalise(startedAt, progress, e)
+            throw e
+        }
+    }
+
+    private fun copy(
+        spark: SparkSession,
+        config: ApplicationConfig,
+        internalConfig: InternalConfig,
+        progress: RunProgress,
+    ): CopyJobSummary {
         logger.info("Enumerating source files...")
-        val (files, emptyDirs) = enumerateSource(config)
+        val (listing, listingTime) = measureTimedValue { enumerateSource(config) }
+        val (files, emptyDirs) = listing
+
+        val totalBytes = files.sumOf { it.size }
+        progress.filesListed = files.size.toLong()
+        progress.dirsListed = emptyDirs.size.toLong()
+        progress.bytesSource = totalBytes
+        progress.sourceListingMs = listingTime.inWholeMilliseconds
 
         logger.info("Found {} files to copy", files.size)
         if (emptyDirs.isNotEmpty()) {
             logger.info("Found {} empty directories to replicate", emptyDirs.size)
         }
 
-        val totalBytes = files.sumOf { it.size }
         logger.info("Total size: {} bytes ({} MB)", totalBytes, totalBytes / (1024 * 1024))
 
         if (files.isEmpty() && emptyDirs.isEmpty()) {
             logger.info("No files found in source. Nothing to copy.")
+            progress.summary = CopyJobSummary.EMPTY
             return CopyJobSummary.EMPTY
         }
 
         val copyJobResult = CopyJobRunner.run(spark, config, internalConfig, files, emptyDirs)
         val summary = copyJobResult.summary
+        progress.summary = summary
+        progress.copy = copyJobResult.stats
+        progress.failures = copyJobResult.failedResults
 
         logger.info(
             "Copy summary: {} total, {} succeeded, {} failed, {} skipped, {} bytes copied, {} bytes skipped",
