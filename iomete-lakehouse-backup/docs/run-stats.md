@@ -108,7 +108,7 @@ more than once. Use them to compare where time went, and use `files_copied` and
 |---|---|
 | `bytes_per_task`, `files_per_task`, `skip_identical`, `max_bandwidth_mb_per_sec` | The `copy` settings this run used. `max_bandwidth_mb_per_sec` is null when no limit was set. |
 | `task_count` | Number of Spark tasks the copy was split into. |
-| `largest_file_bytes` | Size of the largest file copied. A single file is never split across tasks, so no run finishes faster than its largest file. |
+| `largest_file_bytes` | Size of the largest file the run had to copy. A single file is never split across tasks, so no run finishes faster than its largest file. |
 
 ### Failure rows
 

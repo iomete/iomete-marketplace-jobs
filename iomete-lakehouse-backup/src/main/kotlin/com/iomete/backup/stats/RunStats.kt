@@ -100,7 +100,7 @@ val RUNS_SCHEMA: StructType =
             field("skip_identical", BOOLEAN, "copy.skipIdentical for this run", nullable = false),
             field("max_bandwidth_mb_per_sec", DOUBLE, "copy.maxBandwidthMbPerSec for this run; null means uncapped"),
             field("task_count", INT, "Spark tasks the copy was split into"),
-            field("largest_file_bytes", LONG, "biggest single file copied; a run cannot finish faster than this file"),
+            field("largest_file_bytes", LONG, "biggest single file the run had to copy"),
         ),
     )
 
