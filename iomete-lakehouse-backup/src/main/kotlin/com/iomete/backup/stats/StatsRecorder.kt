@@ -53,11 +53,11 @@ class StatsRecorder(
         val row = runRow(identity, config, startedAt, Instant.now(), status, message, progress)
 
         dataFrame(RUNS_SCHEMA, listOf(row)).createOrReplaceTempView(FINAL_ROW_VIEW)
-        // started_at is in the join so the merge prunes to one partition; the claim wrote the same value.
+
         spark.sql(
             """
             MERGE INTO $runsTable t USING $FINAL_ROW_VIEW s
-              ON t.run_id = s.run_id AND t.started_at = s.started_at
+              ON t.run_id = s.run_id
             WHEN MATCHED THEN UPDATE SET *
             WHEN NOT MATCHED THEN INSERT *
             """.trimIndent(),
