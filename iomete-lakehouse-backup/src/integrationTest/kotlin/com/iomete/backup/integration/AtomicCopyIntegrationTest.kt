@@ -45,7 +45,11 @@ class AtomicCopyIntegrationTest {
 
         assertFailsWith<IllegalStateException> {
             IntegrationHarness.runBackup(
-                ApplicationConfig(source = IntegrationHarness.s3Config(source), target = target.config),
+                ApplicationConfig(
+                    source = IntegrationHarness.s3Config(source),
+                    target = target.config,
+                    stats = IntegrationHarness.STATS_DISABLED,
+                ),
             )
         }
 
@@ -70,7 +74,11 @@ class AtomicCopyIntegrationTest {
 
         assertFailsWith<IllegalStateException> {
             IntegrationHarness.runBackup(
-                ApplicationConfig(source = IntegrationHarness.s3Config(source), target = target.config),
+                ApplicationConfig(
+                    source = IntegrationHarness.s3Config(source),
+                    target = target.config,
+                    stats = IntegrationHarness.STATS_DISABLED,
+                ),
             )
         }
 
@@ -91,7 +99,11 @@ class AtomicCopyIntegrationTest {
         val target = scheme.target(scheme.faultOptions(afterBytes = FAIL_AT, maxFailures = 1))
 
         IntegrationHarness.runBackup(
-            ApplicationConfig(source = IntegrationHarness.s3Config(source), target = target.config),
+            ApplicationConfig(
+                source = IntegrationHarness.s3Config(source),
+                target = target.config,
+                stats = IntegrationHarness.STATS_DISABLED,
+            ),
         )
 
         assertMatches(tree, target.read())

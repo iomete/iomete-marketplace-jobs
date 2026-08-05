@@ -43,6 +43,7 @@ class BackupJobIntegrationTest {
             ApplicationConfig(
                 source = IntegrationHarness.s3Config(source),
                 target = target.config,
+                stats = IntegrationHarness.STATS_DISABLED,
             ),
         )
 
@@ -65,6 +66,7 @@ class BackupJobIntegrationTest {
             ApplicationConfig(
                 source = IntegrationHarness.hdfsConfig(source),
                 target = target.config,
+                stats = IntegrationHarness.STATS_DISABLED,
             ),
         )
 
@@ -87,6 +89,7 @@ class BackupJobIntegrationTest {
             ApplicationConfig(
                 source = IntegrationHarness.hdfsConfig(source),
                 target = target.config,
+                stats = IntegrationHarness.STATS_DISABLED,
             ),
         )
 
@@ -109,6 +112,7 @@ class BackupJobIntegrationTest {
             ApplicationConfig(
                 source = IntegrationHarness.hdfsConfig(source),
                 target = target.config,
+                stats = IntegrationHarness.STATS_DISABLED,
             ),
         )
 
@@ -132,6 +136,7 @@ class BackupJobIntegrationTest {
                 source = IntegrationHarness.s3Config(source),
                 target = target.config,
                 copy = CopyConfig(clockSkewToleranceMs = 0),
+                stats = IntegrationHarness.STATS_DISABLED,
             )
 
         // MinIO truncates timestamps to whole seconds, so a copy taken within the same second as its
@@ -169,6 +174,7 @@ class BackupJobIntegrationTest {
                 source = IntegrationHarness.s3Config(source),
                 target = IntegrationHarness.s3Config(IntegrationHarness.freshBucket()),
                 copy = CopyConfig(skipIdentical = false, clockSkewToleranceMs = 0),
+                stats = IntegrationHarness.STATS_DISABLED,
             )
 
         val first = IntegrationHarness.runBackup(config)
@@ -188,6 +194,7 @@ class BackupJobIntegrationTest {
             ApplicationConfig(
                 source = IntegrationHarness.s3Config(source),
                 target = IntegrationHarness.s3Config(target),
+                stats = IntegrationHarness.STATS_DISABLED,
             ),
         )
 
@@ -204,7 +211,11 @@ class BackupJobIntegrationTest {
 
         assertFailsWith<IllegalStateException> {
             IntegrationHarness.runBackup(
-                ApplicationConfig(source = IntegrationHarness.s3Config(source), target = missingTarget),
+                ApplicationConfig(
+                    source = IntegrationHarness.s3Config(source),
+                    target = missingTarget,
+                    stats = IntegrationHarness.STATS_DISABLED,
+                ),
             )
         }
     }

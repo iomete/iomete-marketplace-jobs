@@ -38,6 +38,7 @@ class BandwidthIntegrationTest {
                         source = IntegrationHarness.s3Config(source),
                         target = IntegrationHarness.s3Config(target),
                         copy = CopyConfig(maxBandwidthMbPerSec = capMbPerSec),
+                        stats = IntegrationHarness.STATS_DISABLED,
                     ),
                 )
             }
@@ -62,6 +63,7 @@ class BandwidthIntegrationTest {
             ApplicationConfig(
                 source = IntegrationHarness.s3Config(source),
                 target = IntegrationHarness.s3Config(target),
+                stats = IntegrationHarness.STATS_DISABLED,
             ),
         )
 

@@ -5,6 +5,7 @@ import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.ConfigLoader
 import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
+import com.iomete.backup.config.StatsConfig
 import com.iomete.backup.copy.CopyJobSummary
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.hdfs.MiniDFSCluster
@@ -43,6 +44,9 @@ object IntegrationHarness {
     val hdfs: MiniDFSCluster by hdfsLazy
 
     const val STATS_DATABASE = "itcat.backup_stats"
+
+    /** For runs that assert only on copied bytes: the default stats database has no catalog here. */
+    val STATS_DISABLED = StatsConfig(enabled = false)
 
     private val sparkLazy =
         lazy {
