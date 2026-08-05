@@ -3,6 +3,7 @@ package com.iomete.backup.copy
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.InternalConfig
 import com.iomete.backup.copy.internal.CopyAggregate
+import com.iomete.backup.copy.internal.CopyTimers
 import com.iomete.backup.copy.internal.FileCopier
 import com.iomete.backup.copy.internal.PathResolver
 import com.iomete.backup.copy.internal.aggregateCopyResults
@@ -17,6 +18,7 @@ import org.apache.spark.api.java.JavaSparkContext
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
 import java.io.IOException
+import kotlin.time.measureTimedValue
 
 object CopyJobRunner {
     private val logger = LoggerFactory.getLogger(CopyJobRunner::class.java)
@@ -37,6 +39,7 @@ object CopyJobRunner {
         logger.info("Source root: {}", sourceRoot)
         logger.info("Target root: {}", targetRoot)
 
+        val timers = CopyTimers.register(spark.sparkContext())
         val copier =
             FileCopier(
                 sourceConfig = config.source,
@@ -44,34 +47,48 @@ object CopyJobRunner {
                 sourceRoot = sourceRoot,
                 targetRoot = targetRoot,
                 bytesPerSecPerExecutor = internalConfig.bytesPerSecPerExecutor,
+                timers = timers,
             )
 
-        val plan =
-            planCopy(
-                sourceFiles = files,
-                sourceRoot = sourceRoot,
-                targetFiles = if (config.copy.skipIdentical) listTarget(config, targetRoot) else emptyList(),
-                targetRoot = targetRoot,
-                clockSkewToleranceMs = config.copy.clockSkewToleranceMs,
-            )
+        val (targetFiles, targetListingTime) =
+            measureTimedValue {
+                if (config.copy.skipIdentical) listTarget(config, targetRoot) else emptyList()
+            }
+
+        val (planned, planningTime) =
+            measureTimedValue {
+                val plan =
+                    planCopy(
+                        sourceFiles = files,
+                        sourceRoot = sourceRoot,
+                        targetFiles = targetFiles,
+                        targetRoot = targetRoot,
+                        clockSkewToleranceMs = config.copy.clockSkewToleranceMs,
+                    )
+                plan to batchFiles(plan.toCopy, config.copy.bytesPerTask, config.copy.filesPerTask)
+            }
+        val (plan, batches) = planned
         val skippedBytes = plan.skipped.sumOf { it.size }
 
         logger.info("Skipping {} files already at the target ({} bytes)", plan.skipped.size, skippedBytes)
         plan.skipped.forEach { logger.debug("Skipped, already at target: {}", it.path) }
-
-        val batches = batchFiles(plan.toCopy, config.copy.bytesPerTask, config.copy.filesPerTask)
         logCopyPlan(plan.toCopy, batches.size, config.copy.bytesPerTask)
 
-        val fileResults =
-            if (batches.isEmpty()) {
-                CopyAggregate()
-            } else {
-                val rdd = jsc.parallelize(batches, batches.size)
-                aggregateCopyResults(
-                    rdd.flatMap { batch -> batch.asSequence().map { copier.copySingleFile(it) }.iterator() },
-                )
+        val (fileResults, copyTime) =
+            measureTimedValue {
+                if (batches.isEmpty()) {
+                    CopyAggregate(maxSampledFailures = config.stats.maxFailureRows)
+                } else {
+                    val rdd = jsc.parallelize(batches, batches.size)
+                    aggregateCopyResults(
+                        rdd.flatMap { batch -> batch.asSequence().map { copier.copySingleFile(it) }.iterator() },
+                        config.stats.maxFailureRows,
+                    )
+                }
             }
-        val directoryResults = createDirectories(config, sourceRoot, targetRoot, emptyDirectories)
+
+        val (directoryResults, dirCreateTime) =
+            measureTimedValue { createDirectories(config, sourceRoot, targetRoot, emptyDirectories) }
 
         val aggregate = directoryResults.fold(fileResults) { acc, result -> acc.add(result) }
         val summary =
@@ -96,6 +113,20 @@ object CopyJobRunner {
         return CopyJobResult(
             summary = summary,
             failedResults = aggregate.failures,
+            stats =
+                CopyStats(
+                    targetListingMs = targetListingTime.inWholeMilliseconds,
+                    planningMs = planningTime.inWholeMilliseconds,
+                    copyMs = copyTime.inWholeMilliseconds,
+                    dirCreateMs = dirCreateTime.inWholeMilliseconds,
+                    taskCount = batches.size,
+                    largestFileBytes = plan.toCopy.maxOfOrNull { it.size } ?: 0,
+                    filesCopied = fileResults.successCount.toLong(),
+                    dirsCreated = directoryResults.count { it.success }.toLong(),
+                    retriesUsed = aggregate.retriesUsed,
+                    failuresTruncated = aggregate.failuresTruncated,
+                    executor = timers.snapshot(),
+                ),
         )
     }
 

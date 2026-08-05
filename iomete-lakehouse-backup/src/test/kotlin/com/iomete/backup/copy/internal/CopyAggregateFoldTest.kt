@@ -12,7 +12,7 @@ class CopyAggregateFoldTest {
 
     @Test
     fun `empty aggregate is zero`() {
-        val agg = CopyAggregate()
+        val agg = CopyAggregate(maxSampledFailures = 1000)
         assertEquals(0, agg.successCount)
         assertEquals(0, agg.failureCount)
         assertEquals(0L, agg.totalBytesCopied)
@@ -21,7 +21,7 @@ class CopyAggregateFoldTest {
 
     @Test
     fun `add accumulates success counts and bytes without recording failures`() {
-        val agg = listOf(success(10), success(20), success(30)).fold(CopyAggregate()) { a, r -> a.add(r) }
+        val agg = listOf(success(10), success(20), success(30)).fold(CopyAggregate(maxSampledFailures = 1000)) { a, r -> a.add(r) }
         assertEquals(3, agg.successCount)
         assertEquals(0, agg.failureCount)
         assertEquals(60L, agg.totalBytesCopied)
@@ -30,7 +30,7 @@ class CopyAggregateFoldTest {
 
     @Test
     fun `add caps sampled failures within a single partition while counting all`() {
-        val agg = (1..1500).fold(CopyAggregate()) { a, i -> a.add(failure("f$i")) }
+        val agg = (1..1500).fold(CopyAggregate(maxSampledFailures = 1000)) { a, i -> a.add(failure("f$i")) }
         assertEquals(1500, agg.failureCount)
         assertEquals(1000, agg.failures.size)
         assertEquals("f1", agg.failures.first().sourcePath)
@@ -39,8 +39,8 @@ class CopyAggregateFoldTest {
 
     @Test
     fun `merge re-caps concatenated failures and sums counts`() {
-        val left = (1..700).fold(CopyAggregate()) { a, i -> a.add(failure("l$i")) }
-        val right = (1..700).fold(CopyAggregate()) { a, i -> a.add(failure("r$i")) }
+        val left = (1..700).fold(CopyAggregate(maxSampledFailures = 1000)) { a, i -> a.add(failure("l$i")) }
+        val right = (1..700).fold(CopyAggregate(maxSampledFailures = 1000)) { a, i -> a.add(failure("r$i")) }
 
         val merged = left.merge(right)
 

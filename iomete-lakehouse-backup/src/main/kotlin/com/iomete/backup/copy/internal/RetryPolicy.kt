@@ -19,6 +19,7 @@ internal fun <T> withRetries(
     maxAttempts: Int,
     retryDelayMs: Long,
     onFailedAttempt: (attempt: Int, e: Exception) -> Unit = { _, _ -> },
+    onRetrySleep: (elapsedNanos: Long) -> Unit = { },
     block: (attempt: Int) -> T,
 ): T {
     for (attempt in 1..maxAttempts) {
@@ -29,8 +30,10 @@ internal fun <T> withRetries(
 
             if (isTerminal(e) || attempt == maxAttempts) throw e
 
+            val sleepStartNanos = System.nanoTime()
             try {
                 Thread.sleep(fullJitterDelayMs(attempt, retryDelayMs))
+                onRetrySleep(System.nanoTime() - sleepStartNanos)
             } catch (interrupted: InterruptedException) {
                 Thread.currentThread().interrupt()
                 interrupted.addSuppressed(e)
