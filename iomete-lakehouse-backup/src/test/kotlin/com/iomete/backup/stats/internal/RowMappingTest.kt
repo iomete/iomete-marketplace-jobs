@@ -1,4 +1,4 @@
-package com.iomete.backup.stats
+package com.iomete.backup.stats.internal
 
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.CopyConfig
@@ -8,6 +8,8 @@ import com.iomete.backup.copy.CopyJobSummary
 import com.iomete.backup.copy.CopyResult
 import com.iomete.backup.copy.CopyStats
 import com.iomete.backup.copy.ExecutorTimings
+import com.iomete.backup.stats.RunProgress
+import com.iomete.backup.stats.RunStatus
 import org.junit.jupiter.api.Test
 import java.sql.Timestamp
 import java.time.Instant
@@ -15,7 +17,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-class RunStatsTest {
+class RowMappingTest {
     private val startedAt = Instant.parse("2026-01-02T03:04:05Z")
     private val identity = RunIdentity(runId = "run-1", jobId = "job-1", startedBy = null)
 

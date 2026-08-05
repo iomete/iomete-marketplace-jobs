@@ -1,15 +1,20 @@
 package com.iomete.backup.stats
 
 import com.iomete.backup.config.ApplicationConfig
-import org.apache.spark.sql.Row
-import org.apache.spark.sql.RowFactory
+import com.iomete.backup.stats.internal.FILE_FAILURES_SCHEMA
+import com.iomete.backup.stats.internal.RUNS_SCHEMA
+import com.iomete.backup.stats.internal.RunIdentity
+import com.iomete.backup.stats.internal.createTableSql
+import com.iomete.backup.stats.internal.fileFailureRow
+import com.iomete.backup.stats.internal.rowOf
+import com.iomete.backup.stats.internal.runRow
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.types.DataType
-import org.apache.spark.sql.types.DataTypes
 import org.apache.spark.sql.types.StructType
 import org.slf4j.LoggerFactory
-import java.sql.Timestamp
 import java.time.Instant
+
+const val RUNS_TABLE = "lakehouse_backup_runs"
+const val FILE_FAILURES_TABLE = "lakehouse_backup_run_file_failures"
 
 private const val FINAL_ROW_VIEW = "lakehouse_backup_run_final"
 
@@ -96,43 +101,4 @@ class StatsRecorder(
             logger.warn("Run stats {} failed; the backup is unaffected: {}", phase, e.toString(), e)
         }
     }
-}
-
-internal fun createTableSql(
-    table: String,
-    schema: StructType,
-): String =
-    """
-    CREATE TABLE IF NOT EXISTS $table (${schema.toDDL()})
-    USING iceberg
-    PARTITIONED BY (days(started_at))
-    """.trimIndent()
-
-// Spark only rejects a mistyped value once the write reaches the executors, far from the mapping.
-private val EXTERNAL_TYPES: Map<DataType, Class<*>> =
-    mapOf(
-        DataTypes.StringType to String::class.java,
-        DataTypes.LongType to Long::class.javaObjectType,
-        DataTypes.IntegerType to Int::class.javaObjectType,
-        DataTypes.DoubleType to Double::class.javaObjectType,
-        DataTypes.BooleanType to Boolean::class.javaObjectType,
-        DataTypes.TimestampType to Timestamp::class.java,
-    )
-
-internal fun rowOf(
-    schema: StructType,
-    values: Map<String, Any?>,
-): Row {
-    val names = schema.fieldNames().toSet()
-    require(values.keys == names) {
-        "row keys do not match the schema: missing ${names - values.keys}, unknown ${values.keys - names}"
-    }
-    schema.fields().forEach { field ->
-        val value = values[field.name()] ?: return@forEach
-        val expected = EXTERNAL_TYPES.getValue(field.dataType())
-        require(expected.isInstance(value)) {
-            "${field.name()} is ${field.dataType().simpleString()} but got a ${value.javaClass.simpleName}"
-        }
-    }
-    return RowFactory.create(*schema.fieldNames().map { values[it] }.toTypedArray())
 }
