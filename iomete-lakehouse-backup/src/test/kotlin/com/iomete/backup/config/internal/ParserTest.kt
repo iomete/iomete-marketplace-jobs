@@ -150,6 +150,61 @@ class ParserTest {
     }
 
     @Test
+    fun `parse stats block binds recording settings`() {
+        val json =
+            """
+            {
+              "source": {
+                "type": "s3",
+                "bucket": "source-bucket",
+                "accessKey": "access123",
+                "secretKey": "secret456"
+              },
+              "target": {
+                "type": "s3",
+                "bucket": "target-bucket",
+                "accessKey": "access789",
+                "secretKey": "secret012"
+              },
+              "stats": { "enabled": false, "database": "other.db", "maxFailureRows": 0 }
+            }
+            """.trimIndent()
+
+        val stats = Parser.parse(json).stats
+
+        assertEquals(false, stats.enabled)
+        assertEquals("other.db", stats.database)
+        assertEquals(0, stats.maxFailureRows)
+    }
+
+    @Test
+    fun `parse config without stats block records to the system database`() {
+        val json =
+            """
+            {
+              "source": {
+                "type": "s3",
+                "bucket": "source-bucket",
+                "accessKey": "access123",
+                "secretKey": "secret456"
+              },
+              "target": {
+                "type": "s3",
+                "bucket": "target-bucket",
+                "accessKey": "access789",
+                "secretKey": "secret012"
+              }
+            }
+            """.trimIndent()
+
+        val stats = Parser.parse(json).stats
+
+        assertEquals(true, stats.enabled)
+        assertEquals("spark_catalog.iomete_system_db", stats.database)
+        assertEquals(1000, stats.maxFailureRows)
+    }
+
+    @Test
     fun `parse S3-to-HDFS config binds HdfsConfig target`() {
         val json =
             """

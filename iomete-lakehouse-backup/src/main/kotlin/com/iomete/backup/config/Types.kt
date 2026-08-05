@@ -7,6 +7,13 @@ data class ApplicationConfig(
     val source: StorageConfig,
     val target: StorageConfig,
     val copy: CopyConfig = CopyConfig(),
+    val stats: StatsConfig = StatsConfig(),
+)
+
+data class StatsConfig(
+    val enabled: Boolean = true,
+    val database: String = "spark_catalog.iomete_system_db",
+    val maxFailureRows: Int = 1000,
 )
 
 data class CopyConfig(

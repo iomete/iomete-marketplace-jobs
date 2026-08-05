@@ -4,6 +4,7 @@ import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.CopyConfig
 import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
+import com.iomete.backup.config.StatsConfig
 import org.junit.jupiter.api.Test
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -174,6 +175,50 @@ class ValidatorTest {
 
         assertIs<ValidationResult.Invalid>(result)
         assertTrue(result.errors.any { it.contains("authentication") && it.contains("target") })
+    }
+
+    @Test
+    fun `a stats database that is not a dotted identifier fails validation`() {
+        listOf(
+            "spark_catalog.iomete_system_db; DROP TABLE x",
+            "spark_catalog.`weird name`",
+            "",
+            "1bad.db",
+            "trailing.",
+        ).forEach { database ->
+            val result =
+                Validator.validate(
+                    ApplicationConfig(source = s3Config(), target = s3Config(), stats = StatsConfig(database = database)),
+                )
+
+            assertIs<ValidationResult.Invalid>(result, "expected '$database' to be rejected")
+            assertTrue(result.errors.any { it.contains("database") })
+        }
+    }
+
+    @Test
+    fun `a dotted stats database passes validation`() {
+        val result =
+            Validator.validate(
+                ApplicationConfig(
+                    source = s3Config(),
+                    target = s3Config(),
+                    stats = StatsConfig(database = "other_catalog.other_db"),
+                ),
+            )
+
+        assertIs<ValidationResult.Valid>(result)
+    }
+
+    @Test
+    fun `a negative failure row cap fails validation`() {
+        val result =
+            Validator.validate(
+                ApplicationConfig(source = s3Config(), target = s3Config(), stats = StatsConfig(maxFailureRows = -1)),
+            )
+
+        assertIs<ValidationResult.Invalid>(result)
+        assertTrue(result.errors.any { it.contains("maxFailureRows") })
     }
 
     @Test

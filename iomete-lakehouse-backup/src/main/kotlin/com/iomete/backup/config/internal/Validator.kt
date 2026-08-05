@@ -3,12 +3,15 @@ package com.iomete.backup.config.internal
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
+import com.iomete.backup.config.StatsConfig
 import com.iomete.backup.config.StorageConfig
 import org.apache.spark.SparkConf
 import org.slf4j.LoggerFactory
 
 object Validator {
     private val logger = LoggerFactory.getLogger(Validator::class.java)
+
+    private val DOTTED_IDENTIFIER = Regex("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*")
 
     fun validate(config: ApplicationConfig): ValidationResult {
         val errors = mutableListOf<String>()
@@ -21,6 +24,8 @@ object Validator {
                 errors.add("copy: maxBandwidthMbPerSec must be a finite number greater than 0 (got $it)")
             }
         }
+
+        validateStatsConfig(config.stats, errors)
 
         return result(errors)
     }
@@ -50,6 +55,19 @@ object Validator {
             errors.forEach { logger.warn("  - {}", it) }
             ValidationResult.Invalid(errors)
         }
+
+    private fun validateStatsConfig(
+        stats: StatsConfig,
+        errors: MutableList<String>,
+    ) {
+        if (!DOTTED_IDENTIFIER.matches(stats.database)) {
+            errors.add("stats: database '${stats.database}' is not a dotted identifier (expected e.g. 'catalog.database')")
+        }
+
+        if (stats.maxFailureRows < 0) {
+            errors.add("stats: maxFailureRows cannot be negative (got ${stats.maxFailureRows})")
+        }
+    }
 
     private fun validateStorageConfig(
         storage: StorageConfig,
