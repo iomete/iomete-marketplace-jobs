@@ -31,9 +31,10 @@ internal fun <T> withRetries(
 
             try {
                 Thread.sleep(fullJitterDelayMs(attempt, retryDelayMs))
-            } catch (_: InterruptedException) {
+            } catch (interrupted: InterruptedException) {
                 Thread.currentThread().interrupt()
-                throw e
+                interrupted.addSuppressed(e)
+                throw interrupted
             }
         }
     }
@@ -53,7 +54,8 @@ internal fun fullJitterDelayMs(
 }
 
 internal fun isTerminal(e: Throwable): Boolean =
-    e is FileNotFoundException ||
+    e is InterruptedException ||
+        e is FileNotFoundException ||
         e is AccessDeniedException ||
         e is AccessControlException ||
         e is IllegalArgumentException

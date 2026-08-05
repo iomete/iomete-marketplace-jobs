@@ -1,6 +1,7 @@
 package com.iomete.backup.copy
 
 import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.InternalConfig
 import com.iomete.backup.copy.internal.CopyAggregate
 import com.iomete.backup.copy.internal.FileCopier
 import com.iomete.backup.copy.internal.PathResolver
@@ -23,6 +24,7 @@ object CopyJobRunner {
     fun run(
         spark: SparkSession,
         config: ApplicationConfig,
+        internalConfig: InternalConfig,
         files: List<FileEntry>,
         emptyDirectories: List<String> = emptyList(),
     ): CopyJobResult {
@@ -41,6 +43,7 @@ object CopyJobRunner {
                 targetConfig = config.target,
                 sourceRoot = sourceRoot,
                 targetRoot = targetRoot,
+                bytesPerSecPerExecutor = internalConfig.bytesPerSecPerExecutor,
             )
 
         val plan =

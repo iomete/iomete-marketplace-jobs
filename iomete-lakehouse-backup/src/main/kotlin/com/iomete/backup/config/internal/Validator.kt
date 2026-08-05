@@ -4,6 +4,7 @@ import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
 import com.iomete.backup.config.StorageConfig
+import org.apache.spark.SparkConf
 import org.slf4j.LoggerFactory
 
 object Validator {
@@ -15,7 +16,33 @@ object Validator {
         validateStorageConfig(config.source, "source", errors)
         validateStorageConfig(config.target, "target", errors)
 
-        return if (errors.isEmpty()) {
+        config.copy.maxBandwidthMbPerSec?.let {
+            if (!it.isFinite() || it <= 0) {
+                errors.add("copy: maxBandwidthMbPerSec must be a finite number greater than 0 (got $it)")
+            }
+        }
+
+        return result(errors)
+    }
+
+    fun validateInternalConfig(
+        config: ApplicationConfig,
+        sparkConf: SparkConf,
+    ): ValidationResult {
+        val errors = mutableListOf<String>()
+
+        if (config.copy.maxBandwidthMbPerSec != null && SparkRuntime.executorCount(sparkConf) == null) {
+            errors.add(
+                "copy: maxBandwidthMbPerSec needs a known executor count, but ${SparkRuntime.executorSetting(sparkConf)} " +
+                    "is not set to a positive value; set it on the job submission or remove the bandwidth cap",
+            )
+        }
+
+        return result(errors)
+    }
+
+    private fun result(errors: List<String>): ValidationResult =
+        if (errors.isEmpty()) {
             logger.debug("Configuration validation passed")
             ValidationResult.Valid
         } else {
@@ -23,7 +50,6 @@ object Validator {
             errors.forEach { logger.warn("  - {}", it) }
             ValidationResult.Invalid(errors)
         }
-    }
 
     private fun validateStorageConfig(
         storage: StorageConfig,

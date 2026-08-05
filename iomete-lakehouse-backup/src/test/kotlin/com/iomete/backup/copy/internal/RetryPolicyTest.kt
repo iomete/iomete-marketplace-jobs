@@ -2,6 +2,7 @@ package com.iomete.backup.copy.internal
 
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class RetryPolicyTest {
@@ -23,6 +24,33 @@ class RetryPolicyTest {
     fun `delay is capped`() {
         // base 1000 * 2^10 = 1_024_000 > cap 30_000
         assertEquals(30_000L, fullJitterDelayMs(attempt = 10, baseMs = 1000L, capMs = 30_000L, rnd = 1.0))
+    }
+
+    @Test
+    fun `an interrupted attempt is not retried`() {
+        var attempts = 0
+
+        assertFailsWith<InterruptedException> {
+            withRetries(maxAttempts = 3, retryDelayMs = 0) {
+                attempts++
+                throw InterruptedException("task killed")
+            }
+        }
+
+        assertEquals(1, attempts)
+    }
+
+    @Test
+    fun `an interrupted backoff surfaces as an interruption, not the failure it was retrying`() {
+        Thread.currentThread().interrupt()
+
+        val e =
+            assertFailsWith<InterruptedException> {
+                withRetries(maxAttempts = 3, retryDelayMs = 1000) { throw java.io.IOException("connection reset") }
+            }
+
+        assertTrue(Thread.interrupted(), "interrupt flag must be restored")
+        assertTrue(e.suppressed.any { it is java.io.IOException })
     }
 
     @Test

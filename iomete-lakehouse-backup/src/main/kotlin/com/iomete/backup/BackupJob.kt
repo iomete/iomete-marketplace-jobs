@@ -2,6 +2,7 @@ package com.iomete.backup
 
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.HdfsConfig
+import com.iomete.backup.config.InternalConfig
 import com.iomete.backup.copy.CopyJobRunner
 import com.iomete.backup.copy.CopyJobSummary
 import com.iomete.backup.fs.useFileLister
@@ -16,6 +17,7 @@ object BackupJob {
     fun run(
         spark: SparkSession,
         config: ApplicationConfig,
+        internalConfig: InternalConfig,
     ): CopyJobSummary {
         logger.info("Enumerating source files...")
         val (files, emptyDirs) = enumerateSource(config)
@@ -33,7 +35,7 @@ object BackupJob {
             return CopyJobSummary.EMPTY
         }
 
-        val copyJobResult = CopyJobRunner.run(spark, config, files, emptyDirs)
+        val copyJobResult = CopyJobRunner.run(spark, config, internalConfig, files, emptyDirs)
         val summary = copyJobResult.summary
 
         logger.info(

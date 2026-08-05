@@ -6,18 +6,20 @@ import com.iomete.backup.copy.TempFiles
 import com.iomete.backup.fs.FileSystemFactory
 import com.iomete.backup.fs.HadoopConfigBuilder
 import org.apache.hadoop.fs.FileSystem
-import org.apache.hadoop.fs.FileUtil
 import org.apache.hadoop.fs.Path
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.io.Serializable
 
+private const val BUFFER_SIZE = 64 * 1024
+
 class FileCopier(
     private val sourceConfig: StorageConfig,
     private val targetConfig: StorageConfig,
     private val sourceRoot: String,
     private val targetRoot: String,
+    private val bytesPerSecPerExecutor: Double? = null,
     private val maxAttempts: Int = RetryPolicy.COPY_MAX_ATTEMPTS,
     private val retryDelayMs: Long = RetryPolicy.DELAY_MS,
 ) : Serializable {
@@ -86,6 +88,10 @@ class FileCopier(
                 bytesCopied = bytesCopied,
                 attemptsUsed = attemptsUsed,
             )
+        } catch (e: InterruptedException) {
+            // A cancelled task must die, not become a failed file that fails the whole run.
+            Thread.currentThread().interrupt()
+            throw e
         } catch (e: Exception) {
             CopyResult(
                 sourcePath = sourceFilePath,
@@ -116,11 +122,7 @@ class FileCopier(
                 val sourceLen = sourceFs.getFileStatus(sourcePath).len
 
                 try {
-                    val copied = FileUtil.copy(sourceFs, sourcePath, targetFs, tempPath, false, true, targetConf)
-
-                    if (!copied) {
-                        throw IOException("FileUtil.copy reported failure: $sourceFilePath -> $tempPath")
-                    }
+                    copyBytes(sourceFs, sourcePath, targetFs, tempPath)
 
                     val writtenLen = targetFs.getFileStatus(tempPath).len
                     if (writtenLen != sourceLen) {
@@ -140,6 +142,27 @@ class FileCopier(
                 } catch (e: Exception) {
                     deleteQuietly(targetFs, tempPath)
                     throw e
+                }
+            }
+        }
+    }
+
+    private fun copyBytes(
+        sourceFs: FileSystem,
+        sourcePath: Path,
+        targetFs: FileSystem,
+        tempPath: Path,
+    ) {
+        val limiter = bytesPerSecPerExecutor?.let { RateLimiter.shared(it) }
+        val buffer = ByteArray(BUFFER_SIZE)
+
+        sourceFs.open(sourcePath, BUFFER_SIZE).use { input ->
+            targetFs.create(tempPath, true, BUFFER_SIZE).use { output ->
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    limiter?.acquire(read.toLong())
+                    output.write(buffer, 0, read)
                 }
             }
         }
