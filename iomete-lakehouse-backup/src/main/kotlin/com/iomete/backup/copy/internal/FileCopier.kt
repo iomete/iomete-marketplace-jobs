@@ -22,6 +22,7 @@ class FileCopier(
     private val bytesPerSecPerExecutor: Double? = null,
     private val maxAttempts: Int = RetryPolicy.COPY_MAX_ATTEMPTS,
     private val retryDelayMs: Long = RetryPolicy.DELAY_MS,
+    private val timers: CopyTimers = CopyTimers.unregistered(),
 ) : Serializable {
     @Transient
     private var logger = LoggerFactory.getLogger(FileCopier::class.java)
@@ -36,7 +37,9 @@ class FileCopier(
         return logger
     }
 
-    fun copySingleFile(sourceFilePath: String): CopyResult {
+    fun copySingleFile(sourceFilePath: String): CopyResult = timers.copyTask.timeNanos { copyFile(sourceFilePath) }
+
+    private fun copyFile(sourceFilePath: String): CopyResult {
         val targetFilePath =
             try {
                 PathResolver.resolveTargetPath(sourceFilePath, sourceRoot, targetRoot)
@@ -68,6 +71,7 @@ class FileCopier(
                             e.message,
                         )
                     },
+                    onRetrySleep = { timers.retrySleep.add(it) },
                 ) { attempt ->
                     attemptsUsed = attempt
                     copyOnce(sourceFilePath, targetFilePath)
@@ -107,24 +111,21 @@ class FileCopier(
         sourceFilePath: String,
         targetFilePath: String,
     ): Long {
-        val sourceConf = HadoopConfigBuilder.build(sourceConfig)
-        val targetConf = HadoopConfigBuilder.build(targetConfig)
-
         val sourcePath = Path(sourceFilePath)
         val targetPath = Path(targetFilePath)
 
-        return FileSystemFactory.create(sourceConfig, sourcePath.toUri(), sourceConf).use { sourceFs ->
-            FileSystemFactory.create(targetConfig, targetPath.toUri(), targetConf).use { targetFs ->
+        return openFileSystem(sourceConfig, sourcePath).use { sourceFs ->
+            openFileSystem(targetConfig, targetPath).use { targetFs ->
                 val tempPath = TempFiles.pathFor(targetPath)
 
-                targetPath.parent?.let { if (!targetFs.exists(it)) targetFs.mkdirs(it) }
+                timers.targetWrite.timeNanos { targetPath.parent?.let { if (!targetFs.exists(it)) targetFs.mkdirs(it) } }
 
-                val sourceLen = sourceFs.getFileStatus(sourcePath).len
+                val sourceLen = timers.sourceRead.timeNanos { sourceFs.getFileStatus(sourcePath).len }
 
                 try {
                     copyBytes(sourceFs, sourcePath, targetFs, tempPath)
 
-                    val writtenLen = targetFs.getFileStatus(tempPath).len
+                    val writtenLen = timers.verify.timeNanos { targetFs.getFileStatus(tempPath).len }
                     if (writtenLen != sourceLen) {
                         throw IOException(
                             "Length verification failed for $targetFilePath: " +
@@ -132,11 +133,13 @@ class FileCopier(
                         )
                     }
 
-                    // Overwrite deletes first (rename returns false on an existing destination), so
-                    // targetPath is briefly absent; an atomic swap needs FileContext, and HDFS only.
-                    if (targetFs.exists(targetPath)) targetFs.delete(targetPath, false)
-                    if (!targetFs.rename(tempPath, targetPath)) {
-                        throw IOException("Rename failed: $tempPath -> $targetFilePath")
+                    timers.commit.timeNanos {
+                        // Overwrite deletes first (rename returns false on an existing destination), so
+                        // targetPath is briefly absent; an atomic swap needs FileContext, and HDFS only.
+                        if (targetFs.exists(targetPath)) targetFs.delete(targetPath, false)
+                        if (!targetFs.rename(tempPath, targetPath)) {
+                            throw IOException("Rename failed: $tempPath -> $targetFilePath")
+                        }
                     }
                     sourceLen
                 } catch (e: Exception) {
@@ -147,6 +150,14 @@ class FileCopier(
         }
     }
 
+    private fun openFileSystem(
+        config: StorageConfig,
+        path: Path,
+    ): FileSystem =
+        timers.fsInit.timeNanos {
+            FileSystemFactory.create(config, path.toUri(), HadoopConfigBuilder.build(config))
+        }
+
     private fun copyBytes(
         sourceFs: FileSystem,
         sourcePath: Path,
@@ -155,15 +166,33 @@ class FileCopier(
     ) {
         val limiter = bytesPerSecPerExecutor?.let { RateLimiter.shared(it) }
         val buffer = ByteArray(BUFFER_SIZE)
+        var readNanos = 0L
+        var throttleNanos = 0L
 
-        sourceFs.open(sourcePath, BUFFER_SIZE).use { input ->
-            targetFs.create(tempPath, true, BUFFER_SIZE).use { output ->
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read < 0) break
-                    limiter?.acquire(read.toLong())
-                    output.write(buffer, 0, read)
+        timers.sourceRead.timeNanos { sourceFs.open(sourcePath, BUFFER_SIZE) }.use { input ->
+            val startNanos = System.nanoTime()
+            try {
+                targetFs.create(tempPath, true, BUFFER_SIZE).use { output ->
+                    while (true) {
+                        val readStartNanos = System.nanoTime()
+                        val read = input.read(buffer)
+                        readNanos += System.nanoTime() - readStartNanos
+                        if (read < 0) break
+
+                        val throttleStartNanos = System.nanoTime()
+                        limiter?.acquire(read.toLong())
+                        throttleNanos += System.nanoTime() - throttleStartNanos
+
+                        output.write(buffer, 0, read)
+                    }
                 }
+            } finally {
+                // On S3A the upload happens in close(), which .use owns, so target time is the
+                // window around the write side minus the read and throttle nested inside it.
+                val windowNanos = System.nanoTime() - startNanos
+                timers.sourceRead.add(readNanos)
+                timers.throttleWait.add(throttleNanos)
+                timers.targetWrite.add(windowNanos - readNanos - throttleNanos)
             }
         }
     }

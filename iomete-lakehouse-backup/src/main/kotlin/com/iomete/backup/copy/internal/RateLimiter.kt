@@ -2,7 +2,7 @@ package com.iomete.backup.copy.internal
 
 import java.util.concurrent.TimeUnit
 
-private const val NANOS_PER_SECOND = 1000L * 1000 * 1000
+private val NANOS_PER_SECOND = TimeUnit.SECONDS.toNanos(1)
 
 internal class RateLimiter(
     val bytesPerSec: Double,

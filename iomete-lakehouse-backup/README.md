@@ -151,6 +151,45 @@ A few things worth knowing before you settle on a number:
   an hour at full speed will take roughly two hours at half of it, and the
   instance stays busy for all of that time.
 
+### Run history
+
+Every run is recorded in two Iceberg tables under
+`spark_catalog.iomete_system_db`:
+
+| Table | Contents |
+|---|---|
+| `lakehouse_backup_runs` | One row per run: status, counts, byte totals, stage timings and the settings the run used. |
+| `lakehouse_backup_run_file_failures` | One row per entry the run failed to copy, joined to the run by `run_id`. |
+
+Recording is enabled by default and needs no configuration. The tables are
+created on the first run. Use them to check whether a scheduled backup
+succeeded, find the files it could not copy, and compare a run against earlier
+ones. See [docs/run-stats.md](docs/run-stats.md) for the full column reference
+and example queries.
+
+To turn recording off or to store the tables elsewhere, add a `stats` block. The
+values below are the defaults:
+
+```json
+{
+  "stats": {
+    "enabled": true,
+    "database": "spark_catalog.iomete_system_db",
+    "maxFailureRows": 1000
+  }
+}
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Set to `false` to record nothing. |
+| `database` | `spark_catalog.iomete_system_db` | Database holding both tables, optionally catalog-qualified. The table names cannot be changed. |
+| `maxFailureRows` | `1000` | Maximum failure rows recorded per run. Set to `0` to record none. The `files_failed` count on the run row is unaffected. |
+
+If a write to these tables fails, the job logs a warning and the backup
+continues. A run that copies its data successfully is never failed by a problem
+recording its own history.
+
 ### HDFS source or target (any HDFS-compatible storage, e.g. Dell Isilon / OneFS)
 
 Use `type: "hdfs"` for either side of a backup or restore. To back up into an

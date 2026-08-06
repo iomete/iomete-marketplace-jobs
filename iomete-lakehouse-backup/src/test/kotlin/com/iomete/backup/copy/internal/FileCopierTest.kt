@@ -17,6 +17,8 @@ import org.apache.hadoop.fs.FSDataOutputStream
 import org.apache.hadoop.fs.FileStatus
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkConf
+import org.apache.spark.api.java.JavaSparkContext
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -398,28 +400,32 @@ class FileCopierTest {
 
     @Test
     fun `copier is serializable`() {
-        val copier =
-            FileCopier(
-                sourceConfig = dummyConfig,
-                targetConfig = dummyConfig,
-                sourceRoot = "s3a://source/root",
-                targetRoot = "s3a://target/root",
-            )
+        // Registered timers: Spark refuses to serialize an accumulator the driver never registered.
+        JavaSparkContext(SparkConf().setAppName("file-copier-serialization").setMaster("local[1]")).use { jsc ->
+            val copier =
+                FileCopier(
+                    sourceConfig = dummyConfig,
+                    targetConfig = dummyConfig,
+                    sourceRoot = "s3a://source/root",
+                    targetRoot = "s3a://target/root",
+                    timers = CopyTimers.register(jsc.sc()),
+                )
 
-        // Serialize and deserialize
-        val baos = ByteArrayOutputStream()
-        ObjectOutputStream(baos).use { it.writeObject(copier) }
-        val bytes = baos.toByteArray()
+            // Serialize and deserialize
+            val baos = ByteArrayOutputStream()
+            ObjectOutputStream(baos).use { it.writeObject(copier) }
+            val bytes = baos.toByteArray()
 
-        val deserialized =
-            ObjectInputStream(
-                ByteArrayInputStream(bytes),
-            ).use { it.readObject() as FileCopier }
+            val deserialized =
+                ObjectInputStream(
+                    ByteArrayInputStream(bytes),
+                ).use { it.readObject() as FileCopier }
 
-        // The deserialized copier should be usable (logger re-created lazily)
-        // We can't easily test copy on a deserialized instance without real S3,
-        // but at least verify it deserializes without error
-        assertTrue(bytes.isNotEmpty())
+            // The deserialized copier should be usable (logger re-created lazily)
+            // We can't easily test copy on a deserialized instance without real S3,
+            // but at least verify it deserializes without error
+            assertTrue(bytes.isNotEmpty())
+        }
     }
 
     @Test

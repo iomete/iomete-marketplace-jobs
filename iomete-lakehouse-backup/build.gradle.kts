@@ -12,6 +12,7 @@ version = property("projectVersion") as String
 
 val sparkVersion = property("sparkVersion") as String
 val hadoopAwsVersion = property("hadoopAwsVersion") as String
+val icebergVersion = property("icebergVersion") as String
 
 // Spark on JDK 17 needs these JVM module openings (driver + local executors in tests).
 val sparkJvmArgs =
@@ -55,6 +56,7 @@ testing {
                 implementation("org.apache.hadoop:hadoop-client:$hadoopAwsVersion")
                 implementation("org.apache.hadoop:hadoop-aws:$hadoopAwsVersion")
                 implementation("org.apache.hadoop:hadoop-minicluster:$hadoopAwsVersion")
+                implementation("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:$icebergVersion")
                 runtimeOnly("org.mockito:mockito-core:5.23.0") // MiniDFSCluster uses Mockito internally
                 implementation("org.testcontainers:junit-jupiter:1.21.4")
                 implementation("org.testcontainers:minio:1.21.4")
