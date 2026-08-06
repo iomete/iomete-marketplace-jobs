@@ -178,7 +178,7 @@ class ValidatorTest {
     }
 
     @Test
-    fun `a stats database that is not a dotted identifier fails validation`() {
+    fun `a stats database that is not a valid identifier fails validation`() {
         listOf(
             "spark_catalog.iomete_system_db; DROP TABLE x",
             "spark_catalog.`weird name`",
@@ -197,17 +197,15 @@ class ValidatorTest {
     }
 
     @Test
-    fun `a dotted stats database passes validation`() {
-        val result =
-            Validator.validate(
-                ApplicationConfig(
-                    source = s3Config(),
-                    target = s3Config(),
-                    stats = StatsConfig(database = "other_catalog.other_db"),
-                ),
-            )
+    fun `a stats database passes validation with or without a catalog`() {
+        listOf("other_catalog.other_db", "other_db").forEach { database ->
+            val result =
+                Validator.validate(
+                    ApplicationConfig(source = s3Config(), target = s3Config(), stats = StatsConfig(database = database)),
+                )
 
-        assertIs<ValidationResult.Valid>(result)
+            assertIs<ValidationResult.Valid>(result, "expected '$database' to be accepted")
+        }
     }
 
     @Test

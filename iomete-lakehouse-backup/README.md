@@ -183,7 +183,7 @@ values below are the defaults:
 | Field | Default | Description |
 |---|---|---|
 | `enabled` | `true` | Set to `false` to record nothing. |
-| `database` | `spark_catalog.iomete_system_db` | Catalog and database holding both tables. Must be a dotted identifier. The table names cannot be changed. |
+| `database` | `spark_catalog.iomete_system_db` | Database holding both tables, optionally catalog-qualified. The table names cannot be changed. |
 | `maxFailureRows` | `1000` | Maximum failure rows recorded per run. Set to `0` to record none. The `files_failed` count on the run row is unaffected. |
 
 If a write to these tables fails, the job logs a warning and the backup

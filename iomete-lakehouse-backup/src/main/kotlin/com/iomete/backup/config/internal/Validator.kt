@@ -61,7 +61,7 @@ object Validator {
         errors: MutableList<String>,
     ) {
         if (!DOTTED_IDENTIFIER.matches(stats.database)) {
-            errors.add("stats: database '${stats.database}' is not a dotted identifier (expected e.g. 'catalog.database')")
+            errors.add("stats: database '${stats.database}' is not a valid identifier (expected e.g. 'catalog.database' or 'database')")
         }
 
         if (stats.maxFailureRows < 0) {
