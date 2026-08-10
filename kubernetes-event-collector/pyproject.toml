@@ -14,7 +14,7 @@ dependencies = [
     "boto3 (>=1.28.0)",
     "kubernetes (>=28.1.0)",
     "requests (==2.33.0)",
-    "pandas (>=2.0.0)",
+    "pandas (>=3.0.5)",
     "psycopg2-binary (>=2.9.6)",
     "rsa (>=4.7)"
 ]
