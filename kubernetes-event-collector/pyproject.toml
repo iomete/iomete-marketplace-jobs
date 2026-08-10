@@ -34,7 +34,7 @@ markdown = ">=3.4.0, <4.0.0"
 mdformat-gfm = ">=0.3.5, <1.0.0"
 mypy = "^1.19.0"
 nbmake =  ">=1.4.3, <2.0.0"
-setuptools = ">=80.0.0"
+setuptools = ">=83.0.0"
 black = ">=26.3.1"
 
 [tool.interrogate]
