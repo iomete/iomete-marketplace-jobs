@@ -59,8 +59,8 @@ allprojects {
         testImplementation("io.mockk:mockk:1.14.7")
         testImplementation("org.apache.spark:spark-sql_2.12:3.5.7")
         testImplementation("org.apache.spark:spark-core_2.12:3.5.7")
-        testImplementation("org.scala-lang:scala-library:2.12.18")
-        testRuntimeOnly("org.scala-lang:scala-library:2.12.18")
+        testImplementation("org.scala-lang:scala-library:3.8.4")
+        testRuntimeOnly("org.scala-lang:scala-library:3.8.4")
         testImplementation("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.7.1")
 
         // Force specific versions for transitive dependencies
@@ -81,22 +81,22 @@ allOpen {
 
 configurations.compileClasspath {
     resolutionStrategy {
-        force("org.scala-lang:scala-library:2.12.18")
-        force("org.scala-lang:scala-reflect:2.12.18")
+        force("org.scala-lang:scala-library:3.8.4")
+        force("org.scala-lang:scala-reflect:3.8.4")
     }
 }
 
 configurations.testCompileClasspath {
     resolutionStrategy {
-        force("org.scala-lang:scala-library:2.12.18")
-        force("org.scala-lang:scala-reflect:2.12.18")
+        force("org.scala-lang:scala-library:3.8.4")
+        force("org.scala-lang:scala-reflect:3.8.4")
     }
 }
 
 configurations.testRuntimeClasspath {
     resolutionStrategy {
-        force("org.scala-lang:scala-library:2.12.18")
-        force("org.scala-lang:scala-reflect:2.12.18")
+        force("org.scala-lang:scala-library:3.8.4")
+        force("org.scala-lang:scala-reflect:3.8.4")
         force("org.antlr:antlr4-runtime:4.9.3")
     }
 }
