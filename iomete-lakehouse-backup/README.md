@@ -25,14 +25,14 @@ IOMETE platform.
   never reported as successful
 
 > **Before you run it.** This copies files exactly as they are. If the data is
-> still being written while the copy runs, the backup may be inconsistent — run
-> it when the source data is not changing.
+> still being written while the copy runs, the backup may be inconsistent, so
+> run it when the source data is not changing.
 
 ## Configuration
 
 The job reads a single JSON file (IOMETE mounts it at
 `/etc/configs/application.json`). You only need to fill in `source` and
-`target` — the storage credentials and, optionally, a folder (`prefix`):
+`target`: the storage credentials and, optionally, a folder (`prefix`):
 
 ```json
 {
@@ -62,11 +62,20 @@ The remaining S3 fields are optional and have sensible defaults: `prefix`
 (`us-east-1`). The job scales automatically with your Spark cluster, so there is
 nothing extra to tune.
 
+Cluster sizing, meaning the number of executors and the CPU each one gets, comes
+from the job's Spark configuration rather than from the JSON above. The instance
+you choose for the job normally supplies both, so there is usually nothing to
+do. If a run does fail at startup, the error names the setting that is
+missing: `spark.kubernetes.executor.limit.cores` for the CPU, as a core count
+or as millicores such as `2000m`, and `spark.executor.instances` on a fixed-size
+cluster or `spark.dynamicAllocation.maxExecutors` on an autoscaling one. Add it
+to the job's Spark configuration and run again.
+
 ### Re-copying everything
 
 A re-run skips files already at the target with the same length and a newer
 timestamp. If you suspect the target contents are wrong, force a full copy by
-adding a `copy` block — no need to delete the target:
+adding a `copy` block, without deleting anything at the target:
 
 ```json
 {
@@ -74,26 +83,43 @@ adding a `copy` block — no need to delete the target:
 }
 ```
 
-### Tuning how the work is split (advanced)
+### Tuning copy concurrency and task size (advanced)
 
-The job divides the files into units of work of about 1 GB and copies them in
-parallel. The defaults suit most backups, so skip this section unless your run
-matches one of the cases below.
+Most backups can use the defaults below. Change them only when the run history
+shows that copy slots are idle or some tasks take much longer than others.
+
+File copies spend most of their time waiting on network I/O. To keep each
+executor busy, the job runs multiple copies per vCPU and groups files into tasks
+with roughly equal estimated work. This estimate includes the file size and a
+fixed cost per file, so a task containing many small files is not treated as
+cheap.
 
 ```json
 {
-  "copy": { "bytesPerTask": 1073741824, "filesPerTask": 1000 }
+  "copy": {
+    "slotsPerVcpu": 2,
+    "tasksPerSlot": 20,
+    "perFileOverheadBytes": 26214400,
+    "maxBytesPerTask": 1073741824
+  }
 }
 ```
 
-| Field | Default | Lower it when |
+| Field | Default | What it does |
 |---|---|---|
-| `bytesPerTask` | `1073741824` (1 GB) | Your backup is a few large files and most of the cluster sits idle. Avoid going below 100 MB, as very small units cost more than they save. |
-| `filesPerTask` | `1000` | Your backup is hundreds of thousands of small files and tasks are slow despite copying little data. Try `250`. |
+| `slotsPerVcpu` | `2` | Maximum concurrent file copies per executor vCPU. The job multiplies this value by the executor pod's CPU limit to set `spark.executor.cores`; it does not change the CPU request. |
+| `tasksPerSlot` | `20` | Target number of tasks per copy slot. Higher values create smaller tasks, so slots can pick up more work as they finish. |
+| `perFileOverheadBytes` | `26214400` (25 MiB) | Estimated fixed cost per file, expressed in bytes and used only to balance tasks. Increase it when tasks containing many small files take longer than the rest. |
+| `maxBytesPerTask` | `1073741824` (1 GiB) | Upper limit used when calculating task size. It can create more tasks than `tasksPerSlot` requests, but individual files can exceed it because the job never splits files. |
 
-A file larger than `bytesPerTask` is copied by a single executor and is never
-split, so a run can never finish faster than its largest file. The job logs that
-file's size when it starts.
+Files are always copied whole by one task. If a file's size plus its estimated
+overhead exceeds `maxBytesPerTask`, the job places it in a task by itself. This
+means the largest file sets a lower bound on the run time, and the copy-plan log
+includes its size.
+
+Before changing these values, use [Tuning from the run
+history](docs/run-stats.md#tuning-from-the-run-history) to identify the
+bottleneck and choose which setting to adjust.
 
 ### Limiting bandwidth
 
@@ -113,20 +139,10 @@ executors it runs on. Treat it as a ceiling rather than a target: the copy can
 still be slower than the configured limit, and it usually is when the data is
 made up of many small files.
 
-The limit is shared across the executors, so the job also needs the number of
-executors it will run with. Configure one of these on the job alongside the
-limit:
-
-| Your cluster | Setting |
-|---|---|
-| Fixed size | `spark.executor.instances` |
-| Autoscaling | `spark.dynamicAllocation.maxExecutors` |
-
-If neither is configured, the run fails straight away with the name of the
-setting to add, so the problem never surfaces halfway through a backup. And if
-you leave `maxBandwidthMbPerSec` out altogether, the copy runs at full speed and
-none of this applies. Once a limit is configured, the driver log reports the
-speed allowed per executor and the executor count it was calculated from.
+The limit is shared across the executors, so it is divided by the executor count
+the job was submitted with (see [Configuration](#configuration)). Once a limit
+is configured, the driver log reports the speed allowed per executor and the
+executor count it was calculated from.
 
 A few things worth knowing before you settle on a number:
 
@@ -217,7 +233,7 @@ HDFS filesystem, configure the `target`:
 |---|---|---|
 | `namenode` | yes | NameNode RPC endpoint as `host:port` (e.g. `isilon.example.com:8020`). For Dell Isilon, prefer the SmartConnect zone FQDN so the connection is load-balanced across nodes. |
 | `path` | no (default empty) | Directory under the filesystem root to write into. |
-| `user` | yes | The identity the files are written as. HDFS `simple` authentication has no password — the job connects as this user and OneFS applies that user's POSIX permissions. Choose a user with write access to `path`. |
+| `user` | yes | The identity the files are written as. HDFS `simple` authentication has no password, so the job connects as this user and OneFS applies that user's POSIX permissions. Choose a user with write access to `path`. |
 | `authentication` | no (default `simple`) | Only `simple` is supported; any other value is rejected at validation. Kerberos/secure clusters are not yet supported. |
 
 To restore an HDFS backup to S3, swap the storage types:
@@ -241,7 +257,7 @@ To restore an HDFS backup to S3, swap the storage types:
 ```
 
 > **Credentials for HDFS.** Simple authentication carries no secret or password
-> — only the `user` name — so there is nothing to store in IOMETE Secrets.
+> beyond the `user` name, so there is nothing to store in IOMETE Secrets.
 > Ensure the run has network reachability to the NameNode and every DataNode in
 > the cluster.
 
