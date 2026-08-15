@@ -1,4 +1,6 @@
+.venv/
 envs.csv
-.env
+*.xlsx
 __pycache__/
 *.pyc
+*.csv
