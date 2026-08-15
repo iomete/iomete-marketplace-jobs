@@ -23,7 +23,7 @@ object BackupJob {
         config: ApplicationConfig,
         internalConfig: InternalConfig,
     ): CopyJobSummary {
-        val recorder = StatsRecorder(spark, config)
+        val recorder = StatsRecorder(spark, config, internalConfig)
         val startedAt = Instant.now()
         val progress = RunProgress()
 

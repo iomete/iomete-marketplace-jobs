@@ -1,6 +1,7 @@
 package com.iomete.backup.config.internal
 
 import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.CopyConfig
 import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
 import com.iomete.backup.config.StatsConfig
@@ -25,21 +26,20 @@ object Validator {
             }
         }
 
+        validateCopyConfig(config.copy, errors)
+
         validateStatsConfig(config.stats, errors)
 
         return result(errors)
     }
 
-    fun validateInternalConfig(
-        config: ApplicationConfig,
-        sparkConf: SparkConf,
-    ): ValidationResult {
+    fun validateInternalConfig(sparkConf: SparkConf): ValidationResult {
         val errors = mutableListOf<String>()
 
-        if (config.copy.maxBandwidthMbPerSec != null && SparkRuntime.executorCount(sparkConf) == null) {
+        if (SparkRuntime.executorCount(sparkConf) == null) {
             errors.add(
-                "copy: maxBandwidthMbPerSec needs a known executor count, but ${SparkRuntime.executorSetting(sparkConf)} " +
-                    "is not set to a positive value; set it on the job submission or remove the bandwidth cap",
+                "spark: ${SparkRuntime.executorSetting(sparkConf)} is not set to a positive value; " +
+                    "set it on the job submission",
             )
         }
 
@@ -55,6 +55,27 @@ object Validator {
             errors.forEach { logger.warn("  - {}", it) }
             ValidationResult.Invalid(errors)
         }
+
+    private fun validateCopyConfig(
+        copy: CopyConfig,
+        errors: MutableList<String>,
+    ) {
+        if (copy.slotsPerVcpu < 1) {
+            errors.add("copy: slotsPerVcpu must be at least 1 (got ${copy.slotsPerVcpu})")
+        }
+
+        if (copy.tasksPerSlot < 1) {
+            errors.add("copy: tasksPerSlot must be at least 1 (got ${copy.tasksPerSlot})")
+        }
+
+        if (copy.perFileOverheadBytes < 0) {
+            errors.add("copy: perFileOverheadBytes cannot be negative (got ${copy.perFileOverheadBytes})")
+        }
+
+        if (copy.maxBytesPerTask < 1) {
+            errors.add("copy: maxBytesPerTask must be at least 1 (got ${copy.maxBytesPerTask})")
+        }
+    }
 
     private fun validateStatsConfig(
         stats: StatsConfig,

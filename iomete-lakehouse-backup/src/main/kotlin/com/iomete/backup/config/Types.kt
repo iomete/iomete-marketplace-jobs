@@ -21,17 +21,24 @@ data class CopyConfig(
     // Only treat a target copy as identical when it is newer than the source by this margin: the
     // two clocks are independent and S3 truncates to whole seconds.
     val clockSkewToleranceMs: Long = 30L * 1000,
-    val bytesPerTask: Long = 1024L * 1024 * 1024,
-    // A byte target alone does not bound task cost: every file pays a fresh filesystem build, so a
-    // batch of tiny files runs long while staying far below the byte target.
-    val filesPerTask: Int = 1000,
+    // Copies are network-bound, so oversubscribing vCPUs is deliberate.
+    val slotsPerVcpu: Int = 2,
+    val tasksPerSlot: Int = 20,
+    // Fixed cost of copying one file, in bytes of equivalent transfer: measured at ~26 MiB on S3.
+    val perFileOverheadBytes: Long = 25L * 1024 * 1024,
+    val maxBytesPerTask: Long = 1024L * 1024 * 1024,
     // Aggregate ceiling across every executor, unlike DistCp's per-map -bandwidth. Null is uncapped.
     val maxBandwidthMbPerSec: Double? = null,
 )
 
 data class InternalConfig(
     val bytesPerSecPerExecutor: Double? = null,
-)
+    val executorCount: Int,
+    val vcpuPerExecutor: Double,
+    val slotsPerExecutor: Int = 1,
+) {
+    val slots: Int get() = executorCount * slotsPerExecutor
+}
 
 @JsonTypeInfo(
     use = JsonTypeInfo.Id.NAME,

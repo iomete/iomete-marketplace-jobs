@@ -18,7 +18,7 @@ object App {
             logger.info("Configuration path: {}", configPath)
 
             val config = ConfigLoader.load(configPath)
-            val spark = SparkSessionProvider.sparkSession
+            val spark = SparkSessionProvider.sparkSession(config.copy.slotsPerVcpu)
 
             try {
                 val internalConfig = ConfigLoader.loadInternalConfig(config, spark.sparkContext().getConf())

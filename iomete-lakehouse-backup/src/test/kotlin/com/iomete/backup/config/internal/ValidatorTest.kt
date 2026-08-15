@@ -245,4 +245,27 @@ class ValidatorTest {
 
         assertIs<ValidationResult.Valid>(Validator.validate(config))
     }
+
+    @Test
+    fun `concurrency settings below their floor fail validation, one error each`() {
+        val config =
+            ApplicationConfig(
+                source = s3Config(),
+                target = s3Config(),
+                copy =
+                    CopyConfig(
+                        slotsPerVcpu = 0,
+                        tasksPerSlot = 0,
+                        perFileOverheadBytes = -1,
+                        maxBytesPerTask = 0,
+                    ),
+            )
+
+        val result = Validator.validate(config)
+
+        assertIs<ValidationResult.Invalid>(result)
+        listOf("slotsPerVcpu", "tasksPerSlot", "perFileOverheadBytes", "maxBytesPerTask").forEach { setting ->
+            assertTrue(result.errors.any { it.contains(setting) }, "expected an error naming $setting")
+        }
+    }
 }

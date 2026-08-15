@@ -32,16 +32,22 @@ object ConfigLoader {
         config: ApplicationConfig,
         sparkConf: SparkConf,
     ): InternalConfig {
-        when (val result = Validator.validateInternalConfig(config, sparkConf)) {
+        when (val result = Validator.validateInternalConfig(sparkConf)) {
             is ValidationResult.Invalid -> throw ConfigValidationException(result.errors)
             ValidationResult.Valid -> Unit
         }
 
-        val maxBandwidthMbPerSec = config.copy.maxBandwidthMbPerSec ?: return InternalConfig()
         val executors = checkNotNull(SparkRuntime.executorCount(sparkConf))
 
         return InternalConfig(
-            bytesPerSecPerExecutor = SparkRuntime.bytesPerSecPerExecutor(maxBandwidthMbPerSec, executors),
+            bytesPerSecPerExecutor =
+                config.copy.maxBandwidthMbPerSec?.let {
+                    SparkRuntime.bytesPerSecPerExecutor(it, executors)
+                },
+            executorCount = executors,
+            vcpuPerExecutor = SparkRuntime.vcpuPerExecutor(sparkConf),
+            // What the session ended up with, which is the submitted value when the job changed nothing.
+            slotsPerExecutor = sparkConf.getInt(SparkRuntime.EXECUTOR_CORES, 1),
         )
     }
 }
