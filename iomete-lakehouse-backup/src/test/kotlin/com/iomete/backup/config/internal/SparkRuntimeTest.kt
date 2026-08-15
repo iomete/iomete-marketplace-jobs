@@ -70,6 +70,11 @@ class SparkRuntimeTest {
     }
 
     @Test
+    fun `a local master is one vCPU, with no pod limit to read`() {
+        assertEquals(1.0, SparkRuntime.vcpuPerExecutor(SparkConf(false).set("spark.master", "local[8]")))
+    }
+
+    @Test
     fun `a vCPU limit that is missing or unreadable fails the run instead of being ignored`() {
         listOf(null, "0", "two", "2000mm").forEach { limit ->
             val conf = limit?.let { clusterConf(SparkRuntime.LIMIT_CORES to it) } ?: clusterConf()

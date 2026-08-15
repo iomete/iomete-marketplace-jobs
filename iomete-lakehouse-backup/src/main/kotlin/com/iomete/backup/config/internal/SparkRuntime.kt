@@ -36,13 +36,15 @@ object SparkRuntime {
         }
 
     fun executorCount(sparkConf: SparkConf): Int? {
-        if (sparkConf.get("spark.master", "").startsWith("local")) return 1
+        if (isLocal(sparkConf)) return 1
 
         return sparkConf.get(executorSetting(sparkConf), "").toIntOrNull()?.takeIf { it > 0 }
     }
 
     // A Kubernetes quantity: either a plain core count or millicores such as "2000m".
     fun vcpuPerExecutor(sparkConf: SparkConf): Double {
+        if (isLocal(sparkConf)) return 1.0
+
         val raw = sparkConf.get(LIMIT_CORES, "").trim()
         val cores =
             if (raw.endsWith("m")) raw.dropLast(1).toDoubleOrNull()?.div(1000) else raw.toDoubleOrNull()
@@ -60,4 +62,6 @@ object SparkRuntime {
         sparkConf: SparkConf,
         slotsPerVcpu: Int,
     ): Int = ceil(vcpuPerExecutor(sparkConf) * slotsPerVcpu).toInt().coerceAtLeast(1)
+
+    private fun isLocal(sparkConf: SparkConf): Boolean = sparkConf.get("spark.master", "").startsWith("local")
 }

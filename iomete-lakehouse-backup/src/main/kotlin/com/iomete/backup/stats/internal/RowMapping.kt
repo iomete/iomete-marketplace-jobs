@@ -2,6 +2,7 @@ package com.iomete.backup.stats.internal
 
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.HdfsConfig
+import com.iomete.backup.config.InternalConfig
 import com.iomete.backup.config.S3Config
 import com.iomete.backup.config.StorageConfig
 import com.iomete.backup.copy.CopyResult
@@ -36,6 +37,7 @@ internal data class RunIdentity(
 internal fun runRow(
     identity: RunIdentity,
     config: ApplicationConfig,
+    internalConfig: InternalConfig,
     startedAt: Instant,
     endedAt: Instant?,
     status: RunStatus,
@@ -81,11 +83,14 @@ internal fun runRow(
         "verify_ms" to copy?.executor?.verifyMs,
         "commit_ms" to copy?.executor?.commitMs,
         "retry_sleep_ms" to copy?.executor?.retrySleepMs,
-        "bytes_per_task" to config.copy.bytesPerTask,
-        "files_per_task" to config.copy.filesPerTask,
         "skip_identical" to config.copy.skipIdentical,
         "max_bandwidth_mb_per_sec" to config.copy.maxBandwidthMbPerSec,
+        "executor_count" to internalConfig.executorCount,
+        "vcpu_per_executor" to internalConfig.vcpuPerExecutor,
+        "slots_per_executor" to internalConfig.slotsPerExecutor,
+        "tasks_per_slot" to config.copy.tasksPerSlot,
         "task_count" to copy?.taskCount,
+        "max_files_in_task" to copy?.maxFilesInTask,
         "largest_file_bytes" to copy?.largestFileBytes,
     )
 }

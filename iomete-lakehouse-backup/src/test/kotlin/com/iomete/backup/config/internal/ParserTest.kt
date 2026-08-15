@@ -1,6 +1,7 @@
 package com.iomete.backup.config.internal
 
 import com.iomete.backup.config.ConfigParseException
+import com.iomete.backup.config.CopyConfig
 import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
 import org.junit.jupiter.api.Test
@@ -101,6 +102,67 @@ class ParserTest {
             """.trimIndent()
 
         assertEquals(false, Parser.parse(json).copy.skipIdentical)
+    }
+
+    @Test
+    fun `parse copy block binds the concurrency settings`() {
+        val json =
+            """
+            {
+              "source": {
+                "type": "s3",
+                "bucket": "source-bucket",
+                "accessKey": "access123",
+                "secretKey": "secret456"
+              },
+              "target": {
+                "type": "s3",
+                "bucket": "target-bucket",
+                "accessKey": "access789",
+                "secretKey": "secret012"
+              },
+              "copy": {
+                "slotsPerVcpu": 4,
+                "tasksPerSlot": 8,
+                "perFileOverheadBytes": 1024,
+                "maxBytesPerTask": 2048
+              }
+            }
+            """.trimIndent()
+
+        val copy = Parser.parse(json).copy
+
+        assertEquals(4, copy.slotsPerVcpu)
+        assertEquals(8, copy.tasksPerSlot)
+        assertEquals(1024, copy.perFileOverheadBytes)
+        assertEquals(2048, copy.maxBytesPerTask)
+    }
+
+    @Test
+    fun `a copy block that still sets filesPerTask loads, and the setting does nothing`() {
+        val json =
+            """
+            {
+              "source": {
+                "type": "s3",
+                "bucket": "source-bucket",
+                "accessKey": "access123",
+                "secretKey": "secret456"
+              },
+              "target": {
+                "type": "s3",
+                "bucket": "target-bucket",
+                "accessKey": "access789",
+                "secretKey": "secret012"
+              },
+              "copy": {
+                "filesPerTask": 250,
+                "bytesPerTask": 1000
+              }
+            }
+            """.trimIndent()
+
+        assertEquals(CopyConfig(), Parser.parse(json).copy)
     }
 
     @Test

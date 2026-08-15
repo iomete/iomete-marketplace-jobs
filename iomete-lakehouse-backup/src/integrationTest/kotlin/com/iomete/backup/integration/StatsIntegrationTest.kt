@@ -1,6 +1,7 @@
 package com.iomete.backup.integration
 
 import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.CopyConfig
 import com.iomete.backup.config.StatsConfig
 import com.iomete.backup.integration.fixtures.seedS3
 import com.iomete.backup.integration.harness.IntegrationHarness
@@ -76,6 +77,13 @@ class StatsIntegrationTest {
         assertTrue(row.long("target_write_ms") > 0, "writing the target must show up")
         assertTrue(row.getAs<Int>("task_count") > 0)
         assertEquals(tree.values.maxOf { it.size.toLong() }, row.long("largest_file_bytes"))
+
+        // A local master is one executor of one vCPU, whatever the machine underneath has.
+        assertEquals(1, row.getAs<Int>("executor_count"))
+        assertEquals(1.0, row.getAs<Double>("vcpu_per_executor"))
+        assertEquals(1, row.getAs<Int>("slots_per_executor"))
+        assertEquals(CopyConfig().tasksPerSlot, row.getAs<Int>("tasks_per_slot"))
+        assertTrue(row.getAs<Int>("max_files_in_task") > 0)
     }
 
     @Test
