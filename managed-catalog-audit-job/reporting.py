@@ -8,11 +8,30 @@ DEFAULT_FINDINGS_FILE = "managed_catalog_findings.csv"
 DEFAULT_INVENTORY_FILE = "managed_catalog_inventory.csv"
 DEFAULT_MARKDOWN_FILE = "managed_catalog_audit.md"
 
+
 RULE_LABELS = {
     "MC001": "Catalog ownership conflicts",
     "MC002": "Storage ownership conflicts",
     "MC003": "Storage credential recommendations",
 }
+
+
+RULE_DESCRIPTIONS = {
+    "MC001": (
+        "Detects the same catalog name configured as internal in more than "
+        "one IOMETE environment."
+    ),
+    "MC002": (
+        "Detects different internal catalog names that point to the same "
+        "lakehouse storage location across multiple IOMETE environments."
+    ),
+    "MC003": (
+        "Detects the same catalog and storage configuration using multiple "
+        "object-storage access keys. This is supported and reported as a "
+        "recommendation rather than a failure."
+    ),
+}
+
 
 def _severity_counts(
     findings: list[Finding],
@@ -37,6 +56,7 @@ def _rule_counts(
 def print_terminal_report(
     result: InventoryResult,
     findings: list[Finding],
+    verbose: bool = False,
 ):
     counts = _severity_counts(findings)
     rule_counts = _rule_counts(findings)
@@ -66,12 +86,12 @@ def print_terminal_report(
 
     if rule_counts:
         for rule_id in sorted(rule_counts):
-            label = RULE_LABELS.get(rule_id, "Unknown rule")
-
-            print(
-                f"  {rule_id} {label:<38} : "
-                f"{rule_counts[rule_id]}"
+            label = RULE_LABELS.get(
+                rule_id,
+                "Unknown rule",
             )
+
+            print(f"  {rule_id} " f"{label:<38} : " f"{rule_counts[rule_id]}")
     else:
         print("  None")
 
@@ -86,7 +106,70 @@ def print_terminal_report(
                 f"{failure.message}"
             )
 
+    if verbose:
+        _print_detailed_findings(findings)
+
     print("=" * 70)
+
+
+def _print_detailed_findings(
+    findings: list[Finding],
+):
+    print()
+    print("DETAILED FINDINGS")
+    print("=" * 70)
+
+    if not findings:
+        print("No findings detected.")
+        return
+
+    severity_order = [
+        Severity.HIGH,
+        Severity.WARNING,
+        Severity.RECOMMENDATION,
+    ]
+
+    for severity in severity_order:
+        matching = [finding for finding in findings if finding.severity == severity]
+
+        if not matching:
+            continue
+
+        print()
+        print(severity.value)
+        print("-" * 70)
+
+        for finding in matching:
+            print(f"[{finding.rule_id}] " f"{finding.title}")
+
+            if finding.catalog:
+                print(f"Catalog        : " f"{finding.catalog}")
+
+            if finding.storage:
+                print(f"Storage        : " f"{finding.storage}")
+
+            if finding.managers:
+                print("Managers       : " + ", ".join(finding.managers))
+
+            if finding.consumers:
+                print("Environments   : " + ", ".join(finding.consumers))
+
+            if finding.details:
+                print(f"What detected  : " f"{finding.details}")
+
+            if finding.evidence:
+                print("Evidence       :")
+
+                for evidence in finding.evidence:
+                    print(f"  - {evidence}")
+
+            if finding.impact:
+                print(f"Why it matters : " f"{finding.impact}")
+
+            if finding.recommendation:
+                print(f"Recommendation : " f"{finding.recommendation}")
+
+            print()
 
 
 def _finding_rows(
@@ -137,6 +220,7 @@ def export_csv_reports(
         )
 
     findings_df.write_csv(findings_file)
+
     inventory.write_csv(inventory_file)
 
 
@@ -159,22 +243,42 @@ def export_markdown_report(
         (f"- Failed environments: " f"{len(result.failures)}"),
         (f"- Catalogs discovered: " f"{len(result.inventory)}"),
         f"- Total findings: {len(findings)}",
-        f"- HIGH: {counts[Severity.HIGH]}",
-        f"- WARNING: {counts[Severity.WARNING]}",
+        (f"- HIGH: " f"{counts[Severity.HIGH]}"),
+        (f"- WARNING: " f"{counts[Severity.WARNING]}"),
         (f"- RECOMMENDATION: " f"{counts[Severity.RECOMMENDATION]}"),
         "",
-        "## Findings by Rule",
+        "## Audit Rules",
         "",
     ]
 
+    for rule_id in sorted(RULE_DESCRIPTIONS):
+        label = RULE_LABELS[rule_id]
+        description = RULE_DESCRIPTIONS[rule_id]
+
+        lines.extend(
+            [
+                (f"### {rule_id} - " f"{label}"),
+                "",
+                description,
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "## Findings by Rule",
+            "",
+        ]
+    )
+
     if rule_counts:
         for rule_id in sorted(rule_counts):
-            label = RULE_LABELS.get(rule_id, "Unknown rule")
-
-            lines.append(
-                f"- **{rule_id}** - {label}: "
-                f"{rule_counts[rule_id]}"
+            label = RULE_LABELS.get(
+                rule_id,
+                "Unknown rule",
             )
+
+            lines.append(f"- **{rule_id}** - " f"{label}: " f"{rule_counts[rule_id]}")
     else:
         lines.append("- No findings detected.")
 

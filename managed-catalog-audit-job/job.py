@@ -1,3 +1,5 @@
+import argparse
+
 from config import load_environments
 from inventory import fetch_catalog_inventory
 from reporting import (
@@ -9,7 +11,30 @@ from reporting import (
 from rules import run_rules
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Audit managed catalog topology and "
+            "configuration across IOMETE environments."
+        )
+    )
+
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help=(
+            "Print all detailed findings to the terminal. "
+            "Detailed findings are always written to the "
+            "CSV and Markdown reports."
+        ),
+    )
+
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+
     environments = load_environments()
 
     print(f"Loaded {len(environments)} environments")
@@ -23,6 +48,7 @@ def main():
     print_terminal_report(
         result,
         findings,
+        verbose=args.verbose,
     )
 
     export_csv_reports(
