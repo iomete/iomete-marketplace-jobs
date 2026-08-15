@@ -70,14 +70,24 @@ def find_multiple_managers(
                 title="Catalog is managed internally by multiple instances",
                 catalog=catalog,
                 managers=managers,
+                evidence=tuple(
+                    f"{manager} / {catalog} / internal" for manager in managers
+                ),
                 details=(
                     f"Catalog '{catalog}' is configured as internal on "
                     f"{len(managers)} environments: "
                     f"{', '.join(managers)}."
                 ),
+                impact=(
+                    "A managed catalog should normally have one authoritative "
+                    "IOMETE manager. Multiple internal managers make catalog "
+                    "ownership ambiguous."
+                ),
                 recommendation=(
-                    "Choose one managing instance and configure the other "
-                    "instances to consume the catalog externally."
+                    "Confirm which IOMETE environment is the authoritative "
+                    "manager for this catalog. Keep the catalog internal on "
+                    "that environment and configure other environments that "
+                    "need access to consume it as an external catalog."
                 ),
             )
         )
@@ -91,8 +101,8 @@ def find_shared_managed_storage(
     """
     MC002: Storage ownership conflict.
 
-    Detect the same lakehouse storage location being
-    managed internally by multiple environments.
+    Detect different internal catalogs that manage the
+    same underlying lakehouse storage location.
     """
     internal = _internal_catalogs(inventory)
 
@@ -105,16 +115,19 @@ def find_shared_managed_storage(
     if internal.is_empty():
         return []
 
+    candidates = internal.filter(
+        pl.col("lakehouseDir").is_not_null() & (pl.col("lakehouseDir") != "")
+    )
+
     grouped = (
-        internal.filter(
-            pl.col("lakehouseDir").is_not_null() & (pl.col("lakehouseDir") != "")
-        )
-        .group_by("lakehouseDir")
+        candidates.group_by("lakehouseDir")
         .agg(
             pl.col("env_name").unique().sort().alias("managers"),
             pl.col("name").unique().sort().alias("catalogs"),
         )
-        .filter(pl.col("managers").list.len() > 1)
+        .filter(
+            (pl.col("managers").list.len() > 1) & (pl.col("catalogs").list.len() > 1)
+        )
     )
 
     findings = []
@@ -124,22 +137,39 @@ def find_shared_managed_storage(
         catalogs = tuple(row["catalogs"])
         storage = row["lakehouseDir"]
 
+        evidence_rows = candidates.filter(pl.col("lakehouseDir") == storage).select(
+            "env_name",
+            "name",
+        )
+
+        evidence = tuple(
+            f"{item['env_name']} / {item['name']} / internal"
+            for item in evidence_rows.iter_rows(named=True)
+        )
+
         findings.append(
             Finding(
                 rule_id="MC002",
                 severity=Severity.HIGH,
-                title="Storage location is managed by multiple instances",
+                title=("Storage location is managed by " "different internal catalogs"),
                 storage=storage,
                 managers=managers,
+                evidence=evidence,
                 details=(
-                    f"Storage '{storage}' is managed internally from "
-                    f"{len(managers)} environments: "
-                    f"{', '.join(managers)}. "
-                    f"Catalogs involved: {', '.join(catalogs)}."
+                    f"Storage '{storage}' is referenced by different internal "
+                    f"catalogs across {len(managers)} environments. "
+                    f"Catalogs: {', '.join(catalogs)}. "
+                    f"Managers: {', '.join(managers)}."
+                ),
+                impact=(
+                    "Different independently managed catalogs pointing to the "
+                    "same lakehouse storage can create ambiguous storage "
+                    "ownership and inconsistent catalog state."
                 ),
                 recommendation=(
-                    "Verify the intended owner of this storage location "
-                    "and keep only one internal manager where possible."
+                    "Determine which IOMETE environment should own this "
+                    "storage-backed catalog. Keep one authoritative internal "
+                    "manager and review the other internal configurations."
                 ),
             )
         )
@@ -181,46 +211,70 @@ def find_access_key_variation(
         & ~pl.col("name").is_in(list(SYSTEM_CATALOGS))
     )
 
-    grouped = (
-        candidates.group_by(
-            [
-                "name",
-                "lakehouseDir",
-                "credentials_endpoint",
-            ]
-        )
-        .agg(
-            pl.col("env_name").unique().sort().alias("environments"),
-            pl.col("credentials_accessKey").n_unique().alias("access_key_count"),
-        )
-        .filter(
-            (pl.col("environments").list.len() > 1) & (pl.col("access_key_count") > 1)
-        )
-    )
-
     findings = []
 
-    for row in grouped.iter_rows(named=True):
-        environments = tuple(row["environments"])
+    for group in candidates.partition_by(
+        [
+            "name",
+            "lakehouseDir",
+            "credentials_endpoint",
+        ],
+        maintain_order=True,
+    ):
+        environments = sorted(group["env_name"].unique().to_list())
+
+        if len(environments) <= 1:
+            continue
+
+        credential_groups = {}
+
+        for row in group.select(
+            "env_name",
+            "credentials_accessKey",
+        ).iter_rows(named=True):
+            credential_groups.setdefault(
+                row["credentials_accessKey"],
+                set(),
+            ).add(row["env_name"])
+
+        if len(credential_groups) <= 1:
+            continue
+
+        catalog = group["name"][0]
+        storage = group["lakehouseDir"][0]
+
+        evidence = tuple(
+            f"Credential {index}: " f"{', '.join(sorted(group_envs))}"
+            for index, group_envs in enumerate(
+                credential_groups.values(),
+                start=1,
+            )
+        )
 
         findings.append(
             Finding(
                 rule_id="MC003",
                 severity=Severity.RECOMMENDATION,
                 title=("Multiple storage access keys are used " "for the same catalog"),
-                catalog=row["name"],
-                storage=row["lakehouseDir"],
-                consumers=environments,
+                catalog=catalog,
+                storage=storage,
+                consumers=tuple(environments),
+                evidence=evidence,
                 details=(
-                    f"Catalog '{row['name']}' uses "
-                    f"{row['access_key_count']} different storage "
+                    f"Catalog '{catalog}' uses "
+                    f"{len(credential_groups)} different storage "
                     f"access keys across {len(environments)} "
                     f"environments: {', '.join(environments)}."
                 ),
+                impact=(
+                    "This configuration is supported and is not considered "
+                    "a failure. Using multiple credentials can make credential "
+                    "management and rotation more complex."
+                ),
                 recommendation=(
-                    "This configuration is supported, but using one "
-                    "consistent storage access key is preferred where "
-                    "operationally possible."
+                    "No immediate remediation is required. Where practical, "
+                    "standardize the storage credential used by environments "
+                    "accessing the same catalog."
                 ),
             )
         )
@@ -234,9 +288,7 @@ def run_rules(
     findings = []
 
     findings.extend(find_multiple_managers(inventory))
-
     findings.extend(find_shared_managed_storage(inventory))
-
     findings.extend(find_access_key_variation(inventory))
 
     return findings

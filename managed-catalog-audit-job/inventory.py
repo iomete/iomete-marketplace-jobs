@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import polars as pl
 
 from config import Environment
-
+from models import InventoryResult, ScanFailure
 
 CATALOGS_PATH = "/api/v1/admin/spark/settings/catalogs"
 
@@ -36,11 +36,7 @@ def catalogs_to_dataframe(data):
 
             elif isinstance(value, list):
                 for entry in value:
-                    if (
-                        isinstance(entry, dict)
-                        and "key" in entry
-                        and "value" in entry
-                    ):
+                    if isinstance(entry, dict) and "key" in entry and "value" in entry:
                         row[f"{key}_{entry['key']}"] = entry["value"]
 
             else:
@@ -54,8 +50,12 @@ def catalogs_to_dataframe(data):
     )
 
 
-def fetch_catalog_inventory(environments: list[Environment]):
+def fetch_catalog_inventory(
+    environments: list[Environment],
+) -> InventoryResult:
     dataframes = []
+    successful_environments = []
+    failures = []
 
     for environment in environments:
         try:
@@ -67,6 +67,8 @@ def fetch_catalog_inventory(environments: list[Environment]):
 
             dataframe = catalogs_to_dataframe(response)
 
+            successful_environments.append(environment.name)
+
             if dataframe.is_empty():
                 print(f"✓ {environment.name}: 0 catalogs")
                 continue
@@ -77,22 +79,30 @@ def fetch_catalog_inventory(environments: list[Environment]):
 
             dataframes.append(dataframe)
 
-            print(
-                f"✓ {environment.name}: "
-                f"{len(dataframe)} catalogs"
-            )
+            print(f"✓ {environment.name}: " f"{len(dataframe)} catalogs")
 
         except Exception as error:
-            print(
-                f"✗ {environment.name}: "
-                f"ERROR - {error}"
+            failures.append(
+                ScanFailure(
+                    environment=environment.name,
+                    error_type=type(error).__name__,
+                    message=str(error),
+                )
             )
 
-    if not dataframes:
-        return pl.DataFrame()
+            print(f"✗ {environment.name}: " f"ERROR - {error}")
 
-    combined = pl.concat(dataframes, how="diagonal")
+    if dataframes:
+        inventory = pl.concat(
+            dataframes,
+            how="diagonal",
+        ).with_columns(pl.lit(datetime.now(timezone.utc)).alias("fetch_time"))
+    else:
+        inventory = pl.DataFrame()
 
-    return combined.with_columns(
-        pl.lit(datetime.now(timezone.utc)).alias("fetch_time")
+    return InventoryResult(
+        inventory=inventory,
+        configured_count=len(environments),
+        successful_environments=tuple(successful_environments),
+        failures=tuple(failures),
     )

@@ -2,6 +2,8 @@ from config import load_environments
 from inventory import fetch_catalog_inventory
 from reporting import (
     export_csv_reports,
+    export_markdown_report,
+    print_report_files,
     print_terminal_report,
 )
 from rules import run_rules
@@ -12,16 +14,14 @@ def main():
 
     print(f"Loaded {len(environments)} environments")
 
-    inventory = fetch_catalog_inventory(environments)
+    result = fetch_catalog_inventory(environments)
 
-    if inventory.is_empty():
-        print("No catalog inventory collected.")
-        return
+    inventory = result.inventory
 
-    findings = run_rules(inventory)
+    findings = run_rules(inventory) if not inventory.is_empty() else []
 
     print_terminal_report(
-        inventory,
+        result,
         findings,
     )
 
@@ -29,6 +29,13 @@ def main():
         inventory,
         findings,
     )
+
+    export_markdown_report(
+        result,
+        findings,
+    )
+
+    print_report_files()
 
 
 if __name__ == "__main__":
