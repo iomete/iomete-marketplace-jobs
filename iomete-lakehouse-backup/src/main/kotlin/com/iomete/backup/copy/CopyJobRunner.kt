@@ -3,6 +3,7 @@ package com.iomete.backup.copy
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.InternalConfig
 import com.iomete.backup.copy.internal.CopyAggregate
+import com.iomete.backup.copy.internal.CopyBatches
 import com.iomete.backup.copy.internal.CopyTimers
 import com.iomete.backup.copy.internal.FileCopier
 import com.iomete.backup.copy.internal.PathResolver
@@ -65,14 +66,22 @@ object CopyJobRunner {
                         targetRoot = targetRoot,
                         clockSkewToleranceMs = config.copy.clockSkewToleranceMs,
                     )
-                plan to batchFiles(plan.toCopy, config.copy.bytesPerTask, config.copy.filesPerTask)
+                plan to
+                    batchFiles(
+                        files = plan.toCopy,
+                        slots = internalConfig.slots,
+                        tasksPerSlot = config.copy.tasksPerSlot,
+                        maxBytesPerTask = config.copy.maxBytesPerTask,
+                        perFileOverheadBytes = config.copy.perFileOverheadBytes,
+                    )
             }
-        val (plan, batches) = planned
+        val (plan, batched) = planned
+        val batches = batched.batches
         val skippedBytes = plan.skipped.sumOf { it.size }
 
         logger.info("Skipping {} files already at the target ({} bytes)", plan.skipped.size, skippedBytes)
         plan.skipped.forEach { logger.debug("Skipped, already at target: {}", it.path) }
-        logCopyPlan(plan.toCopy, batches.size, config.copy.bytesPerTask)
+        logCopyPlan(plan.toCopy, batched, internalConfig.slots, config.copy.maxBytesPerTask)
 
         val (fileResults, copyTime) =
             measureTimedValue {
@@ -120,6 +129,7 @@ object CopyJobRunner {
                     copyMs = copyTime.inWholeMilliseconds,
                     dirCreateMs = dirCreateTime.inWholeMilliseconds,
                     taskCount = batches.size,
+                    maxFilesInTask = batches.maxOfOrNull { it.size } ?: 0,
                     largestFileBytes = plan.toCopy.maxOfOrNull { it.size } ?: 0,
                     filesCopied = fileResults.successCount.toLong(),
                     dirsCreated = directoryResults.count { it.success }.toLong(),
@@ -132,21 +142,31 @@ object CopyJobRunner {
 
     private fun logCopyPlan(
         toCopy: List<FileEntry>,
-        batchCount: Int,
-        bytesPerTask: Long,
+        batched: CopyBatches,
+        slots: Int,
+        maxBytesPerTask: Long,
     ) {
-        val largest = toCopy.maxOfOrNull { it.size } ?: 0
-        val oversized = toCopy.count { it.size > bytesPerTask }
+        val taskCount = batched.batches.size
 
         logger.info(
-            "Copying {} files ({} bytes) across {} tasks; largest single file {} bytes, {} files above the {} byte target",
+            "Copying {} files ({} bytes) across {} tasks of up to {} bytes weight ({}); largest single file {} bytes",
             toCopy.size,
             toCopy.sumOf { it.size },
-            batchCount,
-            largest,
-            oversized,
-            bytesPerTask,
+            taskCount,
+            batched.weightPerTask,
+            if (batched.weightPerTask == maxBytesPerTask) "limited by copy.maxBytesPerTask" else "sized by copy.tasksPerSlot",
+            toCopy.maxOfOrNull { it.size } ?: 0,
         )
+
+        if (taskCount in 1 until slots) {
+            logger.warn(
+                "Only {} tasks for {} slots, so {} slots stay idle: {}",
+                taskCount,
+                slots,
+                slots - taskCount,
+                if (taskCount == toCopy.size) "there are only ${toCopy.size} files to copy" else "the files pack into fewer tasks",
+            )
+        }
     }
 
     private fun listTarget(

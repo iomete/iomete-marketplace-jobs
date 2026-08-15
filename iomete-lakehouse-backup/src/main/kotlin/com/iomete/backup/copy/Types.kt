@@ -23,6 +23,7 @@ data class CopyStats(
     val copyMs: Long = 0,
     val dirCreateMs: Long = 0,
     val taskCount: Int = 0,
+    val maxFilesInTask: Int = 0,
     val largestFileBytes: Long = 0,
     val filesCopied: Long = 0,
     val dirsCreated: Long = 0,
