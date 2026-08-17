@@ -9,7 +9,7 @@ readme = "README.md"
 package-mode = false
 requires-python = ">=3.12, <4.0"
 dependencies = [
-    "iomete-sdk (==3.0.0)"
+    "iomete-sdk (==3.0.1)"
 ]
 
 
