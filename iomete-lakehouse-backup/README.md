@@ -121,6 +121,10 @@ Before changing these values, use [Tuning from the run
 history](docs/run-stats.md#tuning-from-the-run-history) to identify the
 bottleneck and choose which setting to adjust.
 
+To measure what these settings are worth in your own environment, see
+[docs/load-testing.md](docs/load-testing.md), which has the procedure we use and
+the results we got from it.
+
 ### Limiting bandwidth
 
 The backup copies as fast as your network allows, and that can get in the way of
@@ -263,7 +267,7 @@ To restore an HDFS backup to S3, swap the storage types:
 
 ## Set up as a job in IOMETE
 
-1. In the IOMETE console, navigate to **Spark → Jobs** and click **Create Job**.
+1. In the IOMETE console, navigate to **Job Templates** and click **New Job Template**.
 2. Fill in the job form:
    - **Docker Image:** `iomete.azurecr.io/iomete/iomete-lakehouse-backup:x.y.z`
    - **Main Application File:** `spark-internal`
