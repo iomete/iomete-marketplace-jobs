@@ -32,8 +32,10 @@ internal fun batchFiles(
         // Recomputed per task: a frozen target acts as a cap and spills the remainder into extra tasks.
         val target = ((remainingWeight + remainingTasks - 1) / remainingTasks).coerceAtLeast(1)
 
-        // Both limits bind only on a non-empty batch, so a file above the cap gets a batch to itself.
-        if (current.isNotEmpty() && (currentWeight + weight(file) > maxBytesPerTask || currentWeight >= target)) {
+        // Weighed before adding, so a heavy file starts a task instead of doubling a full one;
+        // both limits bind only on a non-empty batch, so a file above the cap gets a task to itself.
+        val prospective = currentWeight + weight(file)
+        if (current.isNotEmpty() && (prospective > maxBytesPerTask || prospective > target)) {
             batches += current
             weights += currentWeight
             remainingWeight -= currentWeight

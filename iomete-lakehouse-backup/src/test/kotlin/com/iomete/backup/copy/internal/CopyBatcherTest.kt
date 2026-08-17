@@ -34,7 +34,16 @@ class CopyBatcherTest {
         val result = batch(List(10) { file("f$it", 10) }, slots = 1, tasksPerSlot = 3)
 
         assertEquals(3, result.size)
-        assertEquals(listOf(4, 3, 3), result.map { it.size })
+        assertEquals(listOf(3, 3, 4), result.map { it.size })
+    }
+
+    @Test
+    fun `a heavy file starts a task instead of overloading the one being filled`() {
+        val files = listOf(file("a", 9), file("b", 9), file("c", 1), file("d", 1))
+
+        val result = batchFiles(files, slots = 1, tasksPerSlot = 2, maxBytesPerTask = Long.MAX_VALUE)
+
+        assertEquals(listOf(9L, 11L), result.taskWeights)
     }
 
     @Test
