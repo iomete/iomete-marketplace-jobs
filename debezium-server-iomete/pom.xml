@@ -24,7 +24,7 @@
         <version.scala>2.12.4</version.scala>
         <version.log4j>2.17.2</version.log4j>
         <!-- Debezium -->
-        <version.debezium>1.9.2.Final</version.debezium>
+        <version.debezium>${project.version}</version.debezium>
         <version.mysql.driver>9.1.0</version.mysql.driver>
         <!-- Quarkus -->
         <version.quarkus>2.16.12.Final</version.quarkus>
