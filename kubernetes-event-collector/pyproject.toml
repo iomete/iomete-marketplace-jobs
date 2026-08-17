@@ -12,7 +12,7 @@ requires-python = ">=3.12,<4"
 dependencies = [
     "pyhocon (==0.3.59)",
     "boto3 (>=1.28.0)",
-    "kubernetes (>=28.1.0)",
+    "kubernetes (>=36.0.3)",
     "requests (==2.33.0)",
     "pandas (>=3.0.5)",
     "psycopg2-binary (>=2.9.6)",
