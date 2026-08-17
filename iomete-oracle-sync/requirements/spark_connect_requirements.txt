@@ -1,7 +1,7 @@
 # PySpark requirements
 pyspark==3.5.3
 pandas==2.2.3
-pyarrow==18.0.0
+pyarrow==23.0.1
 
 # Spark Connect requirements
 grpcio==1.67.1
