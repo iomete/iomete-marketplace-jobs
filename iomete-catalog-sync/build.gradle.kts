@@ -52,7 +52,7 @@ allprojects {
 
         // Apache Spark
         compileOnly("org.apache.spark:spark-sql_2.12:3.5.9")
-        compileOnly("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.7.1")
+        compileOnly("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.7.2")
 
         // Test dependencies
         testImplementation("io.quarkus:quarkus-junit5")
@@ -61,7 +61,7 @@ allprojects {
         testImplementation("org.apache.spark:spark-core_2.12:3.5.9")
         testImplementation("org.scala-lang:scala-library:2.12.18")
         testRuntimeOnly("org.scala-lang:scala-library:2.12.18")
-        testImplementation("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.7.1")
+        testImplementation("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.7.2")
 
         // Force specific versions for transitive dependencies
         implementation("org.apache.parquet:parquet-avro:1.18.0")
