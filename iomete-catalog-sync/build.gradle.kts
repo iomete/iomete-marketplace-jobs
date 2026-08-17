@@ -97,7 +97,7 @@ configurations.testRuntimeClasspath {
     resolutionStrategy {
         force("org.scala-lang:scala-library:2.12.18")
         force("org.scala-lang:scala-reflect:2.12.18")
-        force("org.antlr:antlr4-runtime:4.9.3")
+        force("org.antlr:antlr4-runtime:4.13.2")
     }
 }
 
