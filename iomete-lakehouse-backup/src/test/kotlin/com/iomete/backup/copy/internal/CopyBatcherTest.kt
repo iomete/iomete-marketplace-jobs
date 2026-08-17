@@ -30,10 +30,27 @@ class CopyBatcherTest {
     }
 
     @Test
-    fun `a total that does not divide evenly stays within one task of the target`() {
+    fun `a total that does not divide evenly still lands on the task count asked for`() {
         val result = batch(List(10) { file("f$it", 10) }, slots = 1, tasksPerSlot = 3)
 
-        assertTrue(result.size in 3..4, "whole files cannot always fill a target exactly, got ${result.size} tasks")
+        assertEquals(3, result.size)
+        assertEquals(listOf(4, 3, 3), result.map { it.size })
+    }
+
+    @Test
+    fun `a file count that is not a multiple of the tasks asked for does not add a task`() {
+        val result = batch(List(39) { file("f$it", 100) }, slots = 1, tasksPerSlot = 20)
+
+        assertEquals(20, result.size)
+    }
+
+    @Test
+    fun `each task reports the weight of the files it holds`() {
+        val files = listOf(file("a", 100), file("b", 100), file("c", 100), file("d", 100))
+
+        val result = batchFiles(files, slots = 1, tasksPerSlot = 2, maxBytesPerTask = Long.MAX_VALUE, perFileOverheadBytes = 10)
+
+        assertEquals(listOf(220L, 220L), result.taskWeights)
     }
 
     @Test

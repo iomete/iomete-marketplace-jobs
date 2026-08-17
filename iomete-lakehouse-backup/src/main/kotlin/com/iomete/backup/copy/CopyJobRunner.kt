@@ -81,7 +81,7 @@ object CopyJobRunner {
 
         logger.info("Skipping {} files already at the target ({} bytes)", plan.skipped.size, skippedBytes)
         plan.skipped.forEach { logger.debug("Skipped, already at target: {}", it.path) }
-        logCopyPlan(plan.toCopy, batched, internalConfig.slots, config.copy.maxBytesPerTask)
+        logCopyPlan(plan.toCopy, batched, internalConfig.slots, config.copy.tasksPerSlot)
 
         val (fileResults, copyTime) =
             measureTimedValue {
@@ -144,17 +144,19 @@ object CopyJobRunner {
         toCopy: List<FileEntry>,
         batched: CopyBatches,
         slots: Int,
-        maxBytesPerTask: Long,
+        tasksPerSlot: Int,
     ) {
         val taskCount = batched.batches.size
+        val tasksWanted = minOf(slots.toLong() * tasksPerSlot, toCopy.size.toLong())
 
         logger.info(
-            "Copying {} files ({} bytes) across {} tasks of up to {} bytes weight ({}); largest single file {} bytes",
+            "Copying {} files ({} bytes) across {} tasks weighing {} to {} bytes ({}); largest single file {} bytes",
             toCopy.size,
             toCopy.sumOf { it.size },
             taskCount,
-            batched.weightPerTask,
-            if (batched.weightPerTask == maxBytesPerTask) "limited by copy.maxBytesPerTask" else "sized by copy.tasksPerSlot",
+            batched.taskWeights.minOrNull() ?: 0,
+            batched.taskWeights.maxOrNull() ?: 0,
+            if (taskCount > tasksWanted) "split further by copy.maxBytesPerTask" else "sized by copy.tasksPerSlot",
             toCopy.maxOfOrNull { it.size } ?: 0,
         )
 
