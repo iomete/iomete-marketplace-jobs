@@ -51,14 +51,14 @@ allprojects {
         implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.20.0")
 
         // Apache Spark
-        compileOnly("org.apache.spark:spark-sql_2.12:3.5.7")
+        compileOnly("org.apache.spark:spark-sql_2.12:3.5.9")
         compileOnly("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.7.1")
 
         // Test dependencies
         testImplementation("io.quarkus:quarkus-junit5")
         testImplementation("io.mockk:mockk:1.14.7")
-        testImplementation("org.apache.spark:spark-sql_2.12:3.5.7")
-        testImplementation("org.apache.spark:spark-core_2.12:3.5.7")
+        testImplementation("org.apache.spark:spark-sql_2.12:3.5.9")
+        testImplementation("org.apache.spark:spark-core_2.12:3.5.9")
         testImplementation("org.scala-lang:scala-library:2.12.18")
         testRuntimeOnly("org.scala-lang:scala-library:2.12.18")
         testImplementation("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.7.1")
