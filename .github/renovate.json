@@ -1,0 +1,97 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "labels": [
+    "dependencies",
+    "renovate"
+  ],
+  "enabledManagers": [
+    "github-actions",
+    "gradle",
+    "gradle-wrapper",
+    "maven",
+    "pep621",
+    "poetry",
+    "pip_requirements",
+    "setup-cfg"
+  ],
+  "prConcurrentLimit": 10,
+  "prHourlyLimit": 0,
+  "dependencyDashboard": true,
+  "vulnerabilityAlerts": {
+    "description": "Security fixes are forced through even where a rule below (or the org-wide 'no major updates' rule) disables regular updates.",
+    "enabled": true,
+    "labels": [
+      "dependencies",
+      "renovate",
+      "security"
+    ]
+  },
+  "osvVulnerabilityAlerts": true,
+  "lockFileMaintenance": {
+    "description": "Refresh poetry.lock weekly so transitive dependencies get security fixes. Renovate only bumps dependencies declared in pyproject.toml, so indirect deps would otherwise stay pinned to a vulnerable version.",
+    "enabled": true,
+    "schedule": [
+      "before 5am on monday"
+    ]
+  },
+  "packageRules": [
+    {
+      "description": "Pin the Python constraint so Renovate resolves poetry.lock with a matching interpreter. requires-python lives in [project] (PEP 621) but the poetry manager reads [tool.poetry.dependencies].python, so it extracts nothing and lock updates silently fail.",
+      "matchFileNames": [
+        "kubernetes-event-collector/**"
+      ],
+      "constraints": {
+        "python": ">=3.12,<4.0"
+      }
+    },
+    {
+      "description": "Same as above, for the notebook scheduler (requires-python ^3.11)",
+      "matchFileNames": [
+        "jupyter-notebook-scheduler/**"
+      ],
+      "constraints": {
+        "python": ">=3.11,<4.0"
+      }
+    },
+    {
+      "description": "Keep Scala on the 2.12 line - the jobs build against Spark _2.12 artifacts, and 2.13 is only a minor bump so it is not caught by the no-majors rule",
+      "matchPackageNames": [
+        "org.scala-lang:scala-library",
+        "org.scala-lang:scala-reflect"
+      ],
+      "allowedVersions": "<2.13"
+    },
+    {
+      "description": "Keep Spark on the 3.5 line - these jobs run inside the iomete Spark 3.5 images",
+      "matchPackageNames": [
+        "/^org\\.apache\\.spark:/"
+      ],
+      "allowedVersions": "<3.6"
+    },
+    {
+      "description": "Don't touch antlr4-runtime - the forced version has to match what Spark pulls in, otherwise SQL parsing breaks at runtime",
+      "matchPackageNames": [
+        "org.antlr:antlr4-runtime"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Move the Quarkus platform BOM, Gradle plugin and the forced quarkus-core version together so they stay consistent",
+      "matchPackageNames": [
+        "/^io\\.quarkus[:.]/",
+        "io.quarkus"
+      ],
+      "groupName": "quarkus"
+    },
+    {
+      "description": "Security fixes only for the vendored Debezium fork - it is pinned to Debezium 1.9 / Quarkus 2.16 / Spark 3.2 and has no CI, so routine bumps would just be broken PRs",
+      "matchFileNames": [
+        "debezium-server-iomete/**"
+      ],
+      "enabled": false
+    }
+  ]
+}
