@@ -1294,40 +1294,21 @@ markdown-it-py = ">=1.0.0,<4.0.0"
 
 [[package]]
 name = "mdformat-gfm"
-version = "0.4.1"
+version = "1.0.0"
 description = "Mdformat plugin for GitHub Flavored Markdown compatibility"
 optional = false
-python-versions = ">=3.9"
+python-versions = ">=3.10"
 groups = ["dev"]
 files = [
-    {file = "mdformat_gfm-0.4.1-py3-none-any.whl", hash = "sha256:63c92cfa5102f55779d4e04b16a79a6a5171e658c6c479175c0955fb4ca78dde"},
-    {file = "mdformat_gfm-0.4.1.tar.gz", hash = "sha256:e189e728e50cfb15746abc6b3178ca0e2bebbb7a8d3d98fbc9e24bc1a4c65564"},
+    {file = "mdformat_gfm-1.0.0-py3-none-any.whl", hash = "sha256:7305a50efd2a140d7c83505b58e3ac5df2b09e293f9bbe72f6c7bee8c678b005"},
+    {file = "mdformat_gfm-1.0.0.tar.gz", hash = "sha256:d1d49a409a6acb774ce7635c72d69178df7dce1dc8cdd10e19f78e8e57b72623"},
 ]
 
 [package.dependencies]
 markdown-it-py = "*"
-mdformat = ">=0.7.5,<0.8.0"
-mdformat-tables = ">=0.4.0"
+mdformat = ">=0.7.5"
 mdit-py-plugins = ">=0.2.0"
-
-[[package]]
-name = "mdformat-tables"
-version = "1.0.0"
-description = "An mdformat plugin for rendering tables."
-optional = false
-python-versions = ">=3.7.0"
-groups = ["dev"]
-files = [
-    {file = "mdformat_tables-1.0.0-py3-none-any.whl", hash = "sha256:94cd86126141b2adc3b04c08d1441eb1272b36c39146bab078249a41c7240a9a"},
-    {file = "mdformat_tables-1.0.0.tar.gz", hash = "sha256:a57db1ac17c4a125da794ef45539904bb8a9592e80557d525e1f169c96daa2c8"},
-]
-
-[package.dependencies]
-mdformat = ">=0.7.5,<0.8.0"
 wcwidth = ">=0.2.13"
-
-[package.extras]
-test = ["coverage", "pytest (>=6.0,<7.0)", "pytest-cov"]
 
 [[package]]
 name = "mdit-py-plugins"
@@ -3216,4 +3197,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4"
-content-hash = "5c13b93e4c24cccca91072184fd533995830a37711ff741f0e879c93494722c0"
+content-hash = "a96d4a6cb3c802805975cef44caf41a3e2915ffcd7531d3387901493b071c67c"
