@@ -65,7 +65,7 @@ allprojects {
         implementation("org.apache.parquet:parquet-avro:1.15.2")
         implementation("org.apache.avro:avro:1.11.5")
         implementation("com.mysql:mysql-connector-j:8.2.0")
-        implementation("com.google.protobuf:protobuf-java:3.25.5")
+        implementation("com.google.protobuf:protobuf-java:3.25.9")
         implementation("org.apache.thrift:libthrift:0.23.0")
         implementation("io.quarkus:quarkus-core:3.8.6.1")
     }
