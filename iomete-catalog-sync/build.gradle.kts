@@ -82,21 +82,21 @@ allOpen {
 configurations.compileClasspath {
     resolutionStrategy {
         force("org.scala-lang:scala-library:2.12.18")
-        force("org.scala-lang:scala-reflect:2.12.18")
+        force("org.scala-lang:scala-reflect:2.12.21")
     }
 }
 
 configurations.testCompileClasspath {
     resolutionStrategy {
         force("org.scala-lang:scala-library:2.12.18")
-        force("org.scala-lang:scala-reflect:2.12.18")
+        force("org.scala-lang:scala-reflect:2.12.21")
     }
 }
 
 configurations.testRuntimeClasspath {
     resolutionStrategy {
         force("org.scala-lang:scala-library:2.12.18")
-        force("org.scala-lang:scala-reflect:2.12.18")
+        force("org.scala-lang:scala-reflect:2.12.21")
         force("org.antlr:antlr4-runtime:4.13.2")
     }
 }
