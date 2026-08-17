@@ -1,5 +1,5 @@
 # exclude python modules already included in spark docker file. like: pyspark
-SQLAlchemy==2.0.51
+SQLAlchemy==2.0.52
 pyhocon==0.3.63
 python-json-logger==4.1.0
 structlog==26.1.0
