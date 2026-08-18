@@ -17,6 +17,32 @@ compare the results from each run.
   stage. A slot runs one Spark task at a time; a task contains one or more files
   that the slot copies one after another.
 
+## Benchmark results
+
+We ran the benchmark between two AWS S3 buckets in the same region, using the
+TPC-DS Iceberg datasets described above. Every run had 10 executors with 2 vCPUs
+each. With the default `slotsPerVcpu` of 4, that gave us 8 copy slots per
+executor and 80 slots in total.
+
+| Dataset | Stored | Executors | vCPU per executor | Slots per executor | End-to-end MiB/s | Copy MiB/s | MiB/s per vCPU | MiB/s per slot | End-to-end GiB/h | Cluster utilisation % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|----------------------:|
+| SF100 | 25.4 GiB | 10 | 2.0 | 8 | 257.3 | 310.5 | 12.9 | 3.2 | 905 |                  95.9 |
+| SF1000 | 238.2 GiB | 10 | 2.0 | 8 | 1283.4 | 1425.5 | 64.2 | 16.0 | 4,512 |                  97.7 |
+| SF5000 | 1129.4 GiB | 10 | 2.0 | 8 | 1726.8 | 1792.7 | 86.3 | 21.6 | 6,071 |                  98.1 |
+
+Use MiB/s per vCPU for initial sizing. For a large backup similar to SF5000,
+estimate throughput as `total executor vCPUs × 86.3 MiB/s`, or divide the target
+throughput by 86.3 to estimate the required vCPUs. Use the row closest to your
+dataset size because fixed work has a larger effect on smaller backups. Start
+with the default `slotsPerVcpu` of 4, run the benchmark, then increase or
+decrease it until more concurrency stops improving throughput. Slots tune how
+the allocated vCPUs are used; they are not capacity on their own.
+
+These same-region S3-to-S3 results are an optimistic starting point, not a
+guarantee. Cross-region transfers, on-premises links, other storage systems, and
+different file-size distributions may be slower. Once storage or network
+bandwidth becomes the limit, adding vCPUs will not improve throughput.
+
 ## Before you start
 
 You need:
@@ -157,7 +183,7 @@ the test configuration:
   },
   "copy": {
     "skipIdentical": false,
-    "slotsPerVcpu": 2,
+    "slotsPerVcpu": 4,
     "tasksPerSlot": 20
   }
 }
@@ -222,6 +248,8 @@ SELECT run_id,
              / ((unix_millis(ended_at) - unix_millis(started_at)) / 1000), 1) AS end_to_end_mib_per_sec,
        round(bytes_copied / 1024 / 1024 / (copy_ms / 1000), 1)                AS copy_mib_per_sec,
        round(copy_task_ms / copy_ms, 1)                                       AS avg_concurrency,
+       round(100 * (copy_task_ms / copy_ms)
+             / (executor_count * slots_per_executor), 1)                      AS utilisation_pct,
        executor_count,
        vcpu_per_executor,
        slots_per_executor,
@@ -243,14 +271,137 @@ clean total to divide by, and skipped files mean the target was not fresh. Fix
 the cause, choose another new target prefix, and repeat the run.
 
 Report end-to-end throughput as the primary result and use copy throughput to
-examine the stage split. Compare `avg_concurrency` with `executor_count ×
-slots_per_executor`; a much lower value means the available copy capacity was
-not busy throughout the stage. Use `task_count`, `largest_file_bytes`, and the
-stage timings to find where the time went.
+see how much time the other stages add. `avg_concurrency` is the average number
+of copy slots in use, while `utilisation_pct` expresses that number as a share
+of the available slots. A value near 100% means the slots stayed busy; it does
+not prove that adding slots or executors will increase throughput. Test that
+with another run. For low utilisation, check `task_count`,
+`largest_file_bytes`, and the stage timings to see whether the job ran out of
+work, finished on one large file, or spent most of its time outside the copy
+stage.
 
 **Expected result:** The query returns one valid row with both throughput
-values, average concurrency, the tested cluster settings, and all five stage
-timings.
+values, concurrency and utilisation, the tested cluster settings, and all five
+stage timings.
+
+### Rank tested configurations
+
+After you have run a sweep, use this query to compare configurations. Replace
+`SOURCE_URI`, `JOB_ID`, and `START_DATE`. It ranks slot and task settings against
+other runs on the same dataset and vCPU allocation. The efficiency rank compares
+all vCPU allocations for the same dataset.
+
+```sql
+WITH per_run AS (
+  SELECT source_uri AS dataset,
+         bytes_source,
+         files_listed,
+         executor_count,
+         vcpu_per_executor,
+         executor_count * vcpu_per_executor AS total_vcpus,
+         slots_per_executor,
+         round(slots_per_executor / vcpu_per_executor, 2)
+                                                   AS effective_slots_per_vcpu,
+         executor_count * slots_per_executor       AS total_slots,
+         tasks_per_slot,
+         max_bandwidth_mb_per_sec,
+         task_count,
+         max_files_in_task,
+         largest_file_bytes,
+         source_listing_ms,
+         target_listing_ms,
+         planning_ms,
+         dir_create_ms,
+         copy_ms / 60000.0                         AS copy_minutes,
+         bytes_copied / 1024 / 1024 / (copy_ms / 1000.0)
+                                                   AS copy_mib_per_sec,
+         bytes_source / 1024 / 1024
+           / ((unix_millis(ended_at) - unix_millis(started_at)) / 1000.0)
+                                                   AS end_to_end_mib_per_sec,
+         100.0 * copy_task_ms
+           / (copy_ms * executor_count * slots_per_executor)
+                                                   AS slot_occupancy_pct,
+         100.0 * throttle_wait_ms / nullif(copy_task_ms, 0)
+                                                   AS throttle_wait_pct
+  FROM spark_catalog.iomete_system_db.lakehouse_backup_runs
+  WHERE status = 'SUCCEEDED'
+    AND copy_ms > 0
+    AND ended_at IS NOT NULL
+    AND files_failed = 0
+    AND files_skipped = 0
+    AND bytes_copied = bytes_source
+    AND retries_used = 0
+    AND skip_identical = false
+    AND source_uri = '<SOURCE_URI>'
+    AND job_id = '<JOB_ID>'
+    AND started_at >= TIMESTAMP '<START_DATE>'
+),
+by_config AS (
+  SELECT dataset,
+         bytes_source,
+         files_listed,
+         executor_count,
+         vcpu_per_executor,
+         total_vcpus,
+         slots_per_executor,
+         effective_slots_per_vcpu,
+         total_slots,
+         tasks_per_slot,
+         max_bandwidth_mb_per_sec,
+         count(*)                                      AS runs,
+         round(bytes_source / 1024 / 1024 / 1024, 1)  AS dataset_gib,
+         round(avg(copy_minutes), 2)                   AS avg_copy_minutes,
+         round(avg(end_to_end_mib_per_sec), 1)         AS avg_end_to_end_mib_per_sec,
+         round(avg(copy_mib_per_sec), 1)               AS avg_copy_mib_per_sec,
+         round(avg(end_to_end_mib_per_sec) / total_vcpus, 1)
+                                                       AS avg_mib_per_sec_per_vcpu,
+         round(avg(slot_occupancy_pct), 1)             AS avg_slot_occupancy_pct,
+         round(avg(throttle_wait_pct), 1)              AS avg_throttle_wait_pct,
+         round(avg(task_count), 1)                     AS avg_task_count,
+         round(avg(max_files_in_task), 1)              AS avg_max_files_in_task,
+         round(avg(largest_file_bytes) / 1024 / 1024, 1)
+                                                       AS avg_largest_file_mib,
+         round(avg(source_listing_ms) / 1000, 1)       AS avg_source_listing_sec,
+         round(avg(target_listing_ms) / 1000, 1)       AS avg_target_listing_sec,
+         round(avg(planning_ms) / 1000, 1)             AS avg_planning_sec,
+         round(avg(dir_create_ms) / 1000, 1)           AS avg_dir_create_sec
+  FROM per_run
+  GROUP BY dataset,
+           bytes_source,
+           files_listed,
+           executor_count,
+           vcpu_per_executor,
+           total_vcpus,
+           slots_per_executor,
+           effective_slots_per_vcpu,
+           total_slots,
+           tasks_per_slot,
+           max_bandwidth_mb_per_sec
+)
+SELECT dense_rank() OVER (
+         PARTITION BY dataset, bytes_source, files_listed,
+                      executor_count, vcpu_per_executor
+         ORDER BY avg_end_to_end_mib_per_sec DESC
+       ) AS config_rank,
+       dense_rank() OVER (
+         PARTITION BY dataset, bytes_source, files_listed
+         ORDER BY avg_mib_per_sec_per_vcpu DESC
+       ) AS vcpu_efficiency_rank,
+       *
+FROM by_config
+ORDER BY dataset, config_rank, vcpu_efficiency_rank;
+```
+
+`config_rank = 1` is the fastest slot and task configuration for a fixed vCPU
+allocation. `vcpu_efficiency_rank = 1` delivers the most end-to-end throughput
+per allocated vCPU. Check `runs` before trusting either rank and repeat the
+leading configurations to account for normal variation.
+
+`max_bandwidth_mb_per_sec` is included because a cap changes the effective
+configuration; leave it unset when measuring maximum throughput.
+`perFileOverheadBytes` and `maxBytesPerTask` also affect task planning, but the
+run table does not currently record them. Change only one at a time and save the
+`application.json` used for each run.
 
 ## Compare configurations
 
@@ -284,41 +435,3 @@ target prefixes so full copies do not accumulate.
 
 **Expected result:** The generated copies no longer consume target storage, and
 your run records remain available in IOMETE.
-
-## Our benchmark results
-
-We measured AWS S3 to AWS S3 within one region with TPC-DS Iceberg datasets
-generated from the configuration above. Both storage ends were elastic.
-
-### Throughput
-
-_Pending: fill this table from the run rows._
-
-| Dataset | Stored | Executors | vCPU each | Slots each | End-to-end MiB/s | Copy MiB/s | Concurrency |
-|---|---|---|---|---|---|---|---|
-| | | | | | | | |
-
-We already recorded two results on the same 1 TB dataset and cluster, changing
-only the slots per executor: 184.6 MiB/s at 3 slots and 690.7 MiB/s at 20 slots.
-In these runs, slot count had a larger effect than cluster size.
-
-### Per-file cost
-
-Across five runs on three datasets, copying one file from S3 to S3 within one
-region cost 0.90 seconds plus the file size at 29 MiB/s. This model predicted
-all five runs within 5%:
-
-```
-seconds ≈ (files × 0.90 + bytes / 30_400_000) / (executors × slots_per_executor)
-```
-
-At 29 MiB/s, 0.90 seconds is about 26 MiB of transfer. This is the basis for the
-25 MiB default of `perFileOverheadBytes`. These figures apply only to S3 to S3
-within one region. HDFS should have a much lower per-file cost because a rename
-is a metadata operation rather than a server-side copy.
-
-### Compare storage systems carefully
-
-A copy from a datacentre to a cloud region is limited by the connection between
-them, not the cluster. Adding executors measures that link rather than the job,
-so keep cross-system results separate from the cluster scaling curve.
