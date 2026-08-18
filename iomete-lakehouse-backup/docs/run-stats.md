@@ -137,6 +137,7 @@ change the final task count.
 ```sql
 SELECT run_id, status, started_at, ended_at,
        files_copied, files_skipped, files_failed,
+       retries_used, failures_truncated,
        round(bytes_copied / 1024 / 1024 / 1024, 2) AS gb_copied,
        error_message
 FROM spark_catalog.iomete_system_db.lakehouse_backup_runs
@@ -148,6 +149,41 @@ A successful run has `status = 'SUCCEEDED'`, `files_failed = 0` and an
 `ended_at`. A failed run has `status = 'FAILED'` and the exception in
 `error_message`; the job also exits with a non-zero code, so the platform
 reports the failure as well.
+
+The queries below start from a `run_id`. If you have the job instead, replace
+the `WHERE` clause above with `job_id = '<job-id>' ORDER BY started_at DESC
+LIMIT 1` to get the run ID of its latest run.
+
+Both tables are partitioned by day on `started_at`, so a query that filters on
+`run_id` alone reads the whole history. Once the tables hold more than a few
+weeks of runs, add `AND started_at > '<date>'` to keep the read to one
+partition.
+
+### Check that a run copied everything
+
+```sql
+SELECT run_id,
+       files_listed + dirs_listed                      AS entries_listed,
+       files_copied + files_skipped + dirs_created + files_failed
+                                                       AS entries_accounted,
+       (files_listed + dirs_listed)
+         - (files_copied + files_skipped + dirs_created + files_failed)
+                                                       AS entries_unaccounted,
+       files_copied, files_skipped, files_failed,
+       failures_truncated, retries_used,
+       round(bytes_source / 1024 / 1024 / 1024, 2)     AS gb_at_source,
+       round((bytes_copied + bytes_skipped) / 1024 / 1024 / 1024, 2)
+                                                       AS gb_at_target
+FROM spark_catalog.iomete_system_db.lakehouse_backup_runs
+WHERE run_id = '<run-id>';
+```
+
+Every entry the run enumerated was copied, skipped as already identical,
+recreated as an empty directory, or failed, so `entries_unaccounted` is `0`
+for a run that reached the end. Anything else means the run stopped early, and
+`status` says whether it knows it did. `files_failed` counts directories as
+well as files, which is why the check works on entries rather than files.
+`gb_at_source` minus `gb_at_target` is the data in the entries that failed.
 
 ### Find runs that never finished
 
@@ -161,6 +197,25 @@ WHERE status = 'RUNNING'
 These runs lost their driver before they could record an outcome. Open the run
 in the IOMETE console to find out why.
 
+### See why a run failed to copy files
+
+```sql
+SELECT error, count(*) AS files, min(source_path) AS example
+FROM spark_catalog.iomete_system_db.lakehouse_backup_run_file_failures
+WHERE run_id = '<run-id>'
+GROUP BY error
+ORDER BY files DESC;
+```
+
+One error repeated across every row is a single problem, usually credentials, a
+missing prefix or a throttled endpoint. Many distinct errors point at the
+storage system rather than the backup.
+
+The number of rows per run is capped by `stats.maxFailureRows`, 1000 by default.
+When the cap applies, `failures_truncated` is true on the run row and
+`files_failed` still holds the complete count, so treat these counts as a
+sample of a truncated run.
+
 ### List the files a run failed to copy
 
 ```sql
@@ -170,25 +225,8 @@ WHERE f.run_id = '<run-id>'
 ORDER BY f.source_path;
 ```
 
-The number of rows per run is capped by `stats.maxFailureRows`, 1000 by default.
-When the cap applies, `failures_truncated` is true on the run row and
-`files_failed` still holds the complete count.
-
-### See where a run spent its time
-
-```sql
-SELECT run_id,
-       unix_millis(ended_at) - unix_millis(started_at) AS run_wall_ms,
-       source_listing_ms, target_listing_ms, planning_ms, copy_ms, dir_create_ms,
-       (unix_millis(ended_at) - unix_millis(started_at))
-         - (source_listing_ms + target_listing_ms + planning_ms + copy_ms + dir_create_ms)
-         AS unaccounted_ms
-FROM spark_catalog.iomete_system_db.lakehouse_backup_runs
-WHERE run_id = '<run-id>';
-```
-
-A run dominated by `source_listing_ms` is limited by how long it takes to walk
-the source tree, not by how fast data moves.
+Use this once you know what the errors are and need the paths, to re-copy them
+or to confirm they are files you can afford to lose.
 
 ### Check copy throughput and cluster use
 
@@ -211,7 +249,7 @@ WHERE run_id = '<run-id>';
 `tasksPerSlot` only helps in the first case. One unusually large file can also
 leave most slots idle near the end because files are never split.
 
-### See where a run spent its time, as a share of the whole
+### See where a run spent its time
 
 Driver stages already use wall time, but executor timings are summed across
 parallel tasks. The query scales executor timings by `copy_ms / copy_task_ms`
@@ -230,59 +268,30 @@ SELECT phase,
        round(100 * ms / wall_ms, 1) AS pct_of_run
 FROM r
 LATERAL VIEW stack(13,
-  'source listing',        source_listing_ms,
-  'target listing',        target_listing_ms,
-  'planning',              planning_ms,
-  'copy: filesystem init', scale * fs_init_ms,
-  'copy: source read',     scale * source_read_ms,
-  'copy: target write',    scale * target_write_ms,
-  'copy: throttle wait',   scale * throttle_wait_ms,
-  'copy: verify',          scale * verify_ms,
-  'copy: commit',          scale * commit_ms,
-  'copy: retry sleep',     scale * retry_sleep_ms,
-  'copy: uninstrumented',  scale * (copy_task_ms - (fs_init_ms + source_read_ms + target_write_ms
-                                    + throttle_wait_ms + verify_ms + commit_ms + retry_sleep_ms)),
-  'directory create',      dir_create_ms,
-  'driver: other',         wall_ms - (source_listing_ms + target_listing_ms + planning_ms
-                                      + copy_ms + dir_create_ms)
+  'driver: source listing',    double(source_listing_ms),
+  'driver: target listing',    double(target_listing_ms),
+  'driver: planning',          double(planning_ms),
+  'driver: directory create',  double(dir_create_ms),
+  'driver: other',             double(wall_ms - (source_listing_ms + target_listing_ms + planning_ms
+                                                 + copy_ms + dir_create_ms)),
+  'executor: filesystem init', scale * fs_init_ms,
+  'executor: source read',     scale * source_read_ms,
+  'executor: target write',    scale * target_write_ms,
+  'executor: throttle wait',   scale * throttle_wait_ms,
+  'executor: verify',          scale * verify_ms,
+  'executor: commit',          scale * commit_ms,
+  'executor: retry sleep',     scale * retry_sleep_ms,
+  'executor: uninstrumented',  scale * (copy_task_ms - (fs_init_ms + source_read_ms + target_write_ms
+                                       + throttle_wait_ms + verify_ms + commit_ms + retry_sleep_ms))
 ) t AS phase, ms
 ORDER BY ms DESC;
 ```
 
-The copy rows show how the distributed copy time was spent. If `copy: target
-write` is largest, the target is the main constraint. If `source listing` is
-largest, focus on source enumeration before tuning executor concurrency.
-
-### Compare runs of the same job
-
-```sql
-SELECT started_at,
-       round(bytes_copied / 1024 / 1024 / 1024, 2)             AS gb_copied,
-       round(bytes_copied / 1024 / 1024 / (copy_ms / 1000), 1) AS mb_per_sec,
-       round(copy_task_ms / copy_ms, 1)                        AS avg_concurrency,
-       source_listing_ms, copy_ms
-FROM spark_catalog.iomete_system_db.lakehouse_backup_runs
-WHERE job_id = '<job-id>' AND status = 'SUCCEEDED'
-ORDER BY started_at DESC
-LIMIT 30;
-```
-
-The run row records `tasks_per_slot`, the bandwidth limit, and the effective
-executor concurrency, so you can match changes in those settings with changes
-in throughput.
-
-### Compare the two sides of the copy
-
-```sql
-SELECT run_id, copy_task_ms,
-       fs_init_ms, source_read_ms, target_write_ms,
-       throttle_wait_ms, verify_ms, commit_ms, retry_sleep_ms,
-       copy_task_ms - (fs_init_ms + source_read_ms + throttle_wait_ms
-                       + target_write_ms + verify_ms + commit_ms + retry_sleep_ms)
-         AS uninstrumented_ms
-FROM spark_catalog.iomete_system_db.lakehouse_backup_runs
-WHERE run_id = '<run-id>';
-```
+Every driver phase runs on the driver alone; the executors only ever run the
+copy, so the `executor:` rows are the breakdown of `copy_ms`. If
+`executor: target write` is largest, the target is the main constraint. If
+`driver: source listing` is largest, focus on source enumeration before tuning
+executor concurrency.
 
 ## Tuning from the run history
 
@@ -307,7 +316,9 @@ SELECT run_id,
        max_files_in_task,
        round(100 * largest_file_bytes / nullif(bytes_copied, 0), 1)
                                                                   AS largest_file_pct,
-       round(100 * throttle_wait_ms / nullif(copy_task_ms, 0), 1) AS pct_throttled
+       round(100 * throttle_wait_ms / nullif(copy_task_ms, 0), 1) AS pct_throttled,
+       round(bytes_copied / 1024 / 1024 / 1024, 2)                AS gb_copied,
+       max_bandwidth_mb_per_sec
 FROM spark_catalog.iomete_system_db.lakehouse_backup_runs
 WHERE job_id = '<job-id>' AND status = 'SUCCEEDED'
 ORDER BY started_at DESC

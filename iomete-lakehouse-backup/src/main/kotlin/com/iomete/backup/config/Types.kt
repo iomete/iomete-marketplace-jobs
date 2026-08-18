@@ -22,7 +22,7 @@ data class CopyConfig(
     // two clocks are independent and S3 truncates to whole seconds.
     val clockSkewToleranceMs: Long = 30L * 1000,
     // Copies are network-bound, so oversubscribing vCPUs is deliberate.
-    val slotsPerVcpu: Int = 2,
+    val slotsPerVcpu: Int = 4,
     val tasksPerSlot: Int = 20,
     // Fixed cost of copying one file, in bytes of equivalent transfer: measured at ~26 MiB on S3.
     val perFileOverheadBytes: Long = 25L * 1024 * 1024,

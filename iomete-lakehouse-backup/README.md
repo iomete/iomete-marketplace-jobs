@@ -97,7 +97,7 @@ cheap.
 ```json
 {
   "copy": {
-    "slotsPerVcpu": 2,
+    "slotsPerVcpu": 4,
     "tasksPerSlot": 20,
     "perFileOverheadBytes": 26214400,
     "maxBytesPerTask": 1073741824
@@ -107,7 +107,7 @@ cheap.
 
 | Field | Default | What it does |
 |---|---|---|
-| `slotsPerVcpu` | `2` | Maximum concurrent file copies per executor vCPU. The job multiplies this value by the executor pod's CPU limit to set `spark.executor.cores`; it does not change the CPU request. |
+| `slotsPerVcpu` | `4` | Maximum concurrent file copies per executor vCPU. The job multiplies this value by the executor pod's CPU limit to set `spark.executor.cores`; it does not change the CPU request. |
 | `tasksPerSlot` | `20` | Target number of tasks per copy slot. Higher values create smaller tasks, so slots can pick up more work as they finish. |
 | `perFileOverheadBytes` | `26214400` (25 MiB) | Estimated fixed cost per file, expressed in bytes and used only to balance tasks. Increase it when tasks containing many small files take longer than the rest. |
 | `maxBytesPerTask` | `1073741824` (1 GiB) | Upper limit used when calculating task size. It can create more tasks than `tasksPerSlot` requests, but individual files can exceed it because the job never splits files. |
