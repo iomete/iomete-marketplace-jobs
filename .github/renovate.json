@@ -65,7 +65,15 @@
       "allowedVersions": "<2.13"
     },
     {
-      "description": "Keep Spark on the 3.5 line - these jobs run inside the iomete Spark 3.5 images",
+      "description": "Don't bump Spark in any job - the Spark version has to match the iomete Spark image the job runs on, so it can only move together with that image (see the revert of #277). pyspark is matched exactly so the pyspark-iomete client is still updated.",
+      "matchPackageNames": [
+        "/^org\\.apache\\.spark:/",
+        "pyspark"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Keep Spark on the 3.5 line - the rule above already blocks routine bumps, this stops a forced security update from jumping the JVM jobs to Spark 4",
       "matchPackageNames": [
         "/^org\\.apache\\.spark:/"
       ],
