@@ -62,7 +62,7 @@ allprojects {
         testRuntimeOnly("org.scala-lang:scala-library:2.12.21")
 
         // Force specific versions for transitive dependencies
-        implementation("org.apache.parquet:parquet-avro:1.15.2")
+        implementation("org.apache.parquet:parquet-avro:1.18.0")
         implementation("org.apache.avro:avro:1.12.2")
         implementation("com.mysql:mysql-connector-j:8.4.0")
         implementation("com.google.protobuf:protobuf-java:3.25.9")
