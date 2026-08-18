@@ -1,5 +1,5 @@
 # PySpark requirements
-pyspark==3.5.3
+pyspark==3.5.9
 pandas==2.2.3
 pyarrow==23.0.1
 
