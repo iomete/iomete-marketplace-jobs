@@ -66,7 +66,7 @@ allprojects {
         // Force specific versions for transitive dependencies
         implementation("org.apache.parquet:parquet-avro:1.18.0")
         implementation("org.apache.avro:avro:1.11.5")
-        implementation("com.mysql:mysql-connector-j:8.2.0")
+        implementation("com.mysql:mysql-connector-j:8.4.0")
         implementation("com.google.protobuf:protobuf-java:4.35.1")
         implementation("org.apache.thrift:libthrift:0.24.0")
         implementation("io.quarkus:quarkus-core:3.38.2")
