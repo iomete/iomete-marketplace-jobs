@@ -3,7 +3,7 @@ pyhocon==0.3.59
 attrs==22.2.0
 
 # dev dependencies
-pyspark==3.4.4
+pyspark==3.5.9
 pytest==9.1.1
 boto3
 faker
