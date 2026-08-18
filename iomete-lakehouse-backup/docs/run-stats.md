@@ -106,9 +106,18 @@ more than once. Use them to compare where time went, and use `files_copied` and
 
 | Column | Description |
 |---|---|
-| `bytes_per_task`, `files_per_task`, `skip_identical`, `max_bandwidth_mb_per_sec` | The `copy` settings this run used. `max_bandwidth_mb_per_sec` is null when no limit was set. |
-| `task_count` | Number of Spark tasks the copy was split into. |
-| `largest_file_bytes` | Size of the largest file the run had to copy. A single file is never split across tasks, so no run finishes faster than its largest file. |
+| `skip_identical`, `max_bandwidth_mb_per_sec`, `tasks_per_slot` | The corresponding `copy` settings used for this run. `max_bandwidth_mb_per_sec` is null when no limit was set. |
+| `executor_count` | Configured executors, from `spark.executor.instances` or `spark.dynamicAllocation.maxExecutors`. |
+| `vcpu_per_executor` | CPU limit of one executor pod, from `spark.kubernetes.executor.limit.cores`. |
+| `slots_per_executor` | Configured copy slots per executor. The job calculates this as `ceil(vcpu_per_executor * slotsPerVcpu)`. |
+| `task_count` | Spark tasks created for the copy. |
+| `max_files_in_task` | Largest number of files assigned to one task. If it is much higher than `files_copied / task_count`, the planner may be underestimating the fixed cost per file. |
+| `largest_file_bytes` | Largest file selected for copying. Files are never split across tasks, so the largest file sets a lower bound on the copy time. |
+
+Multiply `executor_count` by `slots_per_executor` to get the maximum number of
+copies the run could have in flight. The planner aims for that number multiplied
+by `tasks_per_slot`, although the number of files and `maxBytesPerTask` can
+change the final task count.
 
 ### Failure rows
 
@@ -128,6 +137,7 @@ more than once. Use them to compare where time went, and use `files_copied` and
 ```sql
 SELECT run_id, status, started_at, ended_at,
        files_copied, files_skipped, files_failed,
+       retries_used, failures_truncated,
        round(bytes_copied / 1024 / 1024 / 1024, 2) AS gb_copied,
        error_message
 FROM spark_catalog.iomete_system_db.lakehouse_backup_runs
@@ -139,6 +149,41 @@ A successful run has `status = 'SUCCEEDED'`, `files_failed = 0` and an
 `ended_at`. A failed run has `status = 'FAILED'` and the exception in
 `error_message`; the job also exits with a non-zero code, so the platform
 reports the failure as well.
+
+The queries below start from a `run_id`. If you have the job instead, replace
+the `WHERE` clause above with `job_id = '<job-id>' ORDER BY started_at DESC
+LIMIT 1` to get the run ID of its latest run.
+
+Both tables are partitioned by day on `started_at`, so a query that filters on
+`run_id` alone reads the whole history. Once the tables hold more than a few
+weeks of runs, add `AND started_at > '<date>'` to keep the read to one
+partition.
+
+### Check that a run copied everything
+
+```sql
+SELECT run_id,
+       files_listed + dirs_listed                      AS entries_listed,
+       files_copied + files_skipped + dirs_created + files_failed
+                                                       AS entries_accounted,
+       (files_listed + dirs_listed)
+         - (files_copied + files_skipped + dirs_created + files_failed)
+                                                       AS entries_unaccounted,
+       files_copied, files_skipped, files_failed,
+       failures_truncated, retries_used,
+       round(bytes_source / 1024 / 1024 / 1024, 2)     AS gb_at_source,
+       round((bytes_copied + bytes_skipped) / 1024 / 1024 / 1024, 2)
+                                                       AS gb_at_target
+FROM spark_catalog.iomete_system_db.lakehouse_backup_runs
+WHERE run_id = '<run-id>';
+```
+
+Every entry the run enumerated was copied, skipped as already identical,
+recreated as an empty directory, or failed, so `entries_unaccounted` is `0`
+for a run that reached the end. Anything else means the run stopped early, and
+`status` says whether it knows it did. `files_failed` counts directories as
+well as files, which is why the check works on entries rather than files.
+`gb_at_source` minus `gb_at_target` is the data in the entries that failed.
 
 ### Find runs that never finished
 
@@ -152,6 +197,25 @@ WHERE status = 'RUNNING'
 These runs lost their driver before they could record an outcome. Open the run
 in the IOMETE console to find out why.
 
+### See why a run failed to copy files
+
+```sql
+SELECT error, count(*) AS files, min(source_path) AS example
+FROM spark_catalog.iomete_system_db.lakehouse_backup_run_file_failures
+WHERE run_id = '<run-id>'
+GROUP BY error
+ORDER BY files DESC;
+```
+
+One error repeated across every row is a single problem, usually credentials, a
+missing prefix or a throttled endpoint. Many distinct errors point at the
+storage system rather than the backup.
+
+The number of rows per run is capped by `stats.maxFailureRows`, 1000 by default.
+When the cap applies, `failures_truncated` is true on the run row and
+`files_failed` still holds the complete count, so treat these counts as a
+sample of a truncated run.
+
 ### List the files a run failed to copy
 
 ```sql
@@ -161,76 +225,162 @@ WHERE f.run_id = '<run-id>'
 ORDER BY f.source_path;
 ```
 
-The number of rows per run is capped by `stats.maxFailureRows`, 1000 by default.
-When the cap applies, `failures_truncated` is true on the run row and
-`files_failed` still holds the complete count.
-
-### See where a run spent its time
-
-```sql
-SELECT run_id,
-       unix_millis(ended_at) - unix_millis(started_at) AS run_wall_ms,
-       source_listing_ms, target_listing_ms, planning_ms, copy_ms, dir_create_ms,
-       (unix_millis(ended_at) - unix_millis(started_at))
-         - (source_listing_ms + target_listing_ms + planning_ms + copy_ms + dir_create_ms)
-         AS unaccounted_ms
-FROM spark_catalog.iomete_system_db.lakehouse_backup_runs
-WHERE run_id = '<run-id>';
-```
-
-A run dominated by `source_listing_ms` is limited by how long it takes to walk
-the source tree, not by how fast data moves.
+Use this once you know what the errors are and need the paths, to re-copy them
+or to confirm they are files you can afford to lose.
 
 ### Check copy throughput and cluster use
 
 ```sql
 SELECT run_id,
-       round(bytes_copied / 1024 / 1024 / (copy_ms / 1000), 1) AS mb_per_sec,
-       round(copy_task_ms / copy_ms, 1)                        AS avg_concurrency,
+       executor_count * slots_per_executor                       AS slots,
+       round(bytes_copied / 1024 / 1024 / nullif(copy_ms / 1000, 0), 1)
+                                                                  AS mb_per_sec,
+       round(copy_task_ms / nullif(copy_ms, 0), 1)                AS avg_concurrency,
+       files_copied,
        task_count,
        largest_file_bytes
 FROM spark_catalog.iomete_system_db.lakehouse_backup_runs
 WHERE run_id = '<run-id>';
 ```
 
-`copy_task_ms` divided by `copy_ms` gives the average number of task slots busy
-during the copy, without needing to know how many executors the run had. Two
-causes explain a low value, and `task_count` tells them apart: a small
-`task_count` means the work was split into too few pieces, so lower
-`bytesPerTask`; a healthy `task_count` with a `largest_file_bytes` that accounts
-for most of `copy_ms` means one large file kept the run open after the rest had
-finished.
+`avg_concurrency` is the average number of copy slots in use. Compare it with
+`slots`, the run's maximum concurrency. If it is low, check whether
+`task_count` is also low or every file already has its own task. Raising
+`tasksPerSlot` only helps in the first case. One unusually large file can also
+leave most slots idle near the end because files are never split.
 
-### Compare runs of the same job
+### See where a run spent its time
+
+Driver stages already use wall time, but executor timings are summed across
+parallel tasks. The query scales executor timings by `copy_ms / copy_task_ms`
+so every row uses the same clock and the rows add up to the run's wall time.
 
 ```sql
-SELECT started_at,
-       round(bytes_copied / 1024 / 1024 / 1024, 2)             AS gb_copied,
-       round(bytes_copied / 1024 / 1024 / (copy_ms / 1000), 1) AS mb_per_sec,
-       round(copy_task_ms / copy_ms, 1)                        AS avg_concurrency,
-       source_listing_ms, copy_ms
+WITH r AS (
+  SELECT *,
+         unix_millis(ended_at) - unix_millis(started_at) AS wall_ms,
+         copy_ms / nullif(copy_task_ms, 0)               AS scale
+  FROM spark_catalog.iomete_system_db.lakehouse_backup_runs
+  WHERE run_id = '<run-id>'
+)
+SELECT phase,
+       round(ms)                    AS ms,
+       round(100 * ms / wall_ms, 1) AS pct_of_run
+FROM r
+LATERAL VIEW stack(13,
+  'driver: source listing',    double(source_listing_ms),
+  'driver: target listing',    double(target_listing_ms),
+  'driver: planning',          double(planning_ms),
+  'driver: directory create',  double(dir_create_ms),
+  'driver: other',             double(wall_ms - (source_listing_ms + target_listing_ms + planning_ms
+                                                 + copy_ms + dir_create_ms)),
+  'executor: filesystem init', scale * fs_init_ms,
+  'executor: source read',     scale * source_read_ms,
+  'executor: target write',    scale * target_write_ms,
+  'executor: throttle wait',   scale * throttle_wait_ms,
+  'executor: verify',          scale * verify_ms,
+  'executor: commit',          scale * commit_ms,
+  'executor: retry sleep',     scale * retry_sleep_ms,
+  'executor: uninstrumented',  scale * (copy_task_ms - (fs_init_ms + source_read_ms + target_write_ms
+                                       + throttle_wait_ms + verify_ms + commit_ms + retry_sleep_ms))
+) t AS phase, ms
+ORDER BY ms DESC;
+```
+
+Every driver phase runs on the driver alone; the executors only ever run the
+copy, so the `executor:` rows are the breakdown of `copy_ms`. If
+`executor: target write` is largest, the target is the main constraint. If
+`driver: source listing` is largest, focus on source enumeration before tuning
+executor concurrency.
+
+## Tuning from the run history
+
+Compare successful runs of the same job because a different file mix can hide
+or exaggerate the effect of a setting. Change one value at a time, run the same
+backup again, and keep the change only if it improves `copy_ms` or
+`mb_per_sec`.
+
+This query shows the main signals for the ten most recent runs:
+
+```sql
+SELECT run_id,
+       started_at,
+       executor_count * slots_per_executor                       AS slots,
+       tasks_per_slot,
+       task_count,
+       round(copy_task_ms / nullif(copy_ms, 0), 1)                AS avg_concurrency,
+       round(bytes_copied / 1024 / 1024 / nullif(copy_ms / 1000, 0), 1)
+                                                                  AS mb_per_sec,
+       round(copy_task_ms / nullif(files_copied, 0))              AS ms_per_file,
+       round(files_copied / nullif(task_count, 0))                 AS avg_files_in_task,
+       max_files_in_task,
+       round(100 * largest_file_bytes / nullif(bytes_copied, 0), 1)
+                                                                  AS largest_file_pct,
+       round(100 * throttle_wait_ms / nullif(copy_task_ms, 0), 1) AS pct_throttled,
+       round(bytes_copied / 1024 / 1024 / 1024, 2)                AS gb_copied,
+       max_bandwidth_mb_per_sec
 FROM spark_catalog.iomete_system_db.lakehouse_backup_runs
 WHERE job_id = '<job-id>' AND status = 'SUCCEEDED'
 ORDER BY started_at DESC
-LIMIT 30;
+LIMIT 10;
 ```
 
-Because each row also stores the settings the run used, you can match a change
-in throughput against a configuration change without looking up how the job was
-defined at the time.
+### `slotsPerVcpu`
 
-### Compare the two sides of the copy
+`slotsPerVcpu` controls how many copies can run at once per executor vCPU.
+Copies spend much of their time waiting on network I/O, so running more copies
+than vCPUs is normal.
 
-```sql
-SELECT run_id, copy_task_ms,
-       fs_init_ms, source_read_ms, target_write_ms,
-       throttle_wait_ms, verify_ms, commit_ms, retry_sleep_ms,
-       copy_task_ms - (fs_init_ms + source_read_ms + throttle_wait_ms
-                       + target_write_ms + verify_ms + commit_ms + retry_sleep_ms)
-         AS uninstrumented_ms
-FROM spark_catalog.iomete_system_db.lakehouse_backup_runs
-WHERE run_id = '<run-id>';
-```
+Raise it when `avg_concurrency` stays close to `slots` and previous increases
+also improved `mb_per_sec`. It is already high enough when another increase
+raises `ms_per_file` but leaves throughput unchanged.
+
+Double the value and run a comparable backup. Keep the higher value only if
+throughput improves beyond normal run-to-run variation; otherwise, revert it.
+
+### `tasksPerSlot`
+
+`tasksPerSlot` sets the target number of tasks for each available copy slot.
+More tasks give a slot another piece of work when it finishes early, which
+reduces idle time near the end of a run.
+
+Raise it when `avg_concurrency` is below `slots` and `task_count` is close to the
+current target, `slots * tasks_per_slot`. Do not raise it when `task_count`
+already equals `files_copied`, because every file already has its own task.
+
+Double the value and keep it only while `copy_ms` continues to fall.
+
+### `perFileOverheadBytes`
+
+The planner adds this estimated fixed cost to every file when it balances tasks.
+It changes task planning only; the job does not copy any extra bytes.
+
+Raise it when `max_files_in_task` is several times higher than
+`avg_files_in_task`. That pattern means one task may be collecting too many
+small files and keeping the run open after other tasks finish.
+
+Change the value by a factor of two or four, then compare `max_files_in_task`
+and `copy_ms` with the next run. The default is 25 MiB.
+
+### `maxBytesPerTask`
+
+`maxBytesPerTask` limits the estimated work assigned to a normal task. It is
+not a hard file-size limit: a file above the value still goes into one task
+because files are never split.
+
+The limit is active when `task_count` is well above `slots * tasks_per_slot`;
+the copy-plan log also reports when it applied. This is not an error. Keep the
+default unless you specifically need shorter tasks for a very large backup.
+Prefer `tasksPerSlot` for routine load balancing.
+
+### `maxBandwidthMbPerSec`
+
+`maxBandwidthMbPerSec` caps the copy throughput of the whole job. It is active
+when `pct_throttled` is more than a few percent.
+
+Raise the limit if the network has spare capacity. If the limit protects other
+traffic, keep it and accept the longer run. Leave it unset when the backup
+should copy as fast as the storage and network allow.
 
 ## Troubleshooting
 
@@ -238,9 +388,11 @@ WHERE run_id = '<run-id>';
 |---|---|---|
 | `RUNNING` long after `started_at` | The driver was killed or the run was cancelled | Check the run in the console; re-run the backup |
 | `source_listing_ms` is a large share of the run | Source enumeration dominates, and the driver does this alone | Narrow the source `prefix` if possible |
-| Low `avg_concurrency` with a small `task_count` | Work split into too few tasks | Lower `copy.bytesPerTask` |
-| Low `avg_concurrency` with `largest_file_bytes` close to `copy_ms` | One large file finished last | Expected; a single file is never split across tasks |
-| `fs_init_ms` is a large share of `copy_task_ms` | Filesystem clients rebuilt per file, common with many small files | Lower `copy.filesPerTask` so tasks are shorter |
+| Low `avg_concurrency` with `task_count` near `slots * tasks_per_slot` | The planner created too few tasks to smooth out the tail | Raise `copy.tasksPerSlot`, unless every file already has its own task |
+| `avg_concurrency` near `slots` with throughput still rising after each change | The executors have network capacity to spare | Raise `copy.slotsPerVcpu` |
+| Low `avg_concurrency` with a high `largest_file_pct` | One large file may have finished after the other tasks | Expected; a single file is never split across tasks |
+| `max_files_in_task` far above `avg_files_in_task` | The planner underestimated the fixed cost of small files | Raise `copy.perFileOverheadBytes` |
+| `fs_init_ms` is a large share of `copy_task_ms` | Filesystem clients are rebuilt per file, which is expensive for small-file workloads | Expected; use `max_files_in_task` to check whether the files are also distributed unevenly |
 | `throttle_wait_ms` is large | The bandwidth limit is being reached | Expected when `copy.maxBandwidthMbPerSec` is set; raise it if there is spare capacity |
 | `source_read_ms` far above `target_write_ms` | Source storage is the bottleneck | Investigate the source system |
 | `target_write_ms` far above `source_read_ms` | Target storage is the bottleneck | Investigate the target system |

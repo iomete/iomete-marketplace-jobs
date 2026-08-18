@@ -79,11 +79,13 @@ class ConfigLoaderTest {
     private fun clusterConf(vararg settings: Pair<String, String>): SparkConf =
         SparkConf(false)
             .set("spark.master", "k8s://https://kubernetes.default.svc")
+            .set("spark.kubernetes.executor.limit.cores", "2")
             .also { conf -> settings.forEach { (key, value) -> conf.set(key, value) } }
 
     @Test
     fun `loadInternalConfig leaves an uncapped run unpaced`() {
-        val internalConfig = ConfigLoader.loadInternalConfig(bandwidthConfig(null), clusterConf())
+        val internalConfig =
+            ConfigLoader.loadInternalConfig(bandwidthConfig(null), clusterConf("spark.executor.instances" to "4"))
 
         assertNull(internalConfig.bytesPerSecPerExecutor)
     }
@@ -98,10 +100,42 @@ class ConfigLoaderTest {
     }
 
     @Test
-    fun `loadInternalConfig rejects a cap it cannot divide, naming the setting to fix`() {
+    fun `loadInternalConfig divides a cap by the autoscaling maximum, not the instance count`() {
+        val conf =
+            clusterConf(
+                "spark.dynamicAllocation.enabled" to "true",
+                "spark.dynamicAllocation.maxExecutors" to "4",
+                "spark.executor.instances" to "2",
+            )
+
+        val internalConfig = ConfigLoader.loadInternalConfig(bandwidthConfig(600.0), conf)
+
+        assertEquals(4, internalConfig.executorCount)
+        assertEquals(150 * 1024.0 * 1024.0, internalConfig.bytesPerSecPerExecutor)
+    }
+
+    @Test
+    fun `loadInternalConfig records the cluster shape the run ended up with`() {
+        val conf =
+            clusterConf(
+                "spark.executor.instances" to "4",
+                "spark.kubernetes.executor.limit.cores" to "2000m",
+                "spark.executor.cores" to "6",
+            )
+
+        val internalConfig = ConfigLoader.loadInternalConfig(bandwidthConfig(null), conf)
+
+        assertEquals(4, internalConfig.executorCount)
+        assertEquals(2.0, internalConfig.vcpuPerExecutor)
+        assertEquals(6, internalConfig.slotsPerExecutor)
+        assertEquals(24, internalConfig.slots)
+    }
+
+    @Test
+    fun `loadInternalConfig rejects an unknown executor count, naming the setting to fix`() {
         val e =
             assertThrows<ConfigValidationException> {
-                ConfigLoader.loadInternalConfig(bandwidthConfig(600.0), clusterConf())
+                ConfigLoader.loadInternalConfig(bandwidthConfig(null), clusterConf())
             }
 
         assertTrue(e.errors.single().contains("spark.executor.instances"), e.message!!)

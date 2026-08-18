@@ -1,6 +1,7 @@
 package com.iomete.backup.stats
 
 import com.iomete.backup.config.ApplicationConfig
+import com.iomete.backup.config.InternalConfig
 import com.iomete.backup.stats.internal.FILE_FAILURES_SCHEMA
 import com.iomete.backup.stats.internal.RUNS_SCHEMA
 import com.iomete.backup.stats.internal.RunIdentity
@@ -26,6 +27,7 @@ private const val FINAL_ROW_VIEW = "lakehouse_backup_run_final"
 class StatsRecorder(
     private val spark: SparkSession,
     private val config: ApplicationConfig,
+    private val internalConfig: InternalConfig,
 ) {
     private val logger = LoggerFactory.getLogger(StatsRecorder::class.java)
 
@@ -39,7 +41,7 @@ class StatsRecorder(
         record("claim") {
             ensureTables()
 
-            val row = runRow(identity, config, startedAt, null, RunStatus.RUNNING, null, RunProgress())
+            val row = runRow(identity, config, internalConfig, startedAt, null, RunStatus.RUNNING, null, RunProgress())
             dataFrame(RUNS_SCHEMA, listOf(row)).writeTo(runsTable).append()
 
             logger.info("Recording run {} in {}", identity.runId, runsTable)
@@ -55,7 +57,7 @@ class StatsRecorder(
 
         val status = if (error == null) RunStatus.SUCCEEDED else RunStatus.FAILED
         val message = error?.let { "${it.javaClass.simpleName}: ${it.message}" }
-        val row = runRow(identity, config, startedAt, Instant.now(), status, message, progress)
+        val row = runRow(identity, config, internalConfig, startedAt, Instant.now(), status, message, progress)
 
         dataFrame(RUNS_SCHEMA, listOf(row)).createOrReplaceTempView(FINAL_ROW_VIEW)
 

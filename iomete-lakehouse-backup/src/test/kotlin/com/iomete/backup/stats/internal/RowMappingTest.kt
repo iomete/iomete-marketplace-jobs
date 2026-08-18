@@ -3,6 +3,7 @@ package com.iomete.backup.stats.internal
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.CopyConfig
 import com.iomete.backup.config.HdfsConfig
+import com.iomete.backup.config.InternalConfig
 import com.iomete.backup.config.S3Config
 import com.iomete.backup.copy.CopyJobSummary
 import com.iomete.backup.copy.CopyResult
@@ -25,8 +26,10 @@ class RowMappingTest {
         ApplicationConfig(
             source = S3Config(bucket = "src", prefix = "in", accessKey = "k", secretKey = "s"),
             target = HdfsConfig(namenode = "nn:8020", path = "out", user = "u"),
-            copy = CopyConfig(bytesPerTask = 42, filesPerTask = 7, skipIdentical = false, maxBandwidthMbPerSec = 12.5),
+            copy = CopyConfig(maxBytesPerTask = 42, tasksPerSlot = 7, skipIdentical = false, maxBandwidthMbPerSec = 12.5),
         )
+
+    private val internalConfig = InternalConfig(executorCount = 4, vcpuPerExecutor = 2.0, slotsPerExecutor = 6)
 
     private fun finishedProgress() =
         RunProgress().apply {
@@ -51,6 +54,7 @@ class RowMappingTest {
                     copyMs = 44,
                     dirCreateMs = 55,
                     taskCount = 3,
+                    maxFilesInTask = 5,
                     largestFileBytes = 3000,
                     filesCopied = 6,
                     dirsCreated = 2,
@@ -72,8 +76,11 @@ class RowMappingTest {
 
     @Test
     fun `every row the code builds fits the table it is written to`() {
-        rowOf(RUNS_SCHEMA, runRow(identity, config, startedAt, null, RunStatus.RUNNING, null, RunProgress()))
-        rowOf(RUNS_SCHEMA, runRow(identity, config, startedAt, startedAt, RunStatus.SUCCEEDED, null, finishedProgress()))
+        rowOf(RUNS_SCHEMA, runRow(identity, config, internalConfig, startedAt, null, RunStatus.RUNNING, null, RunProgress()))
+        rowOf(
+            RUNS_SCHEMA,
+            runRow(identity, config, internalConfig, startedAt, startedAt, RunStatus.SUCCEEDED, null, finishedProgress()),
+        )
         rowOf(FILE_FAILURES_SCHEMA, fileFailureRow(identity, startedAt, CopyResult("a", "b", success = false)))
 
         assertFailsWith<IllegalArgumentException> { rowOf(RUNS_SCHEMA, mapOf("run_id" to "x")) }
@@ -84,7 +91,7 @@ class RowMappingTest {
 
     @Test
     fun `a row derives what it cannot copy straight through`() {
-        val row = runRow(identity, config, startedAt, null, RunStatus.RUNNING, null, finishedProgress())
+        val row = runRow(identity, config, internalConfig, startedAt, null, RunStatus.RUNNING, null, finishedProgress())
 
         assertEquals("s3", row["source_type"])
         assertEquals("s3a://src/in", row["source_uri"])
@@ -92,6 +99,11 @@ class RowMappingTest {
         assertEquals("hdfs://nn:8020/out", row["target_uri"])
         assertEquals(Timestamp.from(startedAt), row["started_at"])
         assertEquals(1L, row["files_failed"])
+        assertEquals(4, row["executor_count"])
+        assertEquals(2.0, row["vcpu_per_executor"])
+        assertEquals(6, row["slots_per_executor"])
+        assertEquals(7, row["tasks_per_slot"])
+        assertEquals(5, row["max_files_in_task"])
 
         val failure = fileFailureRow(identity, startedAt, CopyResult("a", "b", success = false))
         assertEquals("unknown", failure["error"])

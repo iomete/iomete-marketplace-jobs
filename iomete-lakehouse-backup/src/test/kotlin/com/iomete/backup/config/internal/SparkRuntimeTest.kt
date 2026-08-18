@@ -1,9 +1,12 @@
 package com.iomete.backup.config.internal
 
+import com.iomete.backup.config.ConfigValidationException
 import org.apache.spark.SparkConf
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 private const val MB = 1024.0 * 1024.0
 
@@ -57,6 +60,36 @@ class SparkRuntimeTest {
             "spark.dynamicAllocation.maxExecutors",
             SparkRuntime.executorSetting(clusterConf("spark.dynamicAllocation.enabled" to "true")),
         )
+    }
+
+    @Test
+    fun `a vCPU limit is read as a plain count or as millicores`() {
+        assertEquals(2.0, SparkRuntime.vcpuPerExecutor(clusterConf(SparkRuntime.LIMIT_CORES to "2")))
+        assertEquals(2.0, SparkRuntime.vcpuPerExecutor(clusterConf(SparkRuntime.LIMIT_CORES to "2000m")))
+        assertEquals(1.5, SparkRuntime.vcpuPerExecutor(clusterConf(SparkRuntime.LIMIT_CORES to "1500m")))
+    }
+
+    @Test
+    fun `a local master is one vCPU, with no pod limit to read`() {
+        assertEquals(1.0, SparkRuntime.vcpuPerExecutor(SparkConf(false).set("spark.master", "local[8]")))
+    }
+
+    @Test
+    fun `a vCPU limit that is missing or unreadable fails the run instead of being ignored`() {
+        listOf(null, "0", "two", "2000mm").forEach { limit ->
+            val conf = limit?.let { clusterConf(SparkRuntime.LIMIT_CORES to it) } ?: clusterConf()
+
+            val e = assertThrows<ConfigValidationException> { SparkRuntime.vcpuPerExecutor(conf) }
+
+            assertTrue(e.errors.single().contains(SparkRuntime.LIMIT_CORES), e.message!!)
+        }
+    }
+
+    @Test
+    fun `slots are the vCPU count times the setting, rounded up to a whole slot`() {
+        assertEquals(8, SparkRuntime.slotsPerExecutor(clusterConf(SparkRuntime.LIMIT_CORES to "4"), 2))
+        assertEquals(3, SparkRuntime.slotsPerExecutor(clusterConf(SparkRuntime.LIMIT_CORES to "1500m"), 2))
+        assertEquals(1, SparkRuntime.slotsPerExecutor(clusterConf(SparkRuntime.LIMIT_CORES to "250m"), 1))
     }
 
     @Test

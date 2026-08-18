@@ -2,6 +2,7 @@ package com.iomete.backup.stats
 
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.S3Config
+import com.iomete.backup.config.InternalConfig
 import com.iomete.backup.config.StatsConfig
 import io.mockk.every
 import io.mockk.mockk
@@ -34,7 +35,7 @@ class StatsRecorderTest {
     @Test
     fun `a stats write that throws is swallowed`() {
         val spark = sparkThatFails()
-        val recorder = StatsRecorder(spark, config)
+        val recorder = StatsRecorder(spark, config, InternalConfig(executorCount = 1, vcpuPerExecutor = 1.0))
 
         recorder.claim(Instant.now())
         recorder.finalise(Instant.now(), RunProgress(), null)
@@ -45,7 +46,12 @@ class StatsRecorderTest {
     @Test
     fun `recording disabled touches no table`() {
         val spark = sparkThatFails()
-        val recorder = StatsRecorder(spark, config.copy(stats = StatsConfig(enabled = false)))
+        val recorder =
+            StatsRecorder(
+                spark,
+                config.copy(stats = StatsConfig(enabled = false)),
+                InternalConfig(executorCount = 1, vcpuPerExecutor = 1.0),
+            )
 
         recorder.claim(Instant.now())
         recorder.finalise(Instant.now(), RunProgress(), RuntimeException("boom"))
