@@ -58,8 +58,8 @@ allprojects {
         testImplementation("io.mockk:mockk:1.13.17")
         testImplementation("org.apache.spark:spark-sql_2.12:3.5.7")
         testImplementation("org.apache.spark:spark-core_2.12:3.5.9")
-        testImplementation("org.scala-lang:scala-library:2.12.10")
-        testRuntimeOnly("org.scala-lang:scala-library:2.12.10")
+        testImplementation("org.scala-lang:scala-library:2.12.21")
+        testRuntimeOnly("org.scala-lang:scala-library:2.12.21")
 
         // Force specific versions for transitive dependencies
         implementation("org.apache.parquet:parquet-avro:1.15.2")
@@ -79,18 +79,18 @@ allOpen {
 
 configurations.compileClasspath {
     resolutionStrategy {
-        force("org.scala-lang:scala-library:2.12.10")
+        force("org.scala-lang:scala-library:2.12.21")
     }
 }
 
 configurations.testCompileClasspath {
     resolutionStrategy {
-        force("org.scala-lang:scala-library:2.12.10")
+        force("org.scala-lang:scala-library:2.12.21")
     }
 }
 
 configurations.testRuntimeClasspath {
     resolutionStrategy {
-        force("org.scala-lang:scala-library:2.12.10")
+        force("org.scala-lang:scala-library:2.12.21")
     }
 }
