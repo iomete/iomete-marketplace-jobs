@@ -8,14 +8,17 @@ compare the results from each run.
 
 - **End-to-end throughput:** The source byte total divided by the full run time,
   including listing, planning, and copying. This is the primary benchmark.
+- **Capacity and sizing:** End-to-end GiB/h and MiB/s per allocated vCPU. Use
+  these figures to estimate duration and choose an initial compute size. MiB/s
+  per slot is diagnostic only because slots are a concurrency setting, not
+  allocated capacity.
 - **Copy throughput:** The transfer rate during the distributed copy stage. Use
   it to separate copy performance from listing and planning overhead.
+- **Cluster utilisation:** Average concurrency as a percentage of the available
+  copy slots. This measures slot occupancy, not CPU utilisation.
 - **Stage timings:** Time spent listing the source and target, planning the work,
   copying files, and creating directories. These timings show which stage limits
   the run.
-- **Average concurrency:** The average number of copy slots busy during the copy
-  stage. A slot runs one Spark task at a time; a task contains one or more files
-  that the slot copies one after another.
 
 ## Benchmark results
 
