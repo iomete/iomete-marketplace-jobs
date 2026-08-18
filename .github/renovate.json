@@ -72,6 +72,16 @@
       "allowedVersions": "<3.6"
     },
     {
+      "description": "Don't bump Spark in the lakehouse backup job - sparkVersion in its gradle.properties is the single source of truth for both the jars and the iomete/spark base image tag it runs on, so a bump here silently mismatches the runtime (see the revert of #277)",
+      "matchFileNames": [
+        "iomete-lakehouse-backup/**"
+      ],
+      "matchPackageNames": [
+        "/^org\\.apache\\.spark:/"
+      ],
+      "enabled": false
+    },
+    {
       "description": "Don't touch antlr4-runtime - the forced version has to match what Spark pulls in, otherwise SQL parsing breaks at runtime",
       "matchPackageNames": [
         "org.antlr:antlr4-runtime"
