@@ -6,6 +6,7 @@ import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.S3Config
 import com.iomete.backup.config.StatsConfig
 import com.iomete.backup.config.StorageConfig
+import com.iomete.backup.config.TimestampFolder
 import org.apache.spark.SparkConf
 import org.slf4j.LoggerFactory
 
@@ -74,6 +75,15 @@ object Validator {
 
         if (copy.maxBytesPerTask < 1) {
             errors.add("copy: maxBytesPerTask must be at least 1 (got ${copy.maxBytesPerTask})")
+        }
+
+        copy.targetTimestampFolder?.let {
+            if (it !in TimestampFolder.supported) {
+                errors.add(
+                    "copy: targetTimestampFolder '$it' is not supported " +
+                        "(expected one of ${TimestampFolder.supported.joinToString(", ")})",
+                )
+            }
         }
     }
 

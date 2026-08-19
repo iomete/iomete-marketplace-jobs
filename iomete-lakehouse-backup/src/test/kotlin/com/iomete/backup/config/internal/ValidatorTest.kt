@@ -268,4 +268,34 @@ class ValidatorTest {
             assertTrue(result.errors.any { it.contains(setting) }, "expected an error naming $setting")
         }
     }
+
+    @Test
+    fun `an unknown timestamp folder granularity fails validation and names the accepted values`() {
+        val config =
+            ApplicationConfig(
+                source = s3Config(),
+                target = s3Config(),
+                copy = CopyConfig(targetTimestampFolder = "yearly"),
+            )
+
+        val result = Validator.validate(config)
+
+        assertIs<ValidationResult.Invalid>(result)
+        val error = result.errors.single { it.contains("targetTimestampFolder") }
+        listOf("hourly", "daily", "weekly", "monthly").forEach {
+            assertTrue(error.contains(it), "expected the error to name $it")
+        }
+    }
+
+    @Test
+    fun `a known timestamp folder granularity passes validation`() {
+        val config =
+            ApplicationConfig(
+                source = s3Config(),
+                target = s3Config(),
+                copy = CopyConfig(targetTimestampFolder = "daily"),
+            )
+
+        assertIs<ValidationResult.Valid>(Validator.validate(config))
+    }
 }

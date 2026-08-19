@@ -3,6 +3,7 @@ package com.iomete.backup.integration
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.CopyConfig
 import com.iomete.backup.config.StorageConfig
+import com.iomete.backup.config.TimestampFolder
 import com.iomete.backup.integration.fixtures.assertMatches
 import com.iomete.backup.integration.fixtures.directoryExists
 import com.iomete.backup.integration.fixtures.fixture
@@ -16,6 +17,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.Arguments
 import org.junit.jupiter.params.provider.MethodSource
+import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -183,6 +185,36 @@ class BackupJobIntegrationTest {
         val second = IntegrationHarness.runBackup(config)
         assertEquals(tree.size, second.successCount, "a disabled skip must copy everything again")
         assertEquals(0, second.skippedCount)
+    }
+
+    @Test
+    fun `a timestamp folder holds the run, and a re-run in the same period continues it`() {
+        val source = IntegrationHarness.freshBucket()
+        val target = IntegrationHarness.freshBucket()
+        val tree = mapOf("a.txt" to "alpha".toByteArray(), "nested/b.txt" to "bravo".toByteArray())
+        seedS3(source, tree)
+
+        val config =
+            ApplicationConfig(
+                source = IntegrationHarness.s3Config(source),
+                target = IntegrationHarness.s3Config(target),
+                copy = CopyConfig(clockSkewToleranceMs = 0, targetTimestampFolder = "daily"),
+                stats = IntegrationHarness.STATS_DISABLED,
+            )
+
+        // MinIO truncates timestamps to whole seconds, so a copy taken within the same second as its
+        // source can be reported as older than it; wait the truncation out before the first run.
+        Thread.sleep(1_100)
+
+        val first = IntegrationHarness.runBackup(config)
+        assertEquals(tree.size, first.successCount)
+
+        val folder = TimestampFolder.folderName("daily", Instant.now())
+        assertEquals(tree.keys.map { "$folder/$it" }.toSet(), readS3(target).keys)
+
+        val second = IntegrationHarness.runBackup(config)
+        assertEquals(0, second.successCount, "a re-run in the same period must copy nothing again")
+        assertEquals(tree.size, second.skippedCount)
     }
 
     @Test

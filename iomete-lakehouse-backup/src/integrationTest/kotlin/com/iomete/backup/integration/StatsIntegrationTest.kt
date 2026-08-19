@@ -3,6 +3,7 @@ package com.iomete.backup.integration
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.CopyConfig
 import com.iomete.backup.config.StatsConfig
+import com.iomete.backup.config.TimestampFolder
 import com.iomete.backup.integration.fixtures.seedS3
 import com.iomete.backup.integration.harness.IntegrationHarness
 import com.iomete.backup.stats.FILE_FAILURES_TABLE
@@ -10,6 +11,7 @@ import com.iomete.backup.stats.RUNS_TABLE
 import com.iomete.backup.stats.RunStatus
 import org.apache.spark.sql.Row
 import org.junit.jupiter.api.Test
+import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -84,6 +86,27 @@ class StatsIntegrationTest {
         assertEquals(1, row.getAs<Int>("slots_per_executor"))
         assertEquals(CopyConfig().tasksPerSlot, row.getAs<Int>("tasks_per_slot"))
         assertTrue(row.getAs<Int>("max_files_in_task") > 0)
+    }
+
+    @Test
+    fun `the recorded target uri includes the timestamp folder the run wrote to`() {
+        val source = IntegrationHarness.freshBucket()
+        val target = IntegrationHarness.freshBucket()
+        seedS3(source, mapOf("a.txt" to "alpha".toByteArray()))
+
+        val runId = UUID.randomUUID().toString()
+        IntegrationHarness.runBackup(
+            ApplicationConfig(
+                source = IntegrationHarness.s3Config(source),
+                target = IntegrationHarness.s3Config(target),
+                copy = CopyConfig(targetTimestampFolder = "daily"),
+                stats = statsConfig,
+            ),
+            IntegrationHarness.runSession(runId),
+        )
+
+        val folder = TimestampFolder.folderName("daily", Instant.now())
+        assertEquals("s3a://$target/$folder", runRow(runId).getAs<String>("target_uri"))
     }
 
     @Test

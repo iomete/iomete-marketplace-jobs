@@ -3,6 +3,7 @@ package com.iomete.backup
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.HdfsConfig
 import com.iomete.backup.config.InternalConfig
+import com.iomete.backup.config.TimestampFolder
 import com.iomete.backup.copy.CopyJobRunner
 import com.iomete.backup.copy.CopyJobSummary
 import com.iomete.backup.fs.useFileLister
@@ -23,21 +24,32 @@ object BackupJob {
         config: ApplicationConfig,
         internalConfig: InternalConfig,
     ): CopyJobSummary {
-        val recorder = StatsRecorder(spark, config, internalConfig)
         val startedAt = Instant.now()
+        val resolvedConfig = resolveTarget(config, startedAt)
+        logger.info("Target root: {}", resolvedConfig.target.rootUri)
+
+        val recorder = StatsRecorder(spark, resolvedConfig, internalConfig)
         val progress = RunProgress()
 
         // Claimed before the source listing, which is the long single-threaded phase.
         recorder.claim(startedAt)
 
         try {
-            val summary = copy(spark, config, internalConfig, progress)
+            val summary = copy(spark, resolvedConfig, internalConfig, progress)
             recorder.finalise(startedAt, progress, null)
             return summary
         } catch (e: Throwable) {
             recorder.finalise(startedAt, progress, e)
             throw e
         }
+    }
+
+    private fun resolveTarget(
+        config: ApplicationConfig,
+        startedAt: Instant,
+    ): ApplicationConfig {
+        val granularity = config.copy.targetTimestampFolder ?: return config
+        return config.copy(target = config.target.withSubFolder(TimestampFolder.folderName(granularity, startedAt)))
     }
 
     private fun copy(
