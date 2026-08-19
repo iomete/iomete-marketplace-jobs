@@ -81,7 +81,7 @@ jobs:
               echo "::error::projectVersion not found in gradle.properties"
               exit 1
             fi
-            if az acr repository show --name ${{ vars.ACR_NAME }} --image ${{ vars.ACR_NAMESPACE }}/iomete-lakehouse-backup:$tag >/dev/null 2>&1; then
+            if az acr repository show --name ${{ secrets.ACR_NAME }} --image ${{ vars.ACR_NAMESPACE }}/iomete-lakehouse-backup:$tag >/dev/null 2>&1; then
               echo "::error::version $tag already published — bump projectVersion in gradle.properties"
               exit 1
             fi
@@ -100,6 +100,6 @@ jobs:
         if: ${{ steps.push.outputs.tag != '' }}
         uses: iomete/.github/actions/acr/mark-tag-immutable@main
         with:
-          acr_name: ${{ vars.ACR_NAME }}
+          acr_name: ${{ secrets.ACR_NAME }}
           repository: ${{ vars.ACR_NAMESPACE }}/iomete-lakehouse-backup
           tag: ${{ steps.push.outputs.tag }} ${{ steps.push.outputs.sha }}
