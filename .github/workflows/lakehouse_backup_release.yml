@@ -69,6 +69,7 @@ jobs:
         run: az acr login --name ${{ secrets.ACR_NAME }}
 
       - name: Build and push image
+        id: push
         env:
           REF: ${{ github.ref_name }}
         run: |
@@ -80,15 +81,25 @@ jobs:
               echo "::error::projectVersion not found in gradle.properties"
               exit 1
             fi
-            if az acr repository show --name ${{ secrets.ACR_NAME }} --image iomete/iomete-lakehouse-backup:$tag >/dev/null 2>&1; then
+            if az acr repository show --name ${{ vars.ACR_NAME }} --image ${{ vars.ACR_NAMESPACE }}/iomete-lakehouse-backup:$tag >/dev/null 2>&1; then
               echo "::error::version $tag already published — bump projectVersion in gradle.properties"
               exit 1
             fi
             make docker-push-tag extra_tag=$sha
-            ../scripts/lock-acr-tag.sh "${{ secrets.ACR_NAME }}" \
-              iomete/iomete-lakehouse-backup "$tag" "$sha"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "sha=$sha" >> "$GITHUB_OUTPUT"
           else
             # Branch test build: single mutable branch-name tag.
             branch_tag=$(echo "$REF" | tr '/' '-')
             make docker-push tag="$branch_tag"
           fi
+
+      # Released tags only. The step confirms the lock really took, a lock set right
+      # after a push can be reset by the registry moments later.
+      - name: Lock the released tags
+        if: ${{ steps.push.outputs.tag != '' }}
+        uses: iomete/.github/actions/acr/mark-tag-immutable@main
+        with:
+          acr_name: ${{ vars.ACR_NAME }}
+          repository: ${{ vars.ACR_NAMESPACE }}/iomete-lakehouse-backup
+          tag: ${{ steps.push.outputs.tag }} ${{ steps.push.outputs.sha }}

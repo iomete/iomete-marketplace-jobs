@@ -14,6 +14,6 @@ docker-push:
 	# Run this for one time: docker buildx create --use
 	az acr login --name iomete
 	docker buildx build --platform linux/amd64,linux/arm64 --push -f docker/Dockerfile -t ${docker_image}:${docker_tag} . --sbom=true --provenance=true
-	../scripts/lock-acr-tag.sh iomete iomete/iomete_mysql_sync ${docker_tag}
+	../scripts/lock-acr-tag.sh ${docker_image}:${docker_tag}
 	@echo ${docker_image}
 	@echo ${docker_tag}
