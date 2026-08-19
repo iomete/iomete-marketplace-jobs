@@ -85,11 +85,8 @@ jobs:
               exit 1
             fi
             make docker-push-tag extra_tag=$sha
-            for t in "$tag" "$sha"; do
-              az acr repository update --name ${{ secrets.ACR_NAME }} \
-                --image iomete/iomete-lakehouse-backup:$t \
-                --write-enabled false --delete-enabled false
-            done
+            ../scripts/lock-acr-tag.sh "${{ secrets.ACR_NAME }}" \
+              iomete/iomete-lakehouse-backup "$tag" "$sha"
           else
             # Branch test build: single mutable branch-name tag.
             branch_tag=$(echo "$REF" | tr '/' '-')
