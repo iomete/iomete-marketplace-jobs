@@ -83,6 +83,30 @@ adding a `copy` block, without deleting anything at the target:
 }
 ```
 
+### Keeping dated backups
+
+By default, every run writes to the same target root. To keep a separate backup
+folder for each hour, day, week, or month, set `targetTimestampFolder`:
+
+```json
+{
+  "copy": { "targetTimestampFolder": "daily" }
+}
+```
+
+| Value | Folder example |
+|---|---|
+| `hourly` | `2026-02-14-09` |
+| `daily` | `2026-02-14` |
+| `weekly` | `2026-W07` |
+| `monthly` | `2026-02` |
+
+Folder names use the run start time in UTC. Runs started in the same period use
+the same folder, so retries can skip files already copied there.
+
+> The job does not delete old backup folders or files removed from the source.
+> Configure a storage lifecycle rule or separate cleanup job for retention.
+
 ### Tuning copy concurrency and task size (advanced)
 
 Most backups can use the defaults below. Change them only when the run history
