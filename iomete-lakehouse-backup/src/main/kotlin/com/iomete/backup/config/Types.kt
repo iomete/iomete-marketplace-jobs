@@ -29,6 +29,8 @@ data class CopyConfig(
     val maxBytesPerTask: Long = 1024L * 1024 * 1024,
     // Aggregate ceiling across every executor, unlike DistCp's per-map -bandwidth. Null is uncapped.
     val maxBandwidthMbPerSec: Double? = null,
+    // Period granularity of the folder appended to the target root; null writes to the root itself.
+    val targetTimestampFolder: String? = null,
 )
 
 data class InternalConfig(
@@ -55,6 +57,8 @@ sealed class StorageConfig : java.io.Serializable {
     // Test seam only: Validator rejects it on the load path, so it is reachable
     // solely by callers driving BackupJob directly.
     abstract val hadoopOptions: Map<String, String>
+
+    abstract fun withSubFolder(name: String): StorageConfig
 }
 
 data class S3Config(
@@ -72,6 +76,8 @@ data class S3Config(
             val trimmedPrefix = prefix.trim('/')
             return if (trimmedPrefix.isEmpty()) "s3a://$bucket" else "s3a://$bucket/$trimmedPrefix"
         }
+
+    override fun withSubFolder(name: String): S3Config = copy(prefix = "${prefix.trim('/')}/$name".trimStart('/'))
 }
 
 data class HdfsConfig(
@@ -86,4 +92,6 @@ data class HdfsConfig(
             val trimmedPath = path.trim('/')
             return if (trimmedPath.isEmpty()) "hdfs://$namenode" else "hdfs://$namenode/$trimmedPath"
         }
+
+    override fun withSubFolder(name: String): HdfsConfig = copy(path = "${path.trim('/')}/$name".trimStart('/'))
 }
