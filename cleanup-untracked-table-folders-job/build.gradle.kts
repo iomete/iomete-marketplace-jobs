@@ -67,7 +67,7 @@ allprojects {
         implementation("com.mysql:mysql-connector-j:8.4.0")
         implementation("com.google.protobuf:protobuf-java:3.25.9")
         implementation("org.apache.thrift:libthrift:0.24.0")
-        implementation("io.quarkus:quarkus-core:3.8.6.1")
+        implementation("io.quarkus:quarkus-core:3.39.0")
     }
 }
 
