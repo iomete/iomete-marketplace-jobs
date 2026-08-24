@@ -470,6 +470,13 @@ def find_unresolved_external_catalogs(
         & (pl.col("catalogType_subtype") == "rest")
         & pl.col("name").is_not_null()
         & ~pl.col("name").is_in(list(SYSTEM_CATALOGS))
+    ).select(
+        [
+            "env_name",
+            "name",
+            "lakehouseDir",
+            "properties_uri",
+        ]
     )
 
     internal = inventory.filter(
