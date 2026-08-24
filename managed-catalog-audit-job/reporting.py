@@ -11,7 +11,7 @@ DEFAULT_MARKDOWN_FILE = "managed_catalog_audit.md"
 
 RULE_LABELS = {
     "MC001": "Catalog ownership conflicts",
-    "MC002": "Storage ownership conflicts",
+    "MC002": "Internal catalog URI inconsistencies",
     "MC003": "Storage credential recommendations",
 }
 
@@ -22,8 +22,10 @@ RULE_DESCRIPTIONS = {
         "one IOMETE environment."
     ),
     "MC002": (
-        "Detects different internal catalog names that point to the same "
-        "lakehouse storage location across multiple IOMETE environments."
+        "Validates that internal Iceberg REST catalogs have a usable "
+        "properties_uri and that the URI points to "
+        "'/internal/catalogs/<catalog-name>' using the same catalog "
+        "name as the configuration."
     ),
     "MC003": (
         "Detects the same catalog and storage configuration using multiple "
