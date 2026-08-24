@@ -408,6 +408,14 @@ def _external_target(
     return segments[-1], None
 
 
+def _normalize_storage(storage: object) -> str | None:
+    """Normalize an object-storage location for catalog comparison."""
+    if not isinstance(storage, str) or not storage.strip():
+        return None
+
+    return storage.strip().rstrip("/")
+
+
 def find_unresolved_external_catalogs(
     inventory: pl.DataFrame,
 ) -> list[Finding]:
@@ -554,11 +562,15 @@ def find_unresolved_external_catalogs(
         # common base lakehouse directory.
         # ---------------------------------------------------------------
 
-        if storage is None:
+        normalized_storage = _normalize_storage(storage)
+
+        if normalized_storage is None:
             storage_matches = target_candidates.head(0)
         else:
             storage_matches = target_candidates.filter(
-                pl.col("lakehouseDir") == storage
+                pl.col("lakehouseDir")
+                .map_elements(_normalize_storage, return_dtype=pl.String)
+                == normalized_storage
             )
 
         # ---------------------------------------------------------------

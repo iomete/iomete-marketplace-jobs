@@ -910,6 +910,47 @@ class TestMC004ExternalCatalogResolution(unittest.TestCase):
         with self.assertRaises(ValueError):
             find_unresolved_external_catalogs(df)
 
+    def test_storage_trailing_slash_difference_is_accepted(self):
+        df = inventory(
+            [
+                self._row(
+                    storage="s3://finance-bucket/",
+                ),
+                self._row(
+                    env="a3",
+                    classification="internal",
+                    uri="http://catalog-service/internal/catalogs/finance",
+                    storage="s3://finance-bucket",
+                ),
+            ]
+        )
+
+        self.assertEqual(
+            find_unresolved_external_catalogs(df),
+            [],
+        )
+
+
+    def test_genuinely_different_storage_is_still_reported(self):
+        df = inventory(
+            [
+                self._row(
+                    storage="s3://finance-consumer",
+                ),
+                self._row(
+                    env="a3",
+                    classification="internal",
+                    uri="http://catalog-service/internal/catalogs/finance",
+                    storage="s3://finance-manager",
+                ),
+            ]
+        )
+
+        findings = find_unresolved_external_catalogs(df)
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].rule_id, "MC004")
+
 
 if __name__ == "__main__":
     unittest.main()
