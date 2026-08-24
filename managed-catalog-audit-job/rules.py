@@ -194,8 +194,13 @@ def find_internal_uri_inconsistency(
         & (pl.col("catalogType_subtype") == "rest")
         & pl.col("name").is_not_null()
         & ~pl.col("name").is_in(list(SYSTEM_CATALOGS))
+    ).select(
+        [
+            "env_name",
+            "name",
+            "properties_uri",
+        ]
     )
-
     findings = []
 
     for row in candidates.iter_rows(named=True):
@@ -473,6 +478,12 @@ def find_unresolved_external_catalogs(
         & (pl.col("catalogType_subtype") == "rest")
         & pl.col("name").is_not_null()
         & ~pl.col("name").is_in(list(SYSTEM_CATALOGS))
+    ).select(
+        [
+            "env_name",
+            "name",
+            "lakehouseDir",
+        ]
     )
 
     findings = []
