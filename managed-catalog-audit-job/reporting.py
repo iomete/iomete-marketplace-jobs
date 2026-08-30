@@ -9,30 +9,115 @@ DEFAULT_INVENTORY_FILE = "managed_catalog_inventory.csv"
 DEFAULT_MARKDOWN_FILE = "managed_catalog_audit.md"
 
 
-RULE_LABELS = {
-    "MC001": "Catalog ownership conflicts",
-    "MC002": "Internal catalog URI inconsistencies",
-    "MC003": "Storage credential recommendations",
+# ---------------------------------------------------------------------------
+# Rule metadata
+#
+# Keep all human-readable rule information in one place.
+#
+# "key" is the stable user-facing name we can later reuse for:
+#   - CLI filtering
+#   - Marketplace configuration
+#   - database history
+#   - notifications
+#   - README documentation
+#
+# Users should not need to memorize MC001 / MC002 / etc.
+# ---------------------------------------------------------------------------
+
+RULE_METADATA = {
+    "MC001": {
+        "key": "catalog-ownership",
+        "label": "Catalog ownership conflicts",
+        "description": (
+            "Detects the same catalog name configured as internal in more "
+            "than one IOMETE environment. This can indicate ambiguous "
+            "ownership because more than one environment is claiming to "
+            "manage the catalog."
+        ),
+    },
+    "MC002": {
+        "key": "internal-uri-consistency",
+        "label": "Internal catalog URI inconsistencies",
+        "description": (
+            "Validates that internal Iceberg REST catalogs have a usable "
+            "properties_uri and that the URI points to "
+            "'/internal/catalogs/<catalog-name>' using the same catalog "
+            "name as the configuration."
+        ),
+    },
+    "MC003": {
+        "key": "storage-credential-variation",
+        "label": "Storage credential recommendations",
+        "description": (
+            "Detects the same catalog and storage configuration using "
+            "multiple object-storage access keys. This configuration is "
+            "supported, so the audit reports it as a recommendation rather "
+            "than a failure."
+        ),
+    },
+    "MC004": {
+        "key": "external-target-resolution",
+        "label": "External catalog target resolution",
+        "description": (
+            "Checks whether an external Iceberg REST catalog can be resolved "
+            "to an internal managed catalog discovered across the scanned "
+            "IOMETE environments. Resolution uses the target catalog from "
+            "properties_uri together with the configured lakehouseDir. "
+            "A finding means the audit could not establish the expected "
+            "relationship and may require manual review."
+        ),
+    },
 }
 
+
+# Compatibility helpers.
+#
+# Existing reporting code and tests may still reference these mappings.
+# They are derived from RULE_METADATA so we do not maintain the same
+# information in multiple places.
+
+RULE_LABELS = {
+    rule_id: metadata["label"] for rule_id, metadata in RULE_METADATA.items()
+}
 
 RULE_DESCRIPTIONS = {
-    "MC001": (
-        "Detects the same catalog name configured as internal in more than "
-        "one IOMETE environment."
-    ),
-    "MC002": (
-        "Validates that internal Iceberg REST catalogs have a usable "
-        "properties_uri and that the URI points to "
-        "'/internal/catalogs/<catalog-name>' using the same catalog "
-        "name as the configuration."
-    ),
-    "MC003": (
-        "Detects the same catalog and storage configuration using multiple "
-        "object-storage access keys. This is supported and reported as a "
-        "recommendation rather than a failure."
-    ),
+    rule_id: metadata["description"] for rule_id, metadata in RULE_METADATA.items()
 }
+
+RULE_KEYS = {rule_id: metadata["key"] for rule_id, metadata in RULE_METADATA.items()}
+
+
+def get_rule_label(
+    rule_id: str,
+) -> str:
+    metadata = RULE_METADATA.get(rule_id)
+
+    if metadata is None:
+        return "Unknown rule"
+
+    return metadata["label"]
+
+
+def get_rule_key(
+    rule_id: str,
+) -> str:
+    metadata = RULE_METADATA.get(rule_id)
+
+    if metadata is None:
+        return rule_id.lower()
+
+    return metadata["key"]
+
+
+def get_rule_description(
+    rule_id: str,
+) -> str:
+    metadata = RULE_METADATA.get(rule_id)
+
+    if metadata is None:
+        return ""
+
+    return metadata["description"]
 
 
 def _severity_counts(
@@ -88,10 +173,7 @@ def print_terminal_report(
 
     if rule_counts:
         for rule_id in sorted(rule_counts):
-            label = RULE_LABELS.get(
-                rule_id,
-                "Unknown rule",
-            )
+            label = get_rule_label(rule_id)
 
             print(f"  {rule_id} " f"{label:<38} : " f"{rule_counts[rule_id]}")
     else:
@@ -142,7 +224,10 @@ def _print_detailed_findings(
         print("-" * 70)
 
         for finding in matching:
-            print(f"[{finding.rule_id}] " f"{finding.title}")
+            rule_label = get_rule_label(finding.rule_id)
+
+            print(f"[{finding.rule_id}] " f"{rule_label}")
+            print(f"Finding        : " f"{finding.title}")
 
             if finding.catalog:
                 print(f"Catalog        : " f"{finding.catalog}")
@@ -253,15 +338,16 @@ def export_markdown_report(
         "",
     ]
 
-    for rule_id in sorted(RULE_DESCRIPTIONS):
-        label = RULE_LABELS[rule_id]
-        description = RULE_DESCRIPTIONS[rule_id]
+    for rule_id in sorted(RULE_METADATA):
+        metadata = RULE_METADATA[rule_id]
 
         lines.extend(
             [
-                (f"### {rule_id} - " f"{label}"),
+                (f"### {rule_id} - " f"{metadata['label']}"),
                 "",
-                description,
+                (f"**Configuration key:** " f"`{metadata['key']}`"),
+                "",
+                metadata["description"],
                 "",
             ]
         )
@@ -275,10 +361,7 @@ def export_markdown_report(
 
     if rule_counts:
         for rule_id in sorted(rule_counts):
-            label = RULE_LABELS.get(
-                rule_id,
-                "Unknown rule",
-            )
+            label = get_rule_label(rule_id)
 
             lines.append(f"- **{rule_id}** - " f"{label}: " f"{rule_counts[rule_id]}")
     else:
@@ -289,6 +372,13 @@ def export_markdown_report(
             [
                 "",
                 "## Failed Environments",
+                "",
+                (
+                    "The audit completed with a partial "
+                    "inventory. Findings that depend on "
+                    "cross-environment topology should be "
+                    "reviewed with this limitation in mind."
+                ),
                 "",
             ]
         )
@@ -312,9 +402,13 @@ def export_markdown_report(
         lines.append("No findings detected.")
 
     for finding in findings:
+        rule_label = get_rule_label(finding.rule_id)
+
         lines.extend(
             [
-                (f"### {finding.rule_id} - " f"{finding.title}"),
+                (f"### {finding.rule_id} - " f"{rule_label}"),
+                "",
+                (f"**Finding:** " f"{finding.title}"),
                 "",
                 (f"**Severity:** " f"{finding.severity.value}"),
                 "",
