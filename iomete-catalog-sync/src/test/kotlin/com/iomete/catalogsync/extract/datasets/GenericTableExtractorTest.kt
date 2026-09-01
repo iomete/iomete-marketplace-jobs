@@ -20,12 +20,12 @@ class GenericTableExtractorTest {
     @Test
     fun `does not implement SupportTableStatistics`() {
         val extractor = GenericTableExtractor(mockSparkSession, "cat", "sch", "tbl")
-        assertFalse(extractor is SupportTableStatistics)
+        assertFalse(SupportTableStatistics::class.java.isInstance(extractor))
     }
 
     @Test
     fun `does not implement SupportColumnTags`() {
         val extractor = GenericTableExtractor(mockSparkSession, "cat", "sch", "tbl")
-        assertFalse(extractor is SupportColumnTags)
+        assertFalse(SupportColumnTags::class.java.isInstance(extractor))
     }
 }
