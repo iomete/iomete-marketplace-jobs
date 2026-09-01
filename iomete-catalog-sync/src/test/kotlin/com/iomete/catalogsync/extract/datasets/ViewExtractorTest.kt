@@ -16,12 +16,12 @@ class ViewExtractorTest {
     @Test
     fun `implements SupportColumnTags`() {
         val extractor = ViewExtractor(catalog = "cat", schema = "sch", table = "v1")
-        assertTrue(extractor is SupportColumnTags)
+        assertTrue(SupportColumnTags::class.java.isInstance(extractor))
     }
 
     @Test
     fun `does not implement SupportTableStatistics`() {
         val extractor = ViewExtractor(catalog = "cat", schema = "sch", table = "v1")
-        assertFalse(extractor is SupportTableStatistics)
+        assertFalse(SupportTableStatistics::class.java.isInstance(extractor))
     }
 }
