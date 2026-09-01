@@ -95,6 +95,17 @@
       "groupName": "quarkus"
     },
     {
+      "description": "Don't bump Hadoop or Iceberg in the lakehouse backup job - both versions have to match the jars the iomete Spark image ships, so they can only move together with that image",
+      "matchFileNames": [
+        "iomete-lakehouse-backup/**"
+      ],
+      "matchPackageNames": [
+        "/^org\\.apache\\.hadoop:/",
+        "/^org\\.apache\\.iceberg:/"
+      ],
+      "enabled": false
+    },
+    {
       "description": "Security fixes only for the vendored Debezium fork - it is pinned to Debezium 1.9 / Quarkus 2.16 / Spark 3.2 and has no CI, so routine bumps would just be broken PRs",
       "matchFileNames": [
         "debezium-server-iomete/**"
