@@ -5,7 +5,7 @@ pyarrow==23.0.1
 
 # Spark Connect requirements
 grpcio==1.83.0
-googleapis-common-protos==1.75.1
+googleapis-common-protos==1.75.2
 grpcio-status==1.83.0
 
 # Only required for python version >= 3.12
