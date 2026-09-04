@@ -64,7 +64,7 @@ allprojects {
         testImplementation("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.11.0")
 
         // Force specific versions for transitive dependencies
-        implementation("org.apache.parquet:parquet-avro:1.18.0")
+        implementation("org.apache.parquet:parquet-avro:1.18.1")
         implementation("org.apache.avro:avro:1.12.2")
         implementation("com.mysql:mysql-connector-j:8.4.0")
         implementation("com.google.protobuf:protobuf-java:4.36.1")
