@@ -81,7 +81,7 @@ testing {
 dependencies {
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.22.2")
 
-    implementation("org.slf4j:slf4j-api:2.0.18")
+    implementation("org.slf4j:slf4j-api:2.0.19")
     runtimeOnly("org.apache.logging.log4j:log4j-slf4j2-impl:2.26.1")
     runtimeOnly("org.apache.logging.log4j:log4j-core:2.26.1")
 
