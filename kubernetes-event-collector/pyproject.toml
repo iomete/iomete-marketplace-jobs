@@ -10,7 +10,7 @@ package-mode = false
 readme = "README.md"
 requires-python = ">=3.12,<4"
 dependencies = [
-    "pyhocon (==0.3.59)",
+    "pyhocon (==0.3.63)",
     "boto3 (>=1.28.0)",
     "kubernetes (>=36.0.3)",
     "requests (==2.33.0)",
