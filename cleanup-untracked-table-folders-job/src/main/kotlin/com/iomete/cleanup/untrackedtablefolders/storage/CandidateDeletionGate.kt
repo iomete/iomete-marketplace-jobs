@@ -15,18 +15,7 @@ class CandidateDeletionGate {
     @Inject lateinit var catalogDiscoveryService: CatalogDiscoveryService
     @Inject lateinit var objectStorageDeletionService: ObjectStorageDeletionService
 
-    /**
-     * Returns the sorted list of folder paths that were actually deleted.
-     *
-     * Behavior:
-     *  - `dry_run=true` → returns emptyList, no catalog or storage I/O.
-     *  - `dry_run=false` AND `delete_enabled=false` → throws IllegalStateException.
-     *  - `dry_run=false` AND `delete_enabled=true` → re-queries the catalog for the
-     *    current active table locations and skips any candidate that now contains
-     *    (or is) an active table location. Surviving candidates are deleted
-     *    recursively via [ObjectStorageDeletionService]. The recheck is the
-     *    TOCTOU guard between detection and deletion.
-     */
+    /** Revalidates candidates against the catalog before deletion. */
     fun deleteCandidates(
         catalog: String,
         database: String,
@@ -48,7 +37,7 @@ class CandidateDeletionGate {
 
         return candidateFolders
             .mapNotNull { candidateFolder ->
-                deleteIfNotClaimedByActiveTable(candidateFolder, currentActiveTableLocations)
+                deleteIfNotClaimedByActiveTable(catalog, candidateFolder, currentActiveTableLocations)
             }
             .sorted()
     }
@@ -61,6 +50,7 @@ class CandidateDeletionGate {
             .map { StoragePathUtils.normalizeLocation(it) }
 
     private fun deleteIfNotClaimedByActiveTable(
+        catalog: String,
         candidateFolder: StorageFolder,
         currentActiveTableLocations: List<String>,
     ): String? {
@@ -82,7 +72,7 @@ class CandidateDeletionGate {
         }
 
         return objectStorageDeletionService
-            .deleteFolderRecursively(candidateFolder.path)
+            .deleteFolderRecursively(catalog, candidateFolder.path)
             .takeIf { it.deleted }
             ?.path
     }

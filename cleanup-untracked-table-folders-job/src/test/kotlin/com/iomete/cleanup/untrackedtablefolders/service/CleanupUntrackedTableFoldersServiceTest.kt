@@ -52,7 +52,7 @@ class CleanupUntrackedTableFoldersServiceTest {
             candidateSizeStatCollector,
             candidateDeletionGate,
         )
-        every { candidateSizeStatCollector.collectPerFolder(any()) } returns emptyMap()
+        every { candidateSizeStatCollector.collectPerFolder(any(), any()) } returns emptyMap()
         every { candidateSizeStatCollector.sum(any()) } returns StorageSizeStats.ZERO
         every { candidateDeletionGate.deleteCandidates(any(), any(), any()) } returns emptyList()
     }
@@ -64,7 +64,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         )
         every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
             discoveredDatabase(activeTableLocations = listOf("s3a://bucket/db/active_table"))
-        every { objectStorageDiscoveryService.listImmediateChildFolders("s3a://bucket/db") } returns
+        every { objectStorageDiscoveryService.listImmediateChildFolders(any(), "s3a://bucket/db") } returns
             listOf(
                 storageFolder("s3a://bucket/db/active_table"),
                 storageFolder("s3a://bucket/db/orphan"),
@@ -110,7 +110,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         )
         every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
             discoveredDatabase(activeTableLocations = listOf("s3a://bucket/db/active_table"))
-        every { objectStorageDiscoveryService.listImmediateChildFolders("s3a://bucket/db") } returns
+        every { objectStorageDiscoveryService.listImmediateChildFolders(any(), "s3a://bucket/db") } returns
             listOf(
                 storageFolder("s3a://bucket/db/active_table"),
                 storageFolder("s3a://bucket/db/orphan_a"),
@@ -173,7 +173,7 @@ class CleanupUntrackedTableFoldersServiceTest {
             )
         }
         verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any()) }
-        verify(exactly = 0) { objectStorageDiscoveryService.listImmediateChildFolders(any()) }
+        verify(exactly = 0) { objectStorageDiscoveryService.listImmediateChildFolders(any(), any()) }
         verifyNoOtherAuditCalls(except = "recordNoActiveTables")
     }
 
@@ -205,7 +205,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 excludedPaths = any(),
             )
         }
-        verify(exactly = 0) { objectStorageDiscoveryService.listImmediateChildFolders(any()) }
+        verify(exactly = 0) { objectStorageDiscoveryService.listImmediateChildFolders(any(), any()) }
         verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any()) }
         verifyNoOtherAuditCalls(except = "recordDatabaseLocationMissing")
     }
@@ -243,7 +243,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         )
         every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
             discoveredDatabase(activeTableLocations = listOf("s3a://bucket/db/active_table"))
-        every { objectStorageDiscoveryService.listImmediateChildFolders(any()) } throws
+        every { objectStorageDiscoveryService.listImmediateChildFolders(any(), any()) } throws
             IllegalStateException("simulated storage list failure")
 
         service.run()
@@ -276,7 +276,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 location = "s3a://bucket/good",
                 activeTableLocations = listOf("s3a://bucket/good/active_table"),
             )
-        every { objectStorageDiscoveryService.listImmediateChildFolders("s3a://bucket/good") } returns
+        every { objectStorageDiscoveryService.listImmediateChildFolders(any(), "s3a://bucket/good") } returns
             listOf(storageFolder("s3a://bucket/good/active_table"))
         every { catalogDiscoveryService.discoverDatabase("spark_catalog", "missing_db") } throws
             DatabaseNotFoundException(
@@ -290,7 +290,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 location = "s3a://bucket/another_good",
                 activeTableLocations = listOf("s3a://bucket/another_good/active_table"),
             )
-        every { objectStorageDiscoveryService.listImmediateChildFolders("s3a://bucket/another_good") } returns
+        every { objectStorageDiscoveryService.listImmediateChildFolders(any(), "s3a://bucket/another_good") } returns
             listOf(storageFolder("s3a://bucket/another_good/active_table"))
 
         val capturedRunIds = mutableSetOf<String>()

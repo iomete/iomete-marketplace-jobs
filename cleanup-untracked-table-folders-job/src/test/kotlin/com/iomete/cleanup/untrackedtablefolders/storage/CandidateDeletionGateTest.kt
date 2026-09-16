@@ -33,7 +33,7 @@ class CandidateDeletionGateTest {
 
         assertEquals(emptyList<String>(), result)
         verify(exactly = 0) { catalogDiscoveryService.discoverDatabase(any(), any()) }
-        verify(exactly = 0) { objectStorageDeletionService.deleteFolderRecursively(any()) }
+        verify(exactly = 0) { objectStorageDeletionService.deleteFolderRecursively(any(), any()) }
     }
 
     @Test
@@ -55,7 +55,7 @@ class CandidateDeletionGateTest {
             error.message,
         )
         verify(exactly = 0) { catalogDiscoveryService.discoverDatabase(any(), any()) }
-        verify(exactly = 0) { objectStorageDeletionService.deleteFolderRecursively(any()) }
+        verify(exactly = 0) { objectStorageDeletionService.deleteFolderRecursively(any(), any()) }
     }
 
     @Test
@@ -72,15 +72,15 @@ class CandidateDeletionGateTest {
 
         assertEquals(emptyList<String>(), result)
         verify(exactly = 0) { catalogDiscoveryService.discoverDatabase(any(), any()) }
-        verify(exactly = 0) { objectStorageDeletionService.deleteFolderRecursively(any()) }
+        verify(exactly = 0) { objectStorageDeletionService.deleteFolderRecursively(any(), any()) }
     }
 
     @Test
     fun `deletes every candidate when none are reclaimed by the catalog`() {
         every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
             discoveredDatabase(activeTableLocations = listOf("s3a://bucket/db/active_table"))
-        every { objectStorageDeletionService.deleteFolderRecursively(any()) } answers {
-            DeletedStorageFolder(path = firstArg(), deleted = true)
+        every { objectStorageDeletionService.deleteFolderRecursively(any(), any()) } answers {
+            DeletedStorageFolder(path = secondArg(), deleted = true)
         }
 
         val gate = gateFor(
@@ -100,8 +100,8 @@ class CandidateDeletionGateTest {
             listOf("s3a://bucket/db/orphan_a", "s3a://bucket/db/orphan_b"),
             result,
         )
-        verify(exactly = 1) { objectStorageDeletionService.deleteFolderRecursively("s3a://bucket/db/orphan_a") }
-        verify(exactly = 1) { objectStorageDeletionService.deleteFolderRecursively("s3a://bucket/db/orphan_b") }
+        verify(exactly = 1) { objectStorageDeletionService.deleteFolderRecursively("spark_catalog", "s3a://bucket/db/orphan_a") }
+        verify(exactly = 1) { objectStorageDeletionService.deleteFolderRecursively("spark_catalog", "s3a://bucket/db/orphan_b") }
     }
 
     @Test
@@ -113,8 +113,8 @@ class CandidateDeletionGateTest {
                     "s3a://bucket/db/now_active",
                 ),
             )
-        every { objectStorageDeletionService.deleteFolderRecursively(any()) } answers {
-            DeletedStorageFolder(path = firstArg(), deleted = true)
+        every { objectStorageDeletionService.deleteFolderRecursively(any(), any()) } answers {
+            DeletedStorageFolder(path = secondArg(), deleted = true)
         }
 
         val gate = gateFor(
@@ -131,8 +131,8 @@ class CandidateDeletionGateTest {
         )
 
         assertEquals(listOf("s3a://bucket/db/still_orphan"), result)
-        verify(exactly = 0) { objectStorageDeletionService.deleteFolderRecursively("s3a://bucket/db/now_active") }
-        verify(exactly = 1) { objectStorageDeletionService.deleteFolderRecursively("s3a://bucket/db/still_orphan") }
+        verify(exactly = 0) { objectStorageDeletionService.deleteFolderRecursively("spark_catalog", "s3a://bucket/db/now_active") }
+        verify(exactly = 1) { objectStorageDeletionService.deleteFolderRecursively("spark_catalog", "s3a://bucket/db/still_orphan") }
     }
 
     @Test
@@ -141,8 +141,8 @@ class CandidateDeletionGateTest {
             discoveredDatabase(
                 activeTableLocations = listOf("s3a://bucket/db/team_a/orders"),
             )
-        every { objectStorageDeletionService.deleteFolderRecursively(any()) } answers {
-            DeletedStorageFolder(path = firstArg(), deleted = true)
+        every { objectStorageDeletionService.deleteFolderRecursively(any(), any()) } answers {
+            DeletedStorageFolder(path = secondArg(), deleted = true)
         }
 
         val gate = gateFor(
@@ -159,17 +159,17 @@ class CandidateDeletionGateTest {
         )
 
         assertEquals(listOf("s3a://bucket/db/abandoned"), result)
-        verify(exactly = 0) { objectStorageDeletionService.deleteFolderRecursively("s3a://bucket/db/team_a") }
-        verify(exactly = 1) { objectStorageDeletionService.deleteFolderRecursively("s3a://bucket/db/abandoned") }
+        verify(exactly = 0) { objectStorageDeletionService.deleteFolderRecursively("spark_catalog", "s3a://bucket/db/team_a") }
+        verify(exactly = 1) { objectStorageDeletionService.deleteFolderRecursively("spark_catalog", "s3a://bucket/db/abandoned") }
     }
 
     @Test
     fun `excludes folder from returned list when deletion service reports not deleted`() {
         every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
             discoveredDatabase(activeTableLocations = emptyList())
-        every { objectStorageDeletionService.deleteFolderRecursively("s3a://bucket/db/missing") } returns
+        every { objectStorageDeletionService.deleteFolderRecursively("spark_catalog", "s3a://bucket/db/missing") } returns
             DeletedStorageFolder(path = "s3a://bucket/db/missing", deleted = false)
-        every { objectStorageDeletionService.deleteFolderRecursively("s3a://bucket/db/present") } returns
+        every { objectStorageDeletionService.deleteFolderRecursively("spark_catalog", "s3a://bucket/db/present") } returns
             DeletedStorageFolder(path = "s3a://bucket/db/present", deleted = true)
 
         val gate = gateFor(
@@ -192,9 +192,9 @@ class CandidateDeletionGateTest {
     fun `propagates deletion service exceptions without partial cleanup of remaining candidates`() {
         every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
             discoveredDatabase(activeTableLocations = emptyList())
-        every { objectStorageDeletionService.deleteFolderRecursively("s3a://bucket/db/orphan_a") } returns
+        every { objectStorageDeletionService.deleteFolderRecursively("spark_catalog", "s3a://bucket/db/orphan_a") } returns
             DeletedStorageFolder(path = "s3a://bucket/db/orphan_a", deleted = true)
-        every { objectStorageDeletionService.deleteFolderRecursively("s3a://bucket/db/orphan_b") } throws
+        every { objectStorageDeletionService.deleteFolderRecursively("spark_catalog", "s3a://bucket/db/orphan_b") } throws
             IllegalStateException("simulated FS error on delete")
 
         val gate = gateFor(
@@ -213,7 +213,7 @@ class CandidateDeletionGateTest {
             )
         }
 
-        verify(exactly = 0) { objectStorageDeletionService.deleteFolderRecursively("s3a://bucket/db/orphan_c") }
+        verify(exactly = 0) { objectStorageDeletionService.deleteFolderRecursively("spark_catalog", "s3a://bucket/db/orphan_c") }
     }
 
     private fun gateFor(config: ApplicationConfig): CandidateDeletionGate =
