@@ -6,7 +6,6 @@ import jakarta.inject.Inject
 import java.util.concurrent.ConcurrentHashMap
 import org.jboss.logging.Logger
 
-/** Resolves catalog-specific storage configuration from the Spark session. */
 @ApplicationScoped
 class CatalogStorageConfigResolver {
     private val logger = Logger.getLogger(CatalogStorageConfigResolver::class.java)

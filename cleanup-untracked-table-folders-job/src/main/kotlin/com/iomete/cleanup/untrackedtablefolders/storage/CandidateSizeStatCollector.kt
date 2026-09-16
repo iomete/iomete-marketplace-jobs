@@ -13,16 +13,6 @@ class CandidateSizeStatCollector {
     @Inject lateinit var config: ApplicationConfig
     @Inject lateinit var objectStorageDiscoveryService: ObjectStorageDiscoveryService
 
-    /**
-     * Size statistics are reporting only; they never gate deletion, so a candidate folder that
-     * cannot be read is recorded as an unknown size and the run continues.
-     *
-     * Two failures are not tolerated, because both mean the job cannot reach the catalog's
-     * storage at all and a run that reported success would be misleading:
-     *  - [CatalogStorageConfigurationException], which is a configuration defect, and
-     *  - every candidate folder failing, which is the signature of a wrong endpoint or
-     *    wrong credentials rather than one bad folder.
-     */
     fun collectPerFolder(
         catalog: String,
         candidateFolderPaths: List<String>,

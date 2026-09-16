@@ -1,24 +1,22 @@
 package com.iomete.cleanup.untrackedtablefolders.storage
 
-/** Raised when catalog-specific storage configuration cannot be resolved safely. */
 class CatalogStorageConfigurationException(
     val catalog: String,
     message: String,
 ) : IllegalStateException(message)
 
-/** Raised when a filesystem operation fails; already carries catalog, operation and path context. */
+/** Already carries catalog, operation and path context; never re-wrap it. */
 class CatalogStorageOperationException(
     message: String,
     cause: Throwable,
 ) : IllegalStateException(message, cause)
 
-/** Catalog-specific Hadoop overrides applied to an isolated configuration. */
 data class CatalogStorageConfig(
     val catalog: String,
     val overrides: Map<String, String>,
     val removedKeys: Set<String>,
 ) {
-    /** Redacts credential values from string representations. */
+    /** Credential values must never reach a string representation. */
     override fun toString(): String {
         val rendered =
             overrides.entries.sortedBy { it.key }.joinToString(", ") { (key, value) ->
@@ -59,9 +57,7 @@ object CatalogStorageProperties {
     /** Hadoop keys whose values are credentials and must never be rendered. */
     val SENSITIVE_HADOOP_KEYS = setOf(FS_ACCESS_KEY, FS_SECRET_KEY, FS_SESSION_TOKEN)
 
-    // Hadoop ships defaults in core-default.xml for keys such as fs.s3a.path.style.access, so
-    // reading the base configuration returns a built-in default rather than a platform choice.
-    // Only these keys are read back.
+    // Other fs.s3a.* keys have core-default.xml values, so reading them back returns a Hadoop default, not a platform choice.
     val INHERITABLE_HADOOP_KEYS = setOf(FS_ACCESS_KEY, FS_SECRET_KEY, FS_REGION)
 
     const val S3A_FILE_SYSTEM_CLASS = "org.apache.hadoop.fs.s3a.S3AFileSystem"
@@ -76,7 +72,6 @@ object CatalogStorageProperties {
     fun catalogPropertyPrefix(catalog: String): String = "$CATALOG_CONF_PREFIX.$catalog."
 }
 
-/** Maps catalog S3 properties to an isolated Hadoop S3A configuration. */
 object CatalogHadoopConfigBuilder {
 
     fun build(
@@ -122,8 +117,7 @@ object CatalogHadoopConfigBuilder {
             endpoint?.let { put(CatalogStorageProperties.FS_ENDPOINT, it) }
             region?.let { put(CatalogStorageProperties.FS_REGION, it) }
 
-            // Omitting the credentials lets S3A use its own chain (IRSA, instance profile,
-            // environment), which is how IOMETE-managed catalogs work on AWS.
+            // Omitting credentials lets S3A use its own chain, which is how IOMETE catalogs work on AWS.
             if (accessKey != null && secretKey != null) {
                 put(CatalogStorageProperties.FS_ACCESS_KEY, accessKey)
                 put(CatalogStorageProperties.FS_SECRET_KEY, secretKey)
@@ -210,6 +204,5 @@ object CatalogHadoopConfigBuilder {
         )
     }
 
-    /** Returns the redacted configuration representation used for logging. */
     fun describe(config: CatalogStorageConfig): String = config.toString()
 }

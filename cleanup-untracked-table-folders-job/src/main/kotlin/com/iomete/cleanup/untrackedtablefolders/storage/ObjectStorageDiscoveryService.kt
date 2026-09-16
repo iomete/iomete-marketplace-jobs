@@ -56,7 +56,6 @@ class ObjectStorageDiscoveryService {
         }
     }
 
-    /** Opens one filesystem for the whole batch; a folder that cannot be read is reported as a failure. */
     fun collectSizeStatsPerFolder(
         catalog: String,
         folderPaths: List<String>,

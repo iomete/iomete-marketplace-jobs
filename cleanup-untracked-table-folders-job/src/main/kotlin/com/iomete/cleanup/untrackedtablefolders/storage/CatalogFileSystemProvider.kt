@@ -8,7 +8,6 @@ import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
 import org.jboss.logging.Logger
 
-/** Provides isolated filesystem access using catalog-specific storage configuration. */
 @ApplicationScoped
 class CatalogFileSystemProvider {
     private val logger = Logger.getLogger(CatalogFileSystemProvider::class.java)
@@ -54,10 +53,7 @@ class CatalogFileSystemProvider {
             )
         }
 
-    /**
-     * One filesystem instance serves one scheme and authority, so a batch that spans more than one
-     * must not be pushed through a single instance.
-     */
+    // One filesystem serves one scheme and authority, so a batch must not span two.
     private fun requireSingleFileSystemTarget(
         catalog: String,
         operation: String,
@@ -89,7 +85,6 @@ class CatalogFileSystemProvider {
         path: Path,
     ): Configuration = applyCatalogStorageConfig(catalog, path, sparkHadoopConfiguration())
 
-    /** Applies catalog storage settings to a copy of the base configuration. */
     internal fun applyCatalogStorageConfig(
         catalog: String,
         path: Path,

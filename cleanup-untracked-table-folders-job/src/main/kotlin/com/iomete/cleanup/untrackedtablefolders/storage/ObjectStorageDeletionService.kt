@@ -17,7 +17,6 @@ class ObjectStorageDeletionService {
     @Inject
     lateinit var catalogFileSystemProvider: CatalogFileSystemProvider
 
-    /** Opens one filesystem for the whole batch and stops at the first failure. */
     fun deleteFoldersRecursively(
         catalog: String,
         locations: List<String>,

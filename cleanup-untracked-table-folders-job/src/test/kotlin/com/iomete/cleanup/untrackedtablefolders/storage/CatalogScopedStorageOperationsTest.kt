@@ -63,7 +63,6 @@ class CatalogScopedStorageOperationsTest {
             folders,
         )
 
-        // Sizes stay attributed to the exact prefix, and deleting one leaves the other in place.
         assertEquals(7L, discovery.collectSizeStats("example_catalog", listOf("s3a://example-bucket/db/ORDERS")).totalSizeBytes)
         assertEquals(11L, discovery.collectSizeStats("example_catalog", listOf("s3a://example-bucket/db/orders")).totalSizeBytes)
 

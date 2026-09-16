@@ -7,10 +7,6 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
-/**
- * The mapping mirrors `com.iomete.enterprisecatalog.credential.CredentialUtil`, so these cases are
- * written against the same scenarios that class documents.
- */
 class CatalogHadoopConfigBuilderTest {
 
     private val s3CompatibleCatalogProperties =
@@ -44,8 +40,7 @@ class CatalogHadoopConfigBuilderTest {
     fun `binds the legacy s3 and s3n schemes to S3A and disables the filesystem cache`() {
         val config = CatalogHadoopConfigBuilder.build("example_catalog", s3CompatibleCatalogProperties)
 
-        // Catalog table locations are stored with the scheme the operator typed, which is `s3://`
-        // for this catalog. Hadoop 3 has no ServiceLoader binding for s3 or s3n.
+        // Hadoop 3 has no ServiceLoader binding for s3 or s3n.
         assertEquals(CatalogStorageProperties.S3A_FILE_SYSTEM_CLASS, config.overrides["fs.s3.impl"])
         assertEquals(CatalogStorageProperties.S3A_FILE_SYSTEM_CLASS, config.overrides["fs.s3n.impl"])
         assertEquals("true", config.overrides["fs.s3.impl.disable.cache"])
@@ -62,8 +57,7 @@ class CatalogHadoopConfigBuilderTest {
 
     @Test
     fun `an inherited path style value cannot override a catalog-owned endpoint`() {
-        // Hadoop's core-default.xml sets fs.s3a.path.style.access=false, so the base configuration
-        // always has a value for it.
+        // core-default.xml sets fs.s3a.path.style.access=false, so the base always has a value.
         val fallback = mapOf(CatalogStorageProperties.FS_PATH_STYLE_ACCESS to "false")
 
         val config =
@@ -323,7 +317,6 @@ class CatalogHadoopConfigBuilderTest {
     fun `string interpolation of the config is redacted`() {
         val config = CatalogHadoopConfigBuilder.build("example_catalog", s3CompatibleCatalogProperties)
 
-        // This is the shape a future log line would take, and the reason toString is overridden.
         val logLine = "Resolved catalog storage configuration: $config"
 
         assertFalse(logLine.contains("ECS_ACCESS_KEY"))
@@ -352,7 +345,6 @@ class CatalogHadoopConfigBuilderTest {
 
     @Test
     fun `every credential key the builder can emit is treated as sensitive`() {
-        // Guards against a new credential key being added to the builder without being redacted.
         assertTrue(CatalogStorageProperties.FS_ACCESS_KEY in CatalogStorageProperties.SENSITIVE_HADOOP_KEYS)
         assertTrue(CatalogStorageProperties.FS_SECRET_KEY in CatalogStorageProperties.SENSITIVE_HADOOP_KEYS)
         assertTrue(CatalogStorageProperties.FS_SESSION_TOKEN in CatalogStorageProperties.SENSITIVE_HADOOP_KEYS)

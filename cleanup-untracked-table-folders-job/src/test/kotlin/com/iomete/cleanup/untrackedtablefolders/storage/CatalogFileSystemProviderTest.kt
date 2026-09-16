@@ -143,8 +143,7 @@ class CatalogFileSystemProviderTest {
         InMemoryS3FileSystem.putDirectory(CatalogStorageTestHarness.COMPAT_ENDPOINT, "s3a://example-bucket/db")
         InMemoryS3FileSystem.putDirectory(CatalogStorageTestHarness.COMPAT_ENDPOINT, "s3a://example-bucket/db/catalog_view")
 
-        // Seed Hadoop's shared FileSystem cache with the platform configuration for the same
-        // scheme and authority. FileSystem.get would hand this instance back.
+        // FileSystem.get would hand this cached instance back for the same scheme and authority.
         FileSystem.get(Path("s3a://example-bucket/db").toUri(), harness.sparkHadoopConfiguration)
 
         val folders = harness.discoveryService().listImmediateChildFolders("example_catalog", "s3a://example-bucket/db")
@@ -167,7 +166,6 @@ class CatalogFileSystemProviderTest {
         val harness = harness()
 
         assertThrows(IllegalStateException::class.java) {
-            // No directory was seeded, so listStatus throws FileNotFoundException.
             harness.discoveryService().listImmediateChildFolders("example_catalog", "s3a://example-bucket/missing")
         }
 

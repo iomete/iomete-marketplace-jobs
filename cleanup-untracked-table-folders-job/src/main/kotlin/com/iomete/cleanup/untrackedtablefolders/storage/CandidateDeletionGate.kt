@@ -15,7 +15,6 @@ class CandidateDeletionGate {
     @Inject lateinit var catalogDiscoveryService: CatalogDiscoveryService
     @Inject lateinit var objectStorageDeletionService: ObjectStorageDeletionService
 
-    /** Revalidates candidates against the catalog before deletion. */
     fun deleteCandidates(
         catalog: String,
         database: String,

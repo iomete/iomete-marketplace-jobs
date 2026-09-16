@@ -8,11 +8,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.SparkSession
 
-/**
- * Builds the collaborators of [CatalogFileSystemProvider] over a real [SparkConf] and a real
- * Hadoop [Configuration], with only the SparkSession lookup mocked. Keeping both configurations
- * real is what lets the tests assert that Spark's own configuration is never mutated.
- */
+/** Real SparkConf and real Hadoop Configuration, so tests can assert Spark's own config is never mutated. */
 class CatalogStorageTestHarness(
     catalogProperties: Map<String, Map<String, String>>,
     val sparkHadoopConfiguration: Configuration = baseHadoopConfiguration(),
@@ -55,7 +51,6 @@ class CatalogStorageTestHarness(
         ObjectStorageDeletionService().also { it.catalogFileSystemProvider = fileSystemProvider }
 
     companion object {
-        /** Stands in for the platform's own storage settings, the ones a global override would break. */
         fun baseHadoopConfiguration(): Configuration =
             Configuration(false).apply {
                 set("fs.s3a.impl", InMemoryS3FileSystem::class.java.name)

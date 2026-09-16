@@ -13,13 +13,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.hadoop.fs.permission.FsPermission
 import org.apache.hadoop.util.Progressable
 
-/**
- * Test filesystem registered under `fs.s3a.impl`.
- *
- * Content is keyed by `fs.s3a.endpoint`, so two catalogs pointing at different endpoints inside
- * one JVM see genuinely different object stores. That is what makes the isolation tests real
- * rather than a check on a configuration map.
- */
+/** Test filesystem registered under `fs.s3a.impl`; content is keyed by `fs.s3a.endpoint`. */
 class InMemoryS3FileSystem : FileSystem() {
 
     data class Entry(
@@ -44,7 +38,6 @@ class InMemoryS3FileSystem : FileSystem() {
         val opened = CopyOnWriteArrayList<Opened>()
         val closedEndpoints = CopyOnWriteArrayList<String>()
 
-        /** Path whose delete should throw, so batch failure paths can be exercised. */
         @Volatile
         var failDeleteFor: String? = null
 
