@@ -13,7 +13,11 @@ class CandidateSizeStatCollector {
     @Inject lateinit var config: ApplicationConfig
     @Inject lateinit var objectStorageDiscoveryService: ObjectStorageDiscoveryService
 
-    fun collectPerFolder(candidateFolderPaths: List<String>): Map<String, StorageSizeStats> {
+    /** Collects optional size statistics without letting isolated folder failures abort the run. */
+    fun collectPerFolder(
+        catalog: String,
+        candidateFolderPaths: List<String>,
+    ): Map<String, StorageSizeStats> {
         if (candidateFolderPaths.isEmpty()) {
             return emptyMap()
         }
@@ -30,14 +34,16 @@ class CandidateSizeStatCollector {
         )
 
         val result = mutableMapOf<String, StorageSizeStats>()
-        var failedFolderCount = 0
+        val failures = mutableListOf<Throwable>()
 
         candidateFolderPaths.forEach { candidateFolderPath ->
             try {
                 result[candidateFolderPath] =
-                    objectStorageDiscoveryService.collectSizeStats(listOf(candidateFolderPath))
+                    objectStorageDiscoveryService.collectSizeStats(catalog, listOf(candidateFolderPath))
+            } catch (th: CatalogStorageConfigurationException) {
+                throw th
             } catch (th: Throwable) {
-                failedFolderCount += 1
+                failures += th
                 logger.warn(
                     "Failed to collect size statistics for candidate folder; recording unknown size and continuing without aborting cleanup: path=$candidateFolderPath",
                     th,
@@ -45,9 +51,17 @@ class CandidateSizeStatCollector {
             }
         }
 
-        if (failedFolderCount > 0) {
+        if (failures.size == candidateFolderPaths.size) {
+            throw IllegalStateException(
+                "Failed to collect size statistics for all ${candidateFolderPaths.size} candidate folder(s) of catalog=$catalog. " +
+                    "Treating this as a storage access failure rather than unknown sizes.",
+                failures.first(),
+            )
+        }
+
+        if (failures.isNotEmpty()) {
             logger.warn(
-                "Size statistics collection failed for $failedFolderCount of ${candidateFolderPaths.size} candidate folder(s). Candidate and deleted size audit fields exclude the failed folders."
+                "Size statistics collection failed for ${failures.size} of ${candidateFolderPaths.size} candidate folder(s). Candidate and deleted size audit fields exclude the failed folders."
             )
         }
 

@@ -1,9 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.storage
 
-import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
-import org.apache.hadoop.fs.Path
 import org.jboss.logging.Logger
 
 data class DeletedStorageFolder(
@@ -16,26 +14,31 @@ class ObjectStorageDeletionService {
     private val logger = Logger.getLogger(ObjectStorageDeletionService::class.java)
 
     @Inject
-    lateinit var sparkSessionProvider: SparkSessionProvider
+    lateinit var catalogFileSystemProvider: CatalogFileSystemProvider
 
-    fun deleteFolderRecursively(location: String): DeletedStorageFolder {
-        logger.warn("Deleting storage folder recursively: location=$location")
-
-        val spark = sparkSessionProvider.getOrCreate()
-        val path = Path(location)
+    fun deleteFolderRecursively(
+        catalog: String,
+        location: String,
+    ): DeletedStorageFolder {
+        logger.warn("Deleting storage folder recursively: catalog=$catalog, location=$location")
 
         val deleted =
             try {
-                val fileSystem = path.getFileSystem(spark.sparkContext().hadoopConfiguration())
-
-                if (!fileSystem.exists(path)) {
-                    logger.warn("Storage folder does not exist, skipping delete: location=$location")
-                    false
-                } else {
-                    fileSystem.delete(path, true)
+                catalogFileSystemProvider.withFileSystem(catalog, location) { fileSystem, path ->
+                    if (!fileSystem.exists(path)) {
+                        logger.warn("Storage folder does not exist, skipping delete: location=$location")
+                        false
+                    } else {
+                        fileSystem.delete(path, true)
+                    }
                 }
+            } catch (th: CatalogStorageConfigurationException) {
+                throw th
             } catch (th: Throwable) {
-                throw IllegalStateException("Failed to delete storage folder recursively: location=$location", th)
+                throw IllegalStateException(
+                    "Failed to delete storage folder recursively: catalog=$catalog, location=$location",
+                    th,
+                )
             }
 
         if (!deleted) {

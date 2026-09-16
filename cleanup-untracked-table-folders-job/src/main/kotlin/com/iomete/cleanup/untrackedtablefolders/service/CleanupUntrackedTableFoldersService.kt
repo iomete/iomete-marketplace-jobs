@@ -118,6 +118,7 @@ class CleanupUntrackedTableFoldersService {
 
                     val storageFolders =
                         objectStorageDiscoveryService.listImmediateChildFolders(
+                            catalog = discoveredDatabase.catalog,
                             location = storageScanLocation,
                         )
                     logger.info(
@@ -202,7 +203,10 @@ class CleanupUntrackedTableFoldersService {
 
                     val candidateFolderPaths = candidateFolders.map { it.path }.sorted()
                     val candidateSizeStatsByFolder =
-                        candidateSizeStatCollector.collectPerFolder(candidateFolderPaths)
+                        candidateSizeStatCollector.collectPerFolder(
+                            catalog = discoveredDatabase.catalog,
+                            candidateFolderPaths = candidateFolderPaths,
+                        )
                     val candidateSizeStats: StorageSizeStats? =
                         if (config.collectSizeStatistics) {
                             candidateSizeStatCollector.sum(candidateSizeStatsByFolder.values)
