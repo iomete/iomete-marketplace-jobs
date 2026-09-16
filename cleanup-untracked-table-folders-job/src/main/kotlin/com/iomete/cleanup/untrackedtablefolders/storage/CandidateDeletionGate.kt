@@ -35,10 +35,15 @@ class CandidateDeletionGate {
 
         val currentActiveTableLocations = currentActiveTableLocations(catalog, database)
 
-        return candidateFolders
-            .mapNotNull { candidateFolder ->
-                deleteIfNotClaimedByActiveTable(catalog, candidateFolder, currentActiveTableLocations)
+        val deletableFolders =
+            candidateFolders.filterNot { candidateFolder ->
+                claimedByActiveTable(candidateFolder, currentActiveTableLocations)
             }
+
+        return objectStorageDeletionService
+            .deleteFoldersRecursively(catalog, deletableFolders.map { it.path }.sorted())
+            .filter { it.deleted }
+            .map { it.path }
             .sorted()
     }
 
@@ -49,14 +54,13 @@ class CandidateDeletionGate {
             .mapNotNull { it.location }
             .map { StoragePathUtils.normalizeLocation(it) }
 
-    private fun deleteIfNotClaimedByActiveTable(
-        catalog: String,
+    private fun claimedByActiveTable(
         candidateFolder: StorageFolder,
         currentActiveTableLocations: List<String>,
-    ): String? {
+    ): Boolean {
         val normalizedCandidatePath = StoragePathUtils.normalizeLocation(candidateFolder.path)
 
-        val claimedByActiveTable =
+        val claimed =
             currentActiveTableLocations.any { activeLocation ->
                 StoragePathUtils.isSameOrChildLocation(
                     candidateLocation = activeLocation,
@@ -64,16 +68,12 @@ class CandidateDeletionGate {
                 )
             }
 
-        if (claimedByActiveTable) {
+        if (claimed) {
             logger.warn(
                 "Skipping deletion because candidate folder is or contains an active table location: path=${candidateFolder.path}"
             )
-            return null
         }
 
-        return objectStorageDeletionService
-            .deleteFolderRecursively(catalog, candidateFolder.path)
-            .takeIf { it.deleted }
-            ?.path
+        return claimed
     }
 }

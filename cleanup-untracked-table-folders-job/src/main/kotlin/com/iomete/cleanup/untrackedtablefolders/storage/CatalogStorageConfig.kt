@@ -6,6 +6,12 @@ class CatalogStorageConfigurationException(
     message: String,
 ) : IllegalStateException(message)
 
+/** Raised when a filesystem operation fails; already carries catalog, operation and path context. */
+class CatalogStorageOperationException(
+    message: String,
+    cause: Throwable,
+) : IllegalStateException(message, cause)
+
 /** Catalog-specific Hadoop overrides applied to an isolated configuration. */
 data class CatalogStorageConfig(
     val catalog: String,

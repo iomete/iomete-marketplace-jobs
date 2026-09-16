@@ -25,19 +25,19 @@ class CandidateSizeStatCollectorTest {
         }
 
     @Test
-    fun `passes the catalog to the discovery service`() {
-        every { objectStorageDiscoveryService.collectSizeStats("example_catalog", listOf("s3a://b/a")) } returns
-            StorageSizeStats(objectCount = 1, totalSizeBytes = 10)
+    fun `collects the whole candidate list in one call to the discovery service`() {
+        every { objectStorageDiscoveryService.collectSizeStatsPerFolder("example_catalog", listOf("s3a://b/a")) } returns
+            SizeStatsBatch(mapOf("s3a://b/a" to StorageSizeStats(objectCount = 1, totalSizeBytes = 10)), emptyMap())
 
         val result = collectorFor().collectPerFolder("example_catalog", listOf("s3a://b/a"))
 
         assertEquals(StorageSizeStats(1, 10), result["s3a://b/a"])
-        verify(exactly = 1) { objectStorageDiscoveryService.collectSizeStats("example_catalog", listOf("s3a://b/a")) }
+        verify(exactly = 1) { objectStorageDiscoveryService.collectSizeStatsPerFolder("example_catalog", listOf("s3a://b/a")) }
     }
 
     @Test
     fun `propagates a catalog storage configuration failure instead of recording unknown sizes`() {
-        every { objectStorageDiscoveryService.collectSizeStats(any(), any()) } throws
+        every { objectStorageDiscoveryService.collectSizeStatsPerFolder(any(), any()) } throws
             CatalogStorageConfigurationException("example_catalog", "catalog is not registered")
 
         assertThrows(CatalogStorageConfigurationException::class.java) {
@@ -47,8 +47,14 @@ class CandidateSizeStatCollectorTest {
 
     @Test
     fun `fails when every candidate folder fails, because that is a storage access failure`() {
-        every { objectStorageDiscoveryService.collectSizeStats(any(), any()) } throws
-            IllegalStateException("connection refused")
+        every { objectStorageDiscoveryService.collectSizeStatsPerFolder(any(), any()) } returns
+            SizeStatsBatch(
+                emptyMap(),
+                mapOf(
+                    "s3a://b/a" to IllegalStateException("connection refused"),
+                    "s3a://b/c" to IllegalStateException("connection refused"),
+                ),
+            )
 
         val error =
             assertThrows(IllegalStateException::class.java) {
@@ -60,10 +66,11 @@ class CandidateSizeStatCollectorTest {
 
     @Test
     fun `tolerates a single unreadable folder and records the rest`() {
-        every { objectStorageDiscoveryService.collectSizeStats("example_catalog", listOf("s3a://b/a")) } throws
-            IllegalStateException("one bad folder")
-        every { objectStorageDiscoveryService.collectSizeStats("example_catalog", listOf("s3a://b/c")) } returns
-            StorageSizeStats(objectCount = 2, totalSizeBytes = 20)
+        every { objectStorageDiscoveryService.collectSizeStatsPerFolder("example_catalog", listOf("s3a://b/a", "s3a://b/c")) } returns
+            SizeStatsBatch(
+                mapOf("s3a://b/c" to StorageSizeStats(objectCount = 2, totalSizeBytes = 20)),
+                mapOf("s3a://b/a" to IllegalStateException("one bad folder")),
+            )
 
         val result = collectorFor().collectPerFolder("example_catalog", listOf("s3a://b/a", "s3a://b/c"))
 
@@ -75,6 +82,6 @@ class CandidateSizeStatCollectorTest {
         val result = collectorFor(collectSizeStatistics = false).collectPerFolder("example_catalog", listOf("s3a://b/a"))
 
         assertEquals(emptyMap<String, StorageSizeStats>(), result)
-        verify(exactly = 0) { objectStorageDiscoveryService.collectSizeStats(any(), any()) }
+        verify(exactly = 0) { objectStorageDiscoveryService.collectSizeStatsPerFolder(any(), any()) }
     }
 }

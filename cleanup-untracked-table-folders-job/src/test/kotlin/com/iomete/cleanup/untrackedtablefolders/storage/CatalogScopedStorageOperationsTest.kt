@@ -67,7 +67,7 @@ class CatalogScopedStorageOperationsTest {
         assertEquals(7L, discovery.collectSizeStats("example_catalog", listOf("s3a://example-bucket/db/ORDERS")).totalSizeBytes)
         assertEquals(11L, discovery.collectSizeStats("example_catalog", listOf("s3a://example-bucket/db/orders")).totalSizeBytes)
 
-        harness.deletionService().deleteFolderRecursively("example_catalog", "s3a://example-bucket/db/ORDERS")
+        harness.deletionService().deleteFoldersRecursively("example_catalog", listOf("s3a://example-bucket/db/ORDERS"))
 
         assertFalse(InMemoryS3FileSystem.paths(COMPAT).contains("s3a://example-bucket/db/ORDERS"))
         assertTrue(InMemoryS3FileSystem.paths(COMPAT).contains("s3a://example-bucket/db/orders"))
@@ -106,7 +106,7 @@ class CatalogScopedStorageOperationsTest {
         InMemoryS3FileSystem.putFile(COMPAT, "s3a://example-bucket/db/orphan/part-0.parquet", 5)
         InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/keep")
 
-        val result = harness.deletionService().deleteFolderRecursively("example_catalog", "s3a://example-bucket/db/orphan")
+        val result = harness.deletionService().deleteFoldersRecursively("example_catalog", listOf("s3a://example-bucket/db/orphan")).single()
 
         assertTrue(result.deleted)
         assertEquals("s3a://example-bucket/db/orphan", result.path)
@@ -115,7 +115,7 @@ class CatalogScopedStorageOperationsTest {
 
     @Test
     fun `reports not deleted when the folder is already gone`() {
-        val result = harness.deletionService().deleteFolderRecursively("example_catalog", "s3a://example-bucket/db/vanished")
+        val result = harness.deletionService().deleteFoldersRecursively("example_catalog", listOf("s3a://example-bucket/db/vanished")).single()
 
         assertFalse(result.deleted)
     }
@@ -123,8 +123,109 @@ class CatalogScopedStorageOperationsTest {
     @Test
     fun `deletion fails closed when the catalog is not registered`() {
         assertThrows(CatalogStorageConfigurationException::class.java) {
-            harness.deletionService().deleteFolderRecursively("unknown_catalog", "s3a://example-bucket/db/orphan")
+            harness.deletionService().deleteFoldersRecursively("unknown_catalog", listOf("s3a://example-bucket/db/orphan"))
         }
+    }
+
+    @Test
+    fun `one filesystem serves every folder in a size collection batch`() {
+        listOf("orphan_a", "orphan_b", "orphan_c").forEach {
+            InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/$it")
+            InMemoryS3FileSystem.putFile(COMPAT, "s3a://example-bucket/db/$it/part-0.parquet", 10)
+        }
+
+        harness.discoveryService().collectSizeStats(
+            "example_catalog",
+            listOf("s3a://example-bucket/db/orphan_a", "s3a://example-bucket/db/orphan_b", "s3a://example-bucket/db/orphan_c"),
+        )
+
+        assertEquals(1, InMemoryS3FileSystem.opened.size)
+        assertEquals(1, InMemoryS3FileSystem.closedEndpoints.size)
+    }
+
+    @Test
+    fun `one filesystem serves every folder in a deletion batch`() {
+        listOf("orphan_a", "orphan_b").forEach {
+            InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/$it")
+        }
+
+        harness.deletionService().deleteFoldersRecursively(
+            "example_catalog",
+            listOf("s3a://example-bucket/db/orphan_a", "s3a://example-bucket/db/orphan_b"),
+        )
+
+        assertEquals(1, InMemoryS3FileSystem.opened.size)
+        assertEquals(1, InMemoryS3FileSystem.closedEndpoints.size)
+        assertTrue(InMemoryS3FileSystem.paths(COMPAT).isEmpty())
+    }
+
+    @Test
+    fun `the batch filesystem is closed when an operation fails partway`() {
+        InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/orphan_a")
+
+        assertThrows(IllegalStateException::class.java) {
+            harness.deletionService().deleteFoldersRecursively(
+                "example_catalog",
+                listOf("s3a://example-bucket/db/orphan_a", "s3a://other-bucket/db/orphan_b"),
+            )
+        }
+
+        assertEquals(InMemoryS3FileSystem.opened.size, InMemoryS3FileSystem.closedEndpoints.size)
+    }
+
+    @Test
+    fun `a batch spanning two storage targets is refused rather than sharing one filesystem`() {
+        val error =
+            assertThrows(CatalogStorageConfigurationException::class.java) {
+                harness.discoveryService().collectSizeStats(
+                    "example_catalog",
+                    listOf("s3a://example-bucket/db/a", "s3a://another-bucket/db/b"),
+                )
+            }
+
+        assertEquals("example_catalog", error.catalog)
+        assertTrue(error.message!!.contains("more than one storage target"))
+        assertTrue(InMemoryS3FileSystem.opened.isEmpty())
+    }
+
+    @Test
+    fun `deletion stops at the first failing folder`() {
+        listOf("orphan_a", "orphan_b", "orphan_c").forEach {
+            InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/$it")
+        }
+        InMemoryS3FileSystem.failDeleteFor = "s3a://example-bucket/db/orphan_b"
+
+        assertThrows(IllegalStateException::class.java) {
+            harness.deletionService().deleteFoldersRecursively(
+                "example_catalog",
+                listOf(
+                    "s3a://example-bucket/db/orphan_a",
+                    "s3a://example-bucket/db/orphan_b",
+                    "s3a://example-bucket/db/orphan_c",
+                ),
+            )
+        }
+
+        assertTrue(InMemoryS3FileSystem.paths(COMPAT).contains("s3a://example-bucket/db/orphan_c"))
+    }
+
+    @Test
+    fun `a failing folder keeps its own path in the error context`() {
+        InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/orphan_a")
+        InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/orphan_b")
+        InMemoryS3FileSystem.failDeleteFor = "s3a://example-bucket/db/orphan_b"
+
+        val error =
+            assertThrows(IllegalStateException::class.java) {
+                harness.deletionService().deleteFoldersRecursively(
+                    "example_catalog",
+                    listOf("s3a://example-bucket/db/orphan_a", "s3a://example-bucket/db/orphan_b"),
+                )
+            }
+
+        assertTrue(error.message!!.contains("delete storage folder recursively"))
+        assertTrue(error.message!!.contains("catalog=example_catalog"))
+        assertTrue(error.message!!.contains("s3a://example-bucket/db/orphan_b"))
     }
 
     @Test

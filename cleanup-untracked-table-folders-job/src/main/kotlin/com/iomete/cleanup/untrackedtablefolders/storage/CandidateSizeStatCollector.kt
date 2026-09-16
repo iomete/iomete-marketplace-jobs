@@ -13,7 +13,16 @@ class CandidateSizeStatCollector {
     @Inject lateinit var config: ApplicationConfig
     @Inject lateinit var objectStorageDiscoveryService: ObjectStorageDiscoveryService
 
-    /** Collects optional size statistics without letting isolated folder failures abort the run. */
+    /**
+     * Size statistics are reporting only; they never gate deletion, so a candidate folder that
+     * cannot be read is recorded as an unknown size and the run continues.
+     *
+     * Two failures are not tolerated, because both mean the job cannot reach the catalog's
+     * storage at all and a run that reported success would be misleading:
+     *  - [CatalogStorageConfigurationException], which is a configuration defect, and
+     *  - every candidate folder failing, which is the signature of a wrong endpoint or
+     *    wrong credentials rather than one bad folder.
+     */
     fun collectPerFolder(
         catalog: String,
         candidateFolderPaths: List<String>,
@@ -33,39 +42,30 @@ class CandidateSizeStatCollector {
             "Collecting size statistics for ${candidateFolderPaths.size} candidate folder(s). This may take time for folders with many objects. To skip this step, set collect_size_statistics=false."
         )
 
-        val result = mutableMapOf<String, StorageSizeStats>()
-        val failures = mutableListOf<Throwable>()
+        val batch = objectStorageDiscoveryService.collectSizeStatsPerFolder(catalog, candidateFolderPaths)
 
-        candidateFolderPaths.forEach { candidateFolderPath ->
-            try {
-                result[candidateFolderPath] =
-                    objectStorageDiscoveryService.collectSizeStats(catalog, listOf(candidateFolderPath))
-            } catch (th: CatalogStorageConfigurationException) {
-                throw th
-            } catch (th: Throwable) {
-                failures += th
-                logger.warn(
-                    "Failed to collect size statistics for candidate folder; recording unknown size and continuing without aborting cleanup: path=$candidateFolderPath",
-                    th,
-                )
-            }
+        batch.failures.forEach { (candidateFolderPath, th) ->
+            logger.warn(
+                "Failed to collect size statistics for candidate folder; recording unknown size and continuing without aborting cleanup: path=$candidateFolderPath",
+                th,
+            )
         }
 
-        if (failures.size == candidateFolderPaths.size) {
+        if (batch.failures.size == candidateFolderPaths.size) {
             throw IllegalStateException(
                 "Failed to collect size statistics for all ${candidateFolderPaths.size} candidate folder(s) of catalog=$catalog. " +
                     "Treating this as a storage access failure rather than unknown sizes.",
-                failures.first(),
+                batch.failures.values.first(),
             )
         }
 
-        if (failures.isNotEmpty()) {
+        if (batch.failures.isNotEmpty()) {
             logger.warn(
-                "Size statistics collection failed for ${failures.size} of ${candidateFolderPaths.size} candidate folder(s). Candidate and deleted size audit fields exclude the failed folders."
+                "Size statistics collection failed for ${batch.failures.size} of ${candidateFolderPaths.size} candidate folder(s). Candidate and deleted size audit fields exclude the failed folders."
             )
         }
 
-        return result
+        return batch.statsByFolder
     }
 
     fun sum(stats: Iterable<StorageSizeStats>): StorageSizeStats =

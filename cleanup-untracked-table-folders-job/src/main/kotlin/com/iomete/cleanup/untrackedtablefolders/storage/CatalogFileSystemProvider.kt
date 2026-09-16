@@ -21,15 +21,67 @@ class CatalogFileSystemProvider {
 
     fun <T> withFileSystem(
         catalog: String,
-        location: String,
-        block: (FileSystem, Path) -> T,
+        operation: String,
+        locations: List<String>,
+        block: (FileSystem) -> T,
     ): T {
-        val path = Path(location)
-        val configuration = buildConfiguration(catalog, path)
+        val target = requireSingleFileSystemTarget(catalog, operation, locations)
+        val configuration = buildConfiguration(catalog, target)
 
-        return FileSystem.newInstance(path.toUri(), configuration).use { fileSystem ->
-            block(fileSystem, path)
+        return runOperation(catalog, operation, locations.first()) {
+            FileSystem.newInstance(target.toUri(), configuration).use { fileSystem ->
+                block(fileSystem)
+            }
         }
+    }
+
+    fun <T> runOperation(
+        catalog: String,
+        operation: String,
+        location: String,
+        block: () -> T,
+    ): T =
+        try {
+            block()
+        } catch (th: CatalogStorageConfigurationException) {
+            throw th
+        } catch (th: CatalogStorageOperationException) {
+            throw th
+        } catch (th: Throwable) {
+            throw CatalogStorageOperationException(
+                "Failed to $operation for catalog=$catalog, location=$location",
+                th,
+            )
+        }
+
+    /**
+     * One filesystem instance serves one scheme and authority, so a batch that spans more than one
+     * must not be pushed through a single instance.
+     */
+    private fun requireSingleFileSystemTarget(
+        catalog: String,
+        operation: String,
+        locations: List<String>,
+    ): Path {
+        if (locations.isEmpty()) {
+            throw CatalogStorageConfigurationException(
+                catalog = catalog,
+                message = "Cannot $operation for catalog=$catalog without a location.",
+            )
+        }
+
+        val paths = locations.map { Path(it) }
+        val targets = paths.map { it.toUri().let { uri -> "${uri.scheme}://${uri.authority}" } }.distinct()
+
+        if (targets.size > 1) {
+            throw CatalogStorageConfigurationException(
+                catalog = catalog,
+                message =
+                    "Cannot $operation for catalog=$catalog across more than one storage target: ${targets.sorted()}.",
+            )
+        }
+
+        return paths.first()
     }
 
     internal fun buildConfiguration(

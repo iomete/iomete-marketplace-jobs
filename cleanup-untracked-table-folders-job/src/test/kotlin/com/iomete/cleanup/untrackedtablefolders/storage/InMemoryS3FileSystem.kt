@@ -44,10 +44,15 @@ class InMemoryS3FileSystem : FileSystem() {
         val opened = CopyOnWriteArrayList<Opened>()
         val closedEndpoints = CopyOnWriteArrayList<String>()
 
+        /** Path whose delete should throw, so batch failure paths can be exercised. */
+        @Volatile
+        var failDeleteFor: String? = null
+
         fun reset() {
             stores.clear()
             opened.clear()
             closedEndpoints.clear()
+            failDeleteFor = null
         }
 
         fun store(endpoint: String): MutableMap<String, Entry> =
@@ -137,6 +142,9 @@ class InMemoryS3FileSystem : FileSystem() {
         recursive: Boolean,
     ): Boolean {
         val target = key(path)
+        if (target == failDeleteFor) {
+            throw java.io.IOException("simulated delete failure: $target")
+        }
         val victims = entries().keys.filter { it == target || it.startsWith("$target/") }
         if (victims.isEmpty()) return false
         if (!recursive && victims.size > 1) return false
