@@ -48,8 +48,15 @@ object CatalogStorageProperties {
     const val FS_SSL_ENABLED = "fs.s3a.connection.ssl.enabled"
     const val FS_CREDENTIALS_PROVIDER = "fs.s3a.aws.credentials.provider"
 
+    const val SESSION_TOKEN = "s3.session-token"
+
     /** Hadoop keys whose values are credentials and must never be rendered. */
     val SENSITIVE_HADOOP_KEYS = setOf(FS_ACCESS_KEY, FS_SECRET_KEY, FS_SESSION_TOKEN)
+
+    // Hadoop ships defaults in core-default.xml for keys such as fs.s3a.path.style.access, so
+    // reading the base configuration returns a built-in default rather than a platform choice.
+    // Only these keys are read back.
+    val INHERITABLE_HADOOP_KEYS = setOf(FS_ACCESS_KEY, FS_SECRET_KEY, FS_REGION)
 
     const val S3A_FILE_SYSTEM_CLASS = "org.apache.hadoop.fs.s3a.S3AFileSystem"
     const val SIMPLE_CREDENTIALS_PROVIDER = "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
@@ -74,28 +81,28 @@ object CatalogHadoopConfigBuilder {
         val endpoint = catalogProperties[CatalogStorageProperties.ENDPOINT]?.takeIf { it.isNotBlank() }
         val catalogOwnsEndpoint = endpoint != null
 
+        requireNoSessionToken(catalog, catalogProperties)
+
         val catalogAccessKey = catalogProperties[CatalogStorageProperties.ACCESS_KEY_ID]?.takeIf { it.isNotBlank() }
         val catalogSecretKey = catalogProperties[CatalogStorageProperties.SECRET_ACCESS_KEY]?.takeIf { it.isNotBlank() }
         requireCompleteCredentialPair(catalog, catalogAccessKey, catalogSecretKey)
+        requireCredentialsForOwnEndpoint(catalog, catalogOwnsEndpoint, catalogAccessKey)
 
-        val accessKey = credential(catalogAccessKey, hadoopFallback, catalogOwnsEndpoint, CatalogStorageProperties.FS_ACCESS_KEY)
-        val secretKey = credential(catalogSecretKey, hadoopFallback, catalogOwnsEndpoint, CatalogStorageProperties.FS_SECRET_KEY)
+        val accessKey = catalogAccessKey ?: inherited(CatalogStorageProperties.FS_ACCESS_KEY, hadoopFallback)
+        val secretKey = catalogSecretKey ?: inherited(CatalogStorageProperties.FS_SECRET_KEY, hadoopFallback)
 
         val region =
             CatalogStorageProperties.REGION_KEYS
                 .firstNotNullOfOrNull { catalogProperties[it]?.takeIf { value -> value.isNotBlank() } }
-                ?: hadoopFallback(CatalogStorageProperties.FS_REGION)?.takeIf { it.isNotBlank() }
+                ?: inherited(CatalogStorageProperties.FS_REGION, hadoopFallback)
 
         val pathStyleAccess =
             catalogProperties[CatalogStorageProperties.PATH_STYLE_ACCESS]?.takeIf { it.isNotBlank() }
-                ?: hadoopFallback(CatalogStorageProperties.FS_PATH_STYLE_ACCESS)?.takeIf { it.isNotBlank() }
-                ?: catalogOwnsEndpoint.toString()
+                ?: "true".takeIf { catalogOwnsEndpoint }
 
         val sslEnabled =
             catalogProperties[CatalogStorageProperties.CONNECTION_SSL_ENABLED]?.takeIf { it.isNotBlank() }
                 ?: endpoint?.let { (!it.startsWith("http://")).toString() }
-                ?: hadoopFallback(CatalogStorageProperties.FS_SSL_ENABLED)?.takeIf { it.isNotBlank() }
-                ?: "true"
 
         val overrides = buildMap {
             put("fs.s3.impl", CatalogStorageProperties.S3A_FILE_SYSTEM_CLASS)
@@ -104,8 +111,8 @@ object CatalogHadoopConfigBuilder {
             // Avoid reusing a filesystem instance created with another storage configuration.
             CatalogStorageProperties.S3_SCHEMES.forEach { put("fs.$it.impl.disable.cache", "true") }
 
-            put(CatalogStorageProperties.FS_PATH_STYLE_ACCESS, pathStyleAccess)
-            put(CatalogStorageProperties.FS_SSL_ENABLED, sslEnabled)
+            pathStyleAccess?.let { put(CatalogStorageProperties.FS_PATH_STYLE_ACCESS, it) }
+            sslEnabled?.let { put(CatalogStorageProperties.FS_SSL_ENABLED, it) }
             endpoint?.let { put(CatalogStorageProperties.FS_ENDPOINT, it) }
             region?.let { put(CatalogStorageProperties.FS_REGION, it) }
 
@@ -118,24 +125,60 @@ object CatalogHadoopConfigBuilder {
             }
         }
 
-        val removedKeys = buildSet {
-            if (catalogOwnsEndpoint && (accessKey == null || secretKey == null)) {
-                add(CatalogStorageProperties.FS_ACCESS_KEY)
-                add(CatalogStorageProperties.FS_SECRET_KEY)
-                add(CatalogStorageProperties.FS_SESSION_TOKEN)
-                add(CatalogStorageProperties.FS_CREDENTIALS_PROVIDER)
-            }
-
-            // An inherited platform session token must not be paired with catalog static credentials.
-            if (catalogAccessKey != null) {
-                add(CatalogStorageProperties.FS_SESSION_TOKEN)
-            }
-        }
+        // An inherited platform session token must not be paired with catalog static credentials.
+        val removedKeys =
+            if (catalogAccessKey != null) setOf(CatalogStorageProperties.FS_SESSION_TOKEN) else emptySet()
 
         return CatalogStorageConfig(
             catalog = catalog,
             overrides = overrides,
             removedKeys = removedKeys,
+        )
+    }
+
+    private fun inherited(
+        key: String,
+        hadoopFallback: (String) -> String?,
+    ): String? {
+        if (key !in CatalogStorageProperties.INHERITABLE_HADOOP_KEYS) {
+            return null
+        }
+        return hadoopFallback(key)?.takeIf { it.isNotBlank() }
+    }
+
+    private fun requireNoSessionToken(
+        catalog: String,
+        catalogProperties: Map<String, String>,
+    ) {
+        if (catalogProperties[CatalogStorageProperties.SESSION_TOKEN]?.isNotBlank() != true) {
+            return
+        }
+
+        throw CatalogStorageConfigurationException(
+            catalog = catalog,
+            message =
+                "Catalog '$catalog' sets '${CatalogStorageProperties.SESSION_TOKEN}'. Temporary session credentials are " +
+                    "not supported by this job. Configure static '${CatalogStorageProperties.ACCESS_KEY_ID}' and " +
+                    "'${CatalogStorageProperties.SECRET_ACCESS_KEY}' credentials instead.",
+        )
+    }
+
+    private fun requireCredentialsForOwnEndpoint(
+        catalog: String,
+        catalogOwnsEndpoint: Boolean,
+        catalogAccessKey: String?,
+    ) {
+        if (!catalogOwnsEndpoint || catalogAccessKey != null) {
+            return
+        }
+
+        throw CatalogStorageConfigurationException(
+            catalog = catalog,
+            message =
+                "Catalog '$catalog' declares '${CatalogStorageProperties.ENDPOINT}' but no catalog credentials. " +
+                    "Platform credentials are never used against a catalog-owned endpoint. Configure " +
+                    "'${CatalogStorageProperties.ACCESS_KEY_ID}' and '${CatalogStorageProperties.SECRET_ACCESS_KEY}' " +
+                    "on the catalog.",
         )
     }
 
@@ -161,17 +204,6 @@ object CatalogHadoopConfigBuilder {
         )
     }
 
-    private fun credential(
-        fromCatalog: String?,
-        hadoopFallback: (String) -> String?,
-        catalogOwnsEndpoint: Boolean,
-        fallbackKey: String,
-    ): String? {
-        if (fromCatalog != null || catalogOwnsEndpoint) {
-            return fromCatalog
-        }
-        return hadoopFallback(fallbackKey)?.takeIf { it.isNotBlank() }
-    }
     /** Returns the redacted configuration representation used for logging. */
     fun describe(config: CatalogStorageConfig): String = config.toString()
 }

@@ -457,9 +457,9 @@ Defaults when the catalog does not state them:
   `fs.s3a.path.style.access` to `true`.
 - `fs.s3a.connection.ssl.enabled` follows the endpoint scheme: `false` for `http://`, otherwise
   `true`.
-- When the catalog carries no access key, none is set, and S3A falls through to its own
-  credential chain. That is how IOMETE-managed catalogs work on AWS with IRSA or an instance
-  profile.
+- When the catalog does not declare its own endpoint and carries no access key, no credentials
+  are set and S3A falls through to its own credential chain. This preserves Hadoop’s normal credential-chain behavior for catalogs that do not declare their own endpoint. A catalog that declares its own endpoint must
+  supply its own credentials; see [Failure behavior](#failure-behavior).
 
 The `s3://` and `s3n://` schemes are bound to `S3AFileSystem`, because catalog locations are
 stored with whatever scheme the catalog was created with and Hadoop 3 has no built-in binding for
@@ -478,10 +478,21 @@ configuration object is read, never written. The Hadoop filesystem cache is bypa
 instance built for one endpoint can never be handed back for another. Each filesystem is closed
 when the operation finishes.
 
-If the catalog declares its own endpoint but carries no credentials, inherited platform
-credentials are removed rather than sent to a third-party endpoint.
+A catalog that declares its own endpoint is never accessed with platform or runtime credentials.
+It must supply its own static credentials, and the job fails closed otherwise.
 
 ### Failure behavior
+
+The job stops for the database and records `FAILED` when the catalog's storage configuration
+cannot be resolved safely:
+
+- The catalog declares `s3.endpoint` but does not supply a complete `s3.access-key-id` and
+  `s3.secret-access-key` pair. Platform and runtime credentials are never used against a
+  catalog-owned endpoint, so the job refuses to run rather than fall back to them.
+- Only one of `s3.access-key-id` and `s3.secret-access-key` is set.
+- The catalog sets `s3.session-token`. Temporary session credentials are not supported by this
+  job. The token is rejected rather than silently ignored, because dropping it would leave an
+  incomplete credential set. Configure static credentials instead.
 
 If the configured catalog is not registered in the Spark session, the job stops for that database
 and records `FAILED`. It does not fall back to Spark's global configuration, because that

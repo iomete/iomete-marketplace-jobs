@@ -103,16 +103,36 @@ class CatalogFileSystemProviderTest {
     }
 
     @Test
-    fun `platform credentials are not handed to a catalog endpoint`() {
+    fun `a catalog-owned endpoint without catalog credentials fails closed`() {
         val harness =
             CatalogStorageTestHarness(
                 catalogProperties = mapOf("no_creds_catalog" to mapOf("s3.endpoint" to CatalogStorageTestHarness.COMPAT_ENDPOINT)),
             )
         InMemoryS3FileSystem.putDirectory(CatalogStorageTestHarness.COMPAT_ENDPOINT, "s3a://example-bucket/db")
 
-        harness.discoveryService().listImmediateChildFolders("no_creds_catalog", "s3a://example-bucket/db")
+        assertThrows(CatalogStorageConfigurationException::class.java) {
+            harness.discoveryService().listImmediateChildFolders("no_creds_catalog", "s3a://example-bucket/db")
+        }
 
-        assertEquals(null, InMemoryS3FileSystem.opened.single().accessKey)
+        assertTrue(InMemoryS3FileSystem.opened.isEmpty())
+    }
+
+    @Test
+    fun `path style survives a base configuration that loaded Hadoop defaults`() {
+        val base = CatalogStorageTestHarness.hadoopConfigurationWithDefaults()
+        assertEquals("false", base.get(CatalogStorageProperties.FS_PATH_STYLE_ACCESS))
+
+        val harness =
+            CatalogStorageTestHarness(
+                catalogProperties = mapOf("example_catalog" to CatalogStorageTestHarness.s3CompatibleCatalogProperties().filterKeys { it != "s3.path-style-access" }),
+                sparkHadoopConfiguration = base,
+            )
+
+        val configuration = harness.fileSystemProvider.buildConfiguration("example_catalog", Path("s3a://example-bucket/db"))
+
+        assertEquals("true", configuration.get(CatalogStorageProperties.FS_PATH_STYLE_ACCESS))
+        assertEquals("ECS_ACCESS_KEY", configuration.get(CatalogStorageProperties.FS_ACCESS_KEY))
+        assertEquals("false", base.get(CatalogStorageProperties.FS_PATH_STYLE_ACCESS))
     }
 
     @Test

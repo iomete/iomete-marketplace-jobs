@@ -55,27 +55,52 @@ class CatalogHadoopConfigBuilderTest {
 
     @Test
     fun `defaults path style access to true when the catalog declares an endpoint`() {
-        val config =
-            CatalogHadoopConfigBuilder.build(
-                "example_catalog",
-                mapOf("s3.endpoint" to "https://objectstore.example.com"),
-            )
+        val config = CatalogHadoopConfigBuilder.build("example_catalog", s3CompatibleCatalogPropertiesWithout("s3.path-style-access"))
 
         assertEquals("true", config.overrides[CatalogStorageProperties.FS_PATH_STYLE_ACCESS])
     }
 
     @Test
-    fun `defaults path style access to false when no endpoint is declared`() {
+    fun `an inherited path style value cannot override a catalog-owned endpoint`() {
+        // Hadoop's core-default.xml sets fs.s3a.path.style.access=false, so the base configuration
+        // always has a value for it.
+        val fallback = mapOf(CatalogStorageProperties.FS_PATH_STYLE_ACCESS to "false")
+
+        val config =
+            CatalogHadoopConfigBuilder.build("example_catalog", s3CompatibleCatalogPropertiesWithout("s3.path-style-access")) { fallback[it] }
+
+        assertEquals("true", config.overrides[CatalogStorageProperties.FS_PATH_STYLE_ACCESS])
+    }
+
+    @Test
+    fun `an inherited ssl value cannot override a catalog-owned endpoint`() {
+        val fallback = mapOf(CatalogStorageProperties.FS_SSL_ENABLED to "false")
+
+        val config = CatalogHadoopConfigBuilder.build("example_catalog", s3CompatibleCatalogProperties) { fallback[it] }
+
+        assertEquals("true", config.overrides[CatalogStorageProperties.FS_SSL_ENABLED])
+    }
+
+    @Test
+    fun `leaves path style and ssl untouched when no endpoint is declared`() {
         val config = CatalogHadoopConfigBuilder.build("spark_catalog", mapOf("warehouse" to "s3a://platform/lakehouse"))
 
-        assertEquals("false", config.overrides[CatalogStorageProperties.FS_PATH_STYLE_ACCESS])
+        assertFalse(config.overrides.containsKey(CatalogStorageProperties.FS_PATH_STYLE_ACCESS))
+        assertFalse(config.overrides.containsKey(CatalogStorageProperties.FS_SSL_ENABLED))
         assertNull(config.overrides[CatalogStorageProperties.FS_ENDPOINT])
     }
 
     @Test
     fun `derives ssl from the endpoint scheme`() {
         val plain =
-            CatalogHadoopConfigBuilder.build("minio_catalog", mapOf("s3.endpoint" to "http://minio.default:9000"))
+            CatalogHadoopConfigBuilder.build(
+                "minio_catalog",
+                mapOf(
+                    "s3.endpoint" to "http://minio.default:9000",
+                    "s3.access-key-id" to "MINIO_ACCESS_KEY",
+                    "s3.secret-access-key" to "MINIO_SECRET_KEY",
+                ),
+            )
 
         assertEquals("false", plain.overrides[CatalogStorageProperties.FS_SSL_ENABLED])
     }
@@ -87,6 +112,8 @@ class CatalogHadoopConfigBuilderTest {
                 "example_catalog",
                 mapOf(
                     "s3.endpoint" to "https://objectstore.example.com",
+                    "s3.access-key-id" to "ECS_ACCESS_KEY",
+                    "s3.secret-access-key" to "ECS_SECRET_KEY",
                     "s3.path-style-access" to "false",
                     "s3.connection-ssl-enabled" to "false",
                 ),
@@ -97,14 +124,12 @@ class CatalogHadoopConfigBuilderTest {
     }
 
     @Test
-    fun `an inherited path style setting is preserved when the catalog does not state one`() {
+    fun `an inherited path style setting is left in place when the catalog does not own an endpoint`() {
         val fallback = mapOf(CatalogStorageProperties.FS_PATH_STYLE_ACCESS to "true")
 
         val config = CatalogHadoopConfigBuilder.build("spark_catalog", mapOf("warehouse" to "s3a://platform/lakehouse")) { fallback[it] }
 
-        // Without the fallback the derived default would be false and would silently switch an
-        // on-prem data plane from path style to virtual-hosted style.
-        assertEquals("true", config.overrides[CatalogStorageProperties.FS_PATH_STYLE_ACCESS])
+        assertFalse(config.overrides.containsKey(CatalogStorageProperties.FS_PATH_STYLE_ACCESS))
     }
 
     @Test
@@ -145,24 +170,55 @@ class CatalogHadoopConfigBuilderTest {
     }
 
     @Test
-    fun `never sends inherited platform credentials to a catalog endpoint`() {
+    fun `fails closed when a catalog-owned endpoint has no catalog credentials`() {
+        val error =
+            assertThrows(CatalogStorageConfigurationException::class.java) {
+                CatalogHadoopConfigBuilder.build(
+                    "example_catalog",
+                    mapOf("s3.endpoint" to "https://objectstore.example.com"),
+                )
+            }
+
+        assertEquals("example_catalog", error.catalog)
+        assertTrue(error.message!!.contains("s3.endpoint"))
+        assertTrue(error.message!!.contains("s3.access-key-id"))
+    }
+
+    @Test
+    fun `platform credentials are never inherited for a catalog-owned endpoint`() {
         val fallback =
             mapOf(
                 CatalogStorageProperties.FS_ACCESS_KEY to "PLATFORM_KEY",
                 CatalogStorageProperties.FS_SECRET_KEY to "PLATFORM_SECRET",
             )
 
-        val config =
-            CatalogHadoopConfigBuilder.build(
-                "example_catalog",
-                mapOf("s3.endpoint" to "https://objectstore.example.com"),
-            ) { fallback[it] }
+        val error =
+            assertThrows(CatalogStorageConfigurationException::class.java) {
+                CatalogHadoopConfigBuilder.build(
+                    "example_catalog",
+                    mapOf("s3.endpoint" to "https://objectstore.example.com"),
+                ) { fallback[it] }
+            }
 
-        assertFalse(config.overrides.containsValue("PLATFORM_KEY"))
-        assertFalse(config.overrides.containsValue("PLATFORM_SECRET"))
-        assertTrue(config.removedKeys.contains(CatalogStorageProperties.FS_ACCESS_KEY))
-        assertTrue(config.removedKeys.contains(CatalogStorageProperties.FS_SECRET_KEY))
-        assertTrue(config.removedKeys.contains(CatalogStorageProperties.FS_CREDENTIALS_PROVIDER))
+        assertFalse(error.message!!.contains("PLATFORM_KEY"))
+        assertFalse(error.message!!.contains("PLATFORM_SECRET"))
+    }
+
+    @Test
+    fun `rejects a catalog session token`() {
+        val error =
+            assertThrows(CatalogStorageConfigurationException::class.java) {
+                CatalogHadoopConfigBuilder.build(
+                    "example_catalog",
+                    s3CompatibleCatalogProperties + mapOf("s3.session-token" to "ECS_SESSION_TOKEN"),
+                )
+            }
+
+        assertEquals("example_catalog", error.catalog)
+        assertTrue(error.message!!.contains("s3.session-token"))
+        assertFalse(error.message!!.contains("ECS_SESSION_TOKEN"))
+        assertFalse(error.message!!.contains("ECS_ACCESS_KEY"))
+        assertFalse(error.message!!.contains("ECS_SECRET_KEY"))
     }
 
     @Test
@@ -310,4 +366,7 @@ class CatalogHadoopConfigBuilderTest {
         assertFalse(CatalogStorageProperties.isS3Scheme("gs"))
         assertFalse(CatalogStorageProperties.isS3Scheme(null))
     }
+
+    private fun s3CompatibleCatalogPropertiesWithout(key: String): Map<String, String> =
+        s3CompatibleCatalogProperties.filterKeys { it != key }
 }

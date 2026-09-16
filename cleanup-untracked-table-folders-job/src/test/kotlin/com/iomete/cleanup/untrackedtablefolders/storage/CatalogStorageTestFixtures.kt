@@ -64,6 +64,14 @@ class CatalogStorageTestHarness(
                 set(CatalogStorageProperties.FS_SECRET_KEY, "PLATFORM_SECRET")
             }
 
+        /** Loads core-default.xml, so fs.s3a.path.style.access is present with Hadoop's default. */
+        fun hadoopConfigurationWithDefaults(): Configuration =
+            Configuration().apply {
+                set("fs.s3a.impl", InMemoryS3FileSystem::class.java.name)
+                set(CatalogStorageProperties.FS_ACCESS_KEY, "PLATFORM_KEY")
+                set(CatalogStorageProperties.FS_SECRET_KEY, "PLATFORM_SECRET")
+            }
+
         const val PLATFORM_ENDPOINT = "https://s3.amazonaws.com"
 
         const val COMPAT_ENDPOINT = "https://objectstore.example.com"
