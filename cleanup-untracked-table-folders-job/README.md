@@ -145,6 +145,11 @@ The Spark/Iceberg catalog to inspect.
 
 The job uses Spark SQL against this catalog to discover databases, tables, and table locations.
 
+Object-storage access uses the same catalog. For S3 and S3-compatible catalogs, the job reads
+the available storage properties from the catalog's runtime configuration and uses them for
+direct filesystem access. See [Object-storage configuration](#object-storage-configuration).
+You do not configure storage credentials separately for this job.
+
 ---
 
 ### `databases`
@@ -397,6 +402,7 @@ The main safety principle is **fail closed**: if the job cannot prove that a fol
 | Pre-delete catalog revalidation | Deleting a folder that became active after initial discovery |
 | Audit row per database | Clear outcome tracking when a run scans multiple databases |
 | Empty-database guard | Deleting every folder in a database whose catalog has no active table locations (likely misconfiguration) |
+| Catalog-scoped storage access | Reading or deleting in the platform's storage instead of the catalog's, and vice versa |
 | Framework sentinel folder protection | Deleting `_temporary`, `.spark-staging-*`, `.hive-staging_*`, `__magic`, and similar working folders left by in-flight Hadoop, Spark, or Hive writes |
 
 ---
@@ -407,6 +413,12 @@ Catalog and object-storage discovery failures are not treated as empty results.
 
 For example, if the job cannot list storage folders or cannot discover catalog metadata, it does not assume there are zero candidates. Unknown state is not considered safe for destructive cleanup.
 
+The same rule covers storage configuration. A catalog whose storage configuration cannot be
+resolved fails the database instead of falling back to the platform's storage. Size statistics are
+reporting only, so a single unreadable candidate folder is tolerated and recorded as an unknown
+size, but a configuration failure, or every candidate folder failing, fails the database rather
+than producing a run that looks successful with no sizes.
+
 Outcome meanings:
 
 - `SUCCESS` means the database was processed normally.
@@ -414,6 +426,81 @@ Outcome meanings:
 - `FAILED` means an unexpected error occurred and should be investigated.
 
 This distinction matters when a single job scans multiple databases. Each configured database gets its own audit row, and the shared run ID groups those rows together.
+
+---
+
+## Object-storage configuration
+
+The job never asks for storage credentials, and never overrides Spark's global Hadoop
+configuration.
+
+### Where the settings come from
+
+The job reads the configured catalog's `spark.sql.catalog.<name>.*` properties from the Spark
+application's `sparkConf`. For S3 and S3-compatible catalogs, it maps the available catalog
+storage properties into an isolated Hadoop S3A configuration used for direct filesystem access.
+
+| Catalog property | Hadoop setting |
+|---|---|
+| `s3.endpoint` | `fs.s3a.endpoint` |
+| `s3.access-key-id` | `fs.s3a.access.key` |
+| `s3.secret-access-key` | `fs.s3a.secret.key` |
+| `s3.path-style-access` | `fs.s3a.path.style.access` |
+| `s3.region`, `s3.client.region` or `client.region` | `fs.s3a.endpoint.region` |
+| `s3.connection-ssl-enabled` | `fs.s3a.connection.ssl.enabled` |
+
+The mapping follows the catalog-to-Hadoop S3A property conventions used by the IOMETE Spark catalog extension.
+
+Defaults when the catalog does not state them:
+
+- When a catalog declares an endpoint and does not specify path-style access, the job defaults
+  `fs.s3a.path.style.access` to `true`.
+- `fs.s3a.connection.ssl.enabled` follows the endpoint scheme: `false` for `http://`, otherwise
+  `true`.
+- When the catalog does not declare its own endpoint and carries no access key, no credentials
+  are set and S3A falls through to its own credential chain. This preserves Hadoop’s normal credential-chain behavior for catalogs that do not declare their own endpoint. A catalog that declares its own endpoint must
+  supply its own credentials; see [Failure behavior](#failure-behavior).
+
+The `s3://` and `s3n://` schemes are bound to `S3AFileSystem`, because catalog locations are
+stored with whatever scheme the catalog was created with and Hadoop 3 has no built-in binding for
+those two.
+
+### Why it is done per catalog
+
+One run holds two storage systems at once: the audited catalog's bucket, and the platform bucket
+that carries the audit table and the Spark event log. Setting a catalog endpoint globally, through
+`spark.hadoop.fs.s3a.endpoint` or by writing to Spark's Hadoop configuration, sends the platform's
+own traffic to the catalog's endpoint and breaks the run.
+
+So each storage operation builds a **copy** of Spark's Hadoop configuration, applies that
+catalog's settings to the copy, and creates the filesystem with `FileSystem.newInstance`. Spark's
+configuration object is read, never written. The Hadoop filesystem cache is bypassed, so an
+instance built for one endpoint can never be handed back for another. Each filesystem is closed
+when the operation finishes.
+
+A catalog that declares its own endpoint is never accessed with platform or runtime credentials.
+It must supply its own static credentials, and the job fails closed otherwise.
+
+### Failure behavior
+
+The job stops for the database and records `FAILED` when the catalog's storage configuration
+cannot be resolved safely:
+
+- The catalog declares `s3.endpoint` but does not supply a complete `s3.access-key-id` and
+  `s3.secret-access-key` pair. Platform and runtime credentials are never used against a
+  catalog-owned endpoint, so the job refuses to run rather than fall back to them.
+- Only one of `s3.access-key-id` and `s3.secret-access-key` is set.
+- The catalog sets `s3.session-token`. Temporary session credentials are not supported by this
+  job. The token is rejected rather than silently ignored, because dropping it would leave an
+  incomplete credential set. Configure static credentials instead.
+
+If the configured catalog is not registered in the Spark session, the job stops for that database
+and records `FAILED`. It does not fall back to Spark's global configuration, because that
+configuration belongs to the platform's storage and silently scanning or deleting there is exactly
+what the per-catalog design prevents.
+
+The usual cause is that the catalog does not exist, or that the job's domain has no permission for
+it. Check the catalog in the console rather than adding storage settings to the job.
 
 ---
 
@@ -750,5 +837,8 @@ Any old unreferenced files inside that active table folder should be handled by 
 - Candidate discovery is table-folder-level: the job only selects immediate child folders under the resolved scan root as cleanup candidates.
 - When a selected candidate folder is deleted, the full object-storage prefix under that folder is deleted, including nested data and metadata objects.
 - The job relies on Spark catalog discovery for active table locations.
+- Object-storage access supports S3 and S3-compatible storage. A non-S3 catalog location falls back to Spark's own Hadoop configuration, which carries no catalog-specific endpoint or credentials.
+- Catalogs using vended or remotely signed credentials are not supported for storage access, because those credentials are issued per Iceberg request and never appear in `sparkConf`.
+- Folder names are compared case-sensitively, because `ORDERS` and `orders` are different object-storage prefixes.
 - The job is intended for controlled cleanup workflows, not blind automatic deletion.
 - Size statistics require recursively listing objects under final candidate folders. This can add overhead for folders with many objects and can be disabled with `collect_size_statistics=false`.

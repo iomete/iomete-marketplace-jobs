@@ -13,7 +13,10 @@ class CandidateSizeStatCollector {
     @Inject lateinit var config: ApplicationConfig
     @Inject lateinit var objectStorageDiscoveryService: ObjectStorageDiscoveryService
 
-    fun collectPerFolder(candidateFolderPaths: List<String>): Map<String, StorageSizeStats> {
+    fun collectPerFolder(
+        catalog: String,
+        candidateFolderPaths: List<String>,
+    ): Map<String, StorageSizeStats> {
         if (candidateFolderPaths.isEmpty()) {
             return emptyMap()
         }
@@ -29,29 +32,30 @@ class CandidateSizeStatCollector {
             "Collecting size statistics for ${candidateFolderPaths.size} candidate folder(s). This may take time for folders with many objects. To skip this step, set collect_size_statistics=false."
         )
 
-        val result = mutableMapOf<String, StorageSizeStats>()
-        var failedFolderCount = 0
+        val batch = objectStorageDiscoveryService.collectSizeStatsPerFolder(catalog, candidateFolderPaths)
 
-        candidateFolderPaths.forEach { candidateFolderPath ->
-            try {
-                result[candidateFolderPath] =
-                    objectStorageDiscoveryService.collectSizeStats(listOf(candidateFolderPath))
-            } catch (th: Throwable) {
-                failedFolderCount += 1
-                logger.warn(
-                    "Failed to collect size statistics for candidate folder; recording unknown size and continuing without aborting cleanup: path=$candidateFolderPath",
-                    th,
-                )
-            }
-        }
-
-        if (failedFolderCount > 0) {
+        batch.failures.forEach { (candidateFolderPath, th) ->
             logger.warn(
-                "Size statistics collection failed for $failedFolderCount of ${candidateFolderPaths.size} candidate folder(s). Candidate and deleted size audit fields exclude the failed folders."
+                "Failed to collect size statistics for candidate folder; recording unknown size and continuing without aborting cleanup: path=$candidateFolderPath",
+                th,
             )
         }
 
-        return result
+        if (batch.failures.size == candidateFolderPaths.size) {
+            throw IllegalStateException(
+                "Failed to collect size statistics for all ${candidateFolderPaths.size} candidate folder(s) of catalog=$catalog. " +
+                    "Treating this as a storage access failure rather than unknown sizes.",
+                batch.failures.values.first(),
+            )
+        }
+
+        if (batch.failures.isNotEmpty()) {
+            logger.warn(
+                "Size statistics collection failed for ${batch.failures.size} of ${candidateFolderPaths.size} candidate folder(s). Candidate and deleted size audit fields exclude the failed folders."
+            )
+        }
+
+        return batch.statsByFolder
     }
 
     fun sum(stats: Iterable<StorageSizeStats>): StorageSizeStats =

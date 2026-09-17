@@ -15,18 +15,6 @@ class CandidateDeletionGate {
     @Inject lateinit var catalogDiscoveryService: CatalogDiscoveryService
     @Inject lateinit var objectStorageDeletionService: ObjectStorageDeletionService
 
-    /**
-     * Returns the sorted list of folder paths that were actually deleted.
-     *
-     * Behavior:
-     *  - `dry_run=true` → returns emptyList, no catalog or storage I/O.
-     *  - `dry_run=false` AND `delete_enabled=false` → throws IllegalStateException.
-     *  - `dry_run=false` AND `delete_enabled=true` → re-queries the catalog for the
-     *    current active table locations and skips any candidate that now contains
-     *    (or is) an active table location. Surviving candidates are deleted
-     *    recursively via [ObjectStorageDeletionService]. The recheck is the
-     *    TOCTOU guard between detection and deletion.
-     */
     fun deleteCandidates(
         catalog: String,
         database: String,
@@ -46,10 +34,15 @@ class CandidateDeletionGate {
 
         val currentActiveTableLocations = currentActiveTableLocations(catalog, database)
 
-        return candidateFolders
-            .mapNotNull { candidateFolder ->
-                deleteIfNotClaimedByActiveTable(candidateFolder, currentActiveTableLocations)
+        val deletableFolders =
+            candidateFolders.filterNot { candidateFolder ->
+                claimedByActiveTable(candidateFolder, currentActiveTableLocations)
             }
+
+        return objectStorageDeletionService
+            .deleteFoldersRecursively(catalog, deletableFolders.map { it.path }.sorted())
+            .filter { it.deleted }
+            .map { it.path }
             .sorted()
     }
 
@@ -60,13 +53,13 @@ class CandidateDeletionGate {
             .mapNotNull { it.location }
             .map { StoragePathUtils.normalizeLocation(it) }
 
-    private fun deleteIfNotClaimedByActiveTable(
+    private fun claimedByActiveTable(
         candidateFolder: StorageFolder,
         currentActiveTableLocations: List<String>,
-    ): String? {
+    ): Boolean {
         val normalizedCandidatePath = StoragePathUtils.normalizeLocation(candidateFolder.path)
 
-        val claimedByActiveTable =
+        val claimed =
             currentActiveTableLocations.any { activeLocation ->
                 StoragePathUtils.isSameOrChildLocation(
                     candidateLocation = activeLocation,
@@ -74,16 +67,12 @@ class CandidateDeletionGate {
                 )
             }
 
-        if (claimedByActiveTable) {
+        if (claimed) {
             logger.warn(
                 "Skipping deletion because candidate folder is or contains an active table location: path=${candidateFolder.path}"
             )
-            return null
         }
 
-        return objectStorageDeletionService
-            .deleteFolderRecursively(candidateFolder.path)
-            .takeIf { it.deleted }
-            ?.path
+        return claimed
     }
 }
