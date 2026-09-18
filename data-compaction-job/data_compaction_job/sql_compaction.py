@@ -283,7 +283,11 @@ class SqlClient:
     def __init__(self):
         release_namespace = os.getenv("RELEASE_NAMESPACE", "iomete-system")
         cluster_domain = os.getenv("CLUSTER_DOMAIN", "cluster.local")
-        self.base_url = os.getenv("SQL_API_ENDPOINT", f"http://iom-core.{release_namespace}.svc.{cluster_domain}")
+        in_cluster_default = f"http://iom-core.{release_namespace}.svc.{cluster_domain}"
+        # IOMETE_WORKLOAD_CONTROL_PLANE_URL routes through the data plane's own gateway
+        # egress, so this still resolves once compute runs in a separate physical cluster
+        # from iom-core (LKH-510). Falls back to the old in-cluster address when unset.
+        self.base_url = os.getenv("SQL_API_ENDPOINT") or os.getenv("IOMETE_WORKLOAD_CONTROL_PLANE_URL") or in_cluster_default
 
     def catalogs(self):
         response = requests.get(f"{self.base_url}/api/internal/sql/schema/catalogs")
