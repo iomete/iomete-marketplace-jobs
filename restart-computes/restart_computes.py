@@ -357,6 +357,7 @@ def wait_for_cluster_state(
     sleep_seconds = poll.base_interval_seconds
     bad_states = {"FAILED", "ERROR"}
     reported_status: str | None = None
+    last_progress_at = started_at
 
     while True:
         payload = api.get_compute_details(cluster)
@@ -371,6 +372,14 @@ def wait_for_cluster_state(
                 api.log_file,
             )
             reported_status = status
+            last_progress_at = time.time()
+        elif time.time() - last_progress_at >= 20:
+            log_status(
+                phase_name,
+                f"{cluster.name}: {status or 'unknown'} ({elapsed:.1f}s, still waiting)",
+                api.log_file,
+            )
+            last_progress_at = time.time()
 
         if status is None:
             return False, status
