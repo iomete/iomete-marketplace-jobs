@@ -1,10 +1,12 @@
 import argparse
+import json
 import os
+import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import psycopg2
 from dotenv import load_dotenv
@@ -14,27 +16,42 @@ from requests.exceptions import RequestException
 
 RED = "\033[91m"
 YELLOW = "\033[93m"
+GREEN = "\033[92m"
+CYAN = "\033[96m"
+BOLD = "\033[1m"
 RESET = "\033[0m"
 
 # This is the backend compute API path version used by this script.
 COMPUTE_API_PATH_VERSION = "v2"
 
+MODE_STOP = "stop"
+MODE_START = "start"
+MODE_RESTART = "restart"
+
+OUTCOME_DONE = "done"
+OUTCOME_SKIPPED = "skipped"
+
+# Starting a compute that is already up re-applies its SparkApplication, so START skips these.
+ALREADY_RUNNING_STATUSES = frozenset({"ACTIVE", "STARTING"})
+
+EXIT_OK = 0
+EXIT_FAILURES = 1
+EXIT_CONFIG_ERROR = 2
+
+RULE_WIDTH = 78
+
 
 @dataclass(frozen=True)
 class Cluster:
-    """Minimal cluster data needed throughout the restart workflow."""
-
     compute_id: str
     domain: str
-    namespace: str
+    namespace: str | None
     name: str
     driver_status: str
 
 
 @dataclass(frozen=True)
 class PollConfig:
-    """Polling behavior for one lifecycle phase such as STOP or START."""
-
     base_interval_seconds: float
     max_interval_seconds: float
     timeout_seconds: float
@@ -43,13 +60,11 @@ class PollConfig:
 
 @dataclass(frozen=True)
 class Config:
-    """Runtime configuration loaded once at startup."""
-
-    db_host: str
-    db_port: str
-    db_name: str
-    db_user: str
-    db_password: str
+    db_host: str | None
+    db_port: str | None
+    db_name: str | None
+    db_user: str | None
+    db_password: str | None
     api_base_url: str
     api_token: str
     request_timeout: int
@@ -85,18 +100,14 @@ def get_float_env(name: str, default: float) -> float:
     return float(value) if value is not None else default
 
 
-def load_config(env_file: str = ".env") -> Config:
-    """
-    Load everything once so the rest of the script reads from a single config object.
-    That keeps env parsing out of the operational logic.
-    """
-    load_dotenv(dotenv_path=env_file)
+def load_config(env_file: str = ".env", require_db: bool = True) -> Config:
+    load_dotenv(dotenv_path=env_file, override=True)
 
     logs_dir = Path("logs")
     logs_dir.mkdir(exist_ok=True)
+    # START uses the state file and does not need database access.
+    read_db = get_env if require_db else os.getenv
 
-    # Start with short polls so fast transitions complete quickly.
-    # Backoff and max interval reduce API noise when a cluster takes longer.
     stop_base = get_float_env("STOP_POLL_INTERVAL_SECONDS", 2.0)
     start_base = get_float_env("START_POLL_INTERVAL_SECONDS", stop_base)
 
@@ -114,11 +125,11 @@ def load_config(env_file: str = ".env") -> Config:
     )
 
     return Config(
-        db_host=get_env("DB_HOST"),
-        db_port=get_env("DB_PORT"),
-        db_name=get_env("DB_NAME"),
-        db_user=get_env("DB_USER"),
-        db_password=get_env("DB_PASSWORD"),
+        db_host=read_db("DB_HOST"),
+        db_port=read_db("DB_PORT"),
+        db_name=read_db("DB_NAME"),
+        db_user=read_db("DB_USER"),
+        db_password=read_db("DB_PASSWORD"),
         api_base_url=get_env("API_BASE_URL").rstrip("/"),
         api_token=get_env("API_TOKEN"),
         request_timeout=int(os.getenv("REQUEST_TIMEOUT", "30")),
@@ -131,22 +142,51 @@ def load_config(env_file: str = ".env") -> Config:
     )
 
 
-# Argument parsing for env-file
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Restart active compute clusters using the configured environment."
+        description="Stop, start, or restart compute clusters in an IOMETE environment."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=[MODE_STOP, MODE_START, MODE_RESTART],
+        default=MODE_RESTART,
+        help=(
+            "stop: stop active computes and write a state file. "
+            "start: start the computes listed in a state file. "
+            "restart: stop then start in one run. Defaults to restart."
+        ),
     )
     parser.add_argument(
         "--env-file",
         default=".env",
         help="Path to the environment file to load. Defaults to .env",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--state-file",
+        help="State file written by --mode stop. Required by --mode start.",
+    )
+    args = parser.parse_args()
+
+    if args.mode == MODE_START and not args.state_file:
+        parser.error("--mode start requires --state-file")
+    if args.mode != MODE_START and args.state_file:
+        parser.error("--state-file is only used with --mode start")
+
+    return args
 
 
 # --------
 # Logging
 # --------
+
+LABEL_COLORS = {
+    "OK": GREEN,
+    "SKIP": CYAN,
+    "FAIL": RED,
+    "RETRY": YELLOW,
+    "STOP": YELLOW,
+    "START": CYAN,
+}
 
 
 def _write_log(message: str, log_file: Path, color: str | None = None) -> None:
@@ -174,6 +214,18 @@ def log_error(message: str, log_file: Path) -> None:
     _write_log(message, log_file, color=RED)
 
 
+def log_status(label: str, message: str, log_file: Path) -> None:
+    # The label is text, not just color, so the log file reads the same as the terminal.
+    _write_log(f"[{label:<5}] {message}", log_file, color=LABEL_COLORS.get(label))
+
+
+def describe(cluster: Cluster) -> str:
+    return (
+        f"{cluster.name} ({cluster.compute_id}) "
+        f"domain={cluster.domain} namespace={cluster.namespace or '-'}"
+    )
+
+
 # ----------------
 # Database helpers
 # ----------------
@@ -190,10 +242,6 @@ def open_db_connection(config: Config) -> PgConnection:
 
 
 def fetch_active_clusters(config: Config) -> list[Cluster]:
-    """
-    Use the DB only to find restart candidates quickly.
-    The API is still treated as the runtime source of truth during stop/start polling.
-    """
     query = """
         SELECT id, domain, namespace, name, driver_status
         FROM lakehouse
@@ -214,12 +262,6 @@ def fetch_active_clusters(config: Config) -> list[Cluster]:
 # Compute API operations
 # ---------------------
 class ComputeApiClient:
-    """
-    Light wrapper around the compute API.
-
-    This keeps auth, URL building, and retry behavior in one place so the restart
-    workflow reads more like business logic and less like HTTP plumbing.
-    """
 
     def __init__(self, config: Config, log_file: Path):
         self.config = config
@@ -248,13 +290,6 @@ class ComputeApiClient:
         return f"{self._compute_url(cluster)}/start"
 
     def request_with_retry(self, method: str, url: str) -> Response:
-        """
-        Retry only transport/HTTP-layer failures.
-
-        This is separate from the higher-level restart retry in main().
-        Request retries handle flaky API calls; workflow retry handles a cluster
-        that still failed to restart even though the HTTP requests themselves worked.
-        """
         last_error: Exception | None = None
 
         for attempt in range(self.config.api_retry_count + 1):
@@ -270,9 +305,10 @@ class ComputeApiClient:
                 last_error = exc
                 is_last_attempt = attempt == self.config.api_retry_count
                 if not is_last_attempt:
-                    log_warning(
-                        f"{method.upper()} failed for {url}. Retry {attempt + 1}/{self.config.api_retry_count} "
-                        f"after {self.config.api_retry_delay_seconds}s. Error: {exc}",
+                    log_status(
+                        "RETRY",
+                        f"{method.upper()} {url} failed, attempt {attempt + 1}/{self.config.api_retry_count} "
+                        f"in {self.config.api_retry_delay_seconds}s: {exc}",
                         self.log_file,
                     )
                     time.sleep(self.config.api_retry_delay_seconds)
@@ -297,15 +333,11 @@ class ComputeApiClient:
 # -----------------
 
 
-# Polling reads lifecycle state from the compute details API.
-# Verified response field: driverStatus
 def extract_driver_status(payload: dict[str, Any]) -> str | None:
     value = payload.get("driverStatus")
     return str(value) if value is not None else None
 
 
-# The compute details API also exposes a driver-side error message.
-# Include it in bad-state logs when available.
 def extract_driver_error_message(payload: dict[str, Any]) -> str | None:
     value = payload.get("driverErrorMessage")
     if value is None:
@@ -321,46 +353,33 @@ def wait_for_cluster_state(
     poll: PollConfig,
     phase_name: str,
 ) -> tuple[bool, str | None]:
-    """
-    Shared polling loop for both STOP and START.
-
-    We start with a short interval so fast transitions complete quickly, then back
-    off gradually to reduce API noise for slower clusters.
-    """
     started_at = time.time()
     sleep_seconds = poll.base_interval_seconds
     bad_states = {"FAILED", "ERROR"}
-    attempt = 1
+    reported_status: str | None = None
 
     while True:
         payload = api.get_compute_details(cluster)
         status = extract_driver_status(payload)
         elapsed = time.time() - started_at
 
-        log(
-            f"[{phase_name}] Poll #{attempt} for {cluster.compute_id} in {cluster.domain}: "
-            f"status={status}, elapsed={elapsed:.1f}s",
-            api.log_file,
-        )
-
-        if status is None:
-            log_warning(
-                f"[{phase_name}] Could not determine driver status for {cluster.compute_id}.",
+        # Log transitions only. A slow start would otherwise emit a line every few seconds.
+        if status != reported_status:
+            log_status(
+                phase_name,
+                f"{cluster.name}: {status or 'unknown'} ({elapsed:.1f}s)",
                 api.log_file,
             )
+            reported_status = status
+
+        if status is None:
             return False, status
 
         if status in bad_states:
             error_message = extract_driver_error_message(payload)
             if error_message:
                 log_error(
-                    f"[{phase_name}] Compute {cluster.compute_id} entered unhealthy state: "
-                    f"{status}. Error: {error_message}",
-                    api.log_file,
-                )
-            else:
-                log_error(
-                    f"[{phase_name}] Compute {cluster.compute_id} entered unhealthy state: {status}",
+                    f"[{phase_name}] {cluster.name} driver error: {error_message}",
                     api.log_file,
                 )
             return False, status
@@ -375,104 +394,160 @@ def wait_for_cluster_state(
         sleep_seconds = min(
             sleep_seconds * poll.backoff_multiplier, poll.max_interval_seconds
         )
-        attempt += 1
 
 
 # -----------------
-# Restart workflow
+# Lifecycle actions
 # -----------------
 
 
-def restart_cluster(api: ComputeApiClient, cluster: Cluster) -> None:
-    """
-    Restart one cluster safely:
-    STOP -> wait for STOPPED -> START -> wait for ACTIVE.
-    """
-    log(
-        f"Restarting cluster: {cluster.name} ({cluster.compute_id}) "
-        f"in domain {cluster.domain}, namespace {cluster.namespace}",
-        api.log_file,
-    )
+def stop_cluster(api: ComputeApiClient, cluster: Cluster) -> str:
+    log_status("STOP", describe(cluster), api.log_file)
+    api.stop_compute(cluster)
 
-    log("Sending STOP request", api.log_file)
-    stop_response = api.stop_compute(cluster)
-    log(f"STOP response: {stop_response.status_code}", api.log_file)
-
-    log("Waiting for compute to become STOPPED...", api.log_file)
-    stopped_ok, stopped_status = wait_for_cluster_state(
+    reached, status = wait_for_cluster_state(
         api=api,
         cluster=cluster,
         target_status="STOPPED",
         poll=api.config.stop_poll,
         phase_name="STOP",
     )
-    if not stopped_ok:
-        if stopped_status is None:
-            raise RuntimeError("Could not determine compute status after STOP request.")
+    if not reached:
         raise RuntimeError(
-            f"STOP phase did not reach STOPPED. Last observed status: {stopped_status}"
+            f"STOP did not reach STOPPED. Last observed status: {status or 'unknown'}"
         )
 
-    log(f"Compute reached STOPPED. Current status: {stopped_status}", api.log_file)
-    log("Sending START request", api.log_file)
-    start_response = api.start_compute(cluster)
-    log(f"START response: {start_response.status_code}", api.log_file)
+    return OUTCOME_DONE
 
-    log("Waiting for compute to become ACTIVE again...", api.log_file)
-    started_ok, started_status = wait_for_cluster_state(
+
+def start_cluster(api: ComputeApiClient, cluster: Cluster) -> str:
+    log_status("START", describe(cluster), api.log_file)
+
+    current_status = extract_driver_status(api.get_compute_details(cluster))
+    if current_status in ALREADY_RUNNING_STATUSES:
+        log_status("SKIP", f"{cluster.name} is already {current_status}", api.log_file)
+        return OUTCOME_SKIPPED
+
+    api.start_compute(cluster)
+
+    reached, status = wait_for_cluster_state(
         api=api,
         cluster=cluster,
         target_status="ACTIVE",
         poll=api.config.start_poll,
         phase_name="START",
     )
-    if not started_ok:
-        if started_status is None:
-            raise RuntimeError(
-                "Could not determine compute status after START request."
-            )
+    if not reached:
         raise RuntimeError(
-            f"START phase did not reach ACTIVE. Last observed status: {started_status}"
+            f"START did not reach ACTIVE. Last observed status: {status or 'unknown'}"
         )
 
-    log(
-        f"Restart finished successfully. Current status: {started_status}", api.log_file
-    )
+    return OUTCOME_DONE
 
 
-def run_restart_pass(
+def restart_cluster(api: ComputeApiClient, cluster: Cluster) -> str:
+    stop_cluster(api, cluster)
+    return start_cluster(api, cluster)
+
+
+ACTIONS: dict[str, Callable[[ComputeApiClient, Cluster], str]] = {
+    MODE_STOP: stop_cluster,
+    MODE_START: start_cluster,
+    MODE_RESTART: restart_cluster,
+}
+
+
+def run_pass(
     api: ComputeApiClient,
     clusters: list[Cluster],
-    pass_name: str,
-) -> tuple[list[Cluster], list[tuple[Cluster, str]]]:
-    """
-    Run one pass across a list of clusters.
-
-    We keep this separate so PASS 1 and PASS 2 reuse the same behavior instead of
-    duplicating the whole restart loop twice.
-    """
+    action: Callable[[ComputeApiClient, Cluster], str],
+) -> tuple[list[Cluster], list[Cluster], list[tuple[Cluster, str]]]:
     successes: list[Cluster] = []
+    skipped: list[Cluster] = []
     failures: list[tuple[Cluster, str]] = []
 
     for cluster in clusters:
-        cluster_started_at = time.time()
+        started_at = time.time()
         try:
-            log(
-                f"[{pass_name}] Working on {cluster.name} ({cluster.compute_id}) "
-                f"in domain {cluster.domain}, namespace {cluster.namespace}",
-                api.log_file,
-            )
-            restart_cluster(api, cluster)
-            log(
-                f"[{pass_name}] Restart completed in {time.time() - cluster_started_at:.2f}s",
-                api.log_file,
+            outcome = action(api, cluster)
+        except Exception as exc:
+            log_status("FAIL", f"{cluster.name}: {exc}", api.log_file)
+            failures.append((cluster, str(exc)))
+            continue
+
+        if outcome == OUTCOME_SKIPPED:
+            skipped.append(cluster)
+        else:
+            log_status(
+                "OK", f"{cluster.name} in {time.time() - started_at:.1f}s", api.log_file
             )
             successes.append(cluster)
-        except Exception as exc:
-            log_error(f"[{pass_name}] FAILED: {exc}", api.log_file)
-            failures.append((cluster, str(exc)))
 
-    return successes, failures
+    return successes, skipped, failures
+
+
+# --------------------------
+# State file (STOP -> START)
+# --------------------------
+
+
+def write_stopped_artifact(
+    clusters: list[Cluster], config: Config, logs_dir: Path
+) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    state_file = logs_dir / f"stopped_computes_{stamp}.json"
+    # Two stops in the same second would otherwise clobber the first file.
+    suffix = 2
+    while state_file.exists():
+        state_file = logs_dir / f"stopped_computes_{stamp}_{suffix}.json"
+        suffix += 1
+
+    payload = {
+        "stopped_at": datetime.now(timezone.utc).isoformat(),
+        "api_base_url": config.api_base_url,
+        "computes": [
+            {
+                "id": cluster.compute_id,
+                "domain": cluster.domain,
+                "name": cluster.name,
+                "namespace": cluster.namespace,
+            }
+            for cluster in clusters
+        ],
+    }
+
+    with state_file.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+
+    return state_file
+
+
+def load_stopped_artifact(
+    state_file: Path, config: Config
+) -> tuple[list[Cluster], str]:
+    with state_file.open(encoding="utf-8") as f:
+        payload = json.load(f)
+
+    artifact_base_url = str(payload.get("api_base_url") or "").rstrip("/")
+    if artifact_base_url != config.api_base_url:
+        raise RuntimeError(
+            f"State file was written for {artifact_base_url or '<missing>'} "
+            f"but this run is configured for {config.api_base_url}."
+        )
+
+    clusters = [
+        Cluster(
+            compute_id=item["id"],
+            domain=item["domain"],
+            namespace=item.get("namespace"),
+            name=item["name"],
+            driver_status="STOPPED",
+        )
+        for item in payload.get("computes", [])
+    ]
+
+    return clusters, str(payload.get("stopped_at", "unknown"))
 
 
 # --------------------
@@ -480,19 +555,53 @@ def run_restart_pass(
 # --------------------
 
 
-def print_plan(clusters: list[Cluster], api: ComputeApiClient) -> None:
-    log(f"Found {len(clusters)} active compute clusters", api.log_file)
-    log("-" * 100, api.log_file)
+def print_header(
+    mode: str,
+    config: Config,
+    env_file: str,
+    target_count: int,
+    log_file: Path,
+    source_note: str | None = None,
+) -> None:
+    run_mode = "DRY RUN" if config.dry_run else "EXECUTION"
+
+    log("=" * RULE_WIDTH, log_file)
+    _write_log(
+        f" Compute Tool  |  {mode.upper()}  |  {run_mode}", log_file, color=BOLD + CYAN
+    )
+    log("=" * RULE_WIDTH, log_file)
+    log(f" Environment : {config.api_base_url}", log_file)
+    log(f" Env file    : {env_file}", log_file)
+    log(f" API version : {COMPUTE_API_PATH_VERSION}", log_file)
+    log(f" Targets     : {target_count}", log_file)
+    if source_note:
+        log(f" Source      : {source_note}", log_file)
+    log(f" Started     : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", log_file)
+    log(f" Log file    : {log_file}", log_file)
+    log("=" * RULE_WIDTH, log_file)
+
+
+def print_plan(clusters: list[Cluster], api: ComputeApiClient, mode: str) -> None:
+    log(
+        f" {'NAME':<28} {'DOMAIN':<16} {'NAMESPACE':<20} {'STATUS':<9} ID",
+        api.log_file,
+    )
 
     for cluster in clusters:
-        log(f"name={cluster.name}", api.log_file)
-        log(f"id={cluster.compute_id}", api.log_file)
-        log(f"domain={cluster.domain}", api.log_file)
-        log(f"namespace={cluster.namespace}", api.log_file)
-        log(f"status={cluster.driver_status}", api.log_file)
-        log(f"STOP URL -> {api.stop_url(cluster)}", api.log_file)
-        log(f"START URL -> {api.start_url(cluster)}", api.log_file)
-        log("-" * 100, api.log_file)
+        log(
+            f" {cluster.name:<28} {cluster.domain:<16} "
+            f"{(cluster.namespace or '-'):<20} {cluster.driver_status:<9} "
+            f"{cluster.compute_id}",
+            api.log_file,
+        )
+        # URLs are worth the extra lines only when nothing is going to be sent.
+        if api.config.dry_run:
+            if mode in (MODE_STOP, MODE_RESTART):
+                log(f"   STOP  -> {api.stop_url(cluster)}", api.log_file)
+            if mode in (MODE_START, MODE_RESTART):
+                log(f"   START -> {api.start_url(cluster)}", api.log_file)
+
+    log("-" * RULE_WIDTH, api.log_file)
 
 
 def write_failures_file(failures: list[tuple[Cluster, str]], logs_dir: Path) -> Path:
@@ -508,45 +617,61 @@ def write_failures_file(failures: list[tuple[Cluster, str]], logs_dir: Path) -> 
 
 
 def print_summary(
+    mode: str,
     clusters: list[Cluster],
     successes: list[Cluster],
+    skipped: list[Cluster],
     failures: list[tuple[Cluster, str]],
     log_file: Path,
     global_start: float,
     execution_start: float,
+    state_file: Path | None,
+    failed_file: Path | None,
+    env_file: str,
 ) -> None:
-    log("=" * 100, log_file)
-    log("RESTART SUMMARY", log_file)
-    log("=" * 100, log_file)
-
-    log(f"Successes: {len(successes)}", log_file)
-    for cluster in successes:
-        log(
-            f"OK  | {cluster.name} | {cluster.domain} | {cluster.namespace} | {cluster.compute_id}",
-            log_file,
-        )
-
-    log(f"Failures: {len(failures)}", log_file)
-    for cluster, error in failures:
-        log_error(
-            f"ERR | {cluster.name} | {cluster.domain} | {cluster.namespace} | {cluster.compute_id}",
-            log_file,
-        )
-        log_error(f"    {error}", log_file)
-
-    success_rate = (len(successes) / len(clusters)) * 100 if clusters else 0
-    total_runtime = time.time() - global_start
-    execution_runtime = time.time() - execution_start
-
-    log(f"Log file saved to: {log_file}", log_file)
-    log(f"Success rate: {success_rate:.2f}%", log_file)
+    log("=" * RULE_WIDTH, log_file)
+    _write_log(f" {mode.upper()} SUMMARY", log_file, color=BOLD)
+    log("=" * RULE_WIDTH, log_file)
+    log(f" Succeeded : {len(successes)}", log_file)
+    log(f" Skipped   : {len(skipped)}", log_file)
+    log(f" Failed    : {len(failures)}", log_file)
+    log(f" Targets   : {len(clusters)}", log_file)
     log(
-        f"Execution time (excluding confirmation wait): {execution_runtime:.2f}s",
+        f" Duration  : {time.time() - execution_start:.1f}s "
+        f"(total {time.time() - global_start:.1f}s)",
         log_file,
     )
-    log(f"Total script runtime: {total_runtime:.2f}s", log_file)
-    log(f"Total targets: {len(clusters)}", log_file)
-    log(f"Attempted: {len(successes) + len(failures)}", log_file)
+
+    for cluster in skipped:
+        log_status(
+            "SKIP", f"{cluster.name} | {cluster.domain} | {cluster.compute_id}", log_file
+        )
+
+    for cluster, error in failures:
+        log_status(
+            "FAIL", f"{cluster.name} | {cluster.domain} | {cluster.compute_id}", log_file
+        )
+        log_error(f"        {error}", log_file)
+
+    if failed_file:
+        log_error(f" Failed computes written to: {failed_file}", log_file)
+
+    if failures and mode == MODE_STOP:
+        log_error(
+            " Resolve these before the deployment. They may still be holding resources.",
+            log_file,
+        )
+
+    if state_file is not None:
+        log("-" * RULE_WIDTH, log_file)
+        _write_log(f" STATE FILE  {state_file}", log_file, color=BOLD + GREEN)
+        log(" Run this after the deployment:", log_file)
+        _write_log(
+            f"   python3 restart_computes.py --mode start --env-file {env_file} --state-file {state_file}",
+            log_file,
+            color=GREEN,
+        )
+        log("-" * RULE_WIDTH, log_file)
 
 
 # -----------------
@@ -554,75 +679,105 @@ def print_summary(
 # -----------------
 
 
-def main() -> None:
+def main() -> int:
     global_start = time.time()
     args = parse_args()
-    config = load_config(env_file=args.env_file)
+
+    try:
+        config = load_config(
+            env_file=args.env_file,
+            require_db=args.mode != MODE_START,
+        )
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+
     log_file = (
         config.logs_dir / f"restart_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     )
-    log(f"Env file: {args.env_file}", log_file)
 
-    clusters = fetch_active_clusters(config)
+    source_note: str | None = None
+    try:
+        if args.mode == MODE_START:
+            clusters, stopped_at = load_stopped_artifact(Path(args.state_file), config)
+            source_note = f"{args.state_file} (stopped at {stopped_at})"
+        else:
+            clusters = fetch_active_clusters(config)
+    except Exception as exc:
+        log_status("FAIL", str(exc), log_file)
+        return EXIT_CONFIG_ERROR
+
+    print_header(
+        args.mode, config, args.env_file, len(clusters), log_file, source_note
+    )
+
     if not clusters:
-        log_warning("No active compute clusters found. Nothing to do.", log_file)
-        return
+        log_warning("Nothing to do.", log_file)
+        return EXIT_OK
 
     api = ComputeApiClient(config=config, log_file=log_file)
 
     try:
-        log("=" * 80, log_file)
-        log("Compute Restart Tool", log_file)
-        log(f"Environment: {config.api_base_url}", log_file)
-        log(f"Mode: {'DRY RUN' if config.dry_run else 'EXECUTION'}", log_file)
-        log(f"API Path Version: {COMPUTE_API_PATH_VERSION}", log_file)
-        log(f"Total Targets: {len(clusters)}", log_file)
-        log(f"Started At: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", log_file)
-        log("=" * 80, log_file)
-
-        print_plan(clusters, api)
+        print_plan(clusters, api, args.mode)
 
         if config.dry_run:
             log_warning("Dry run enabled. No API requests were sent.", log_file)
-            return
+            return EXIT_OK
 
-        confirm = input("Type 'YES' to restart ALL active compute clusters: ").strip()
+        confirm = input(
+            f"Type 'YES' to {args.mode} {len(clusters)} compute cluster(s): "
+        ).strip()
         if confirm.upper() != "YES":
             log("Execution aborted by user.", log_file)
-            return
+            return EXIT_OK
 
         execution_start = time.time()
-        successes, failures = run_restart_pass(api, clusters, pass_name="PASS 1")
+        action = ACTIONS[args.mode]
+        successes, skipped, failures = run_pass(api, clusters, action)
 
         # One workflow-level retry is useful for transient cluster-side issues.
         # This is different from request_with_retry(), which only retries HTTP calls.
         if failures:
             retry_clusters = [cluster for cluster, _ in failures]
-            log_warning(
-                f"Retrying {len(retry_clusters)} failed cluster(s) one more time before final export...",
+            log_status(
+                "RETRY",
+                f"{len(retry_clusters)} compute(s): "
+                + ", ".join(cluster.name for cluster in retry_clusters),
                 log_file,
             )
-            retry_successes, retry_failures = run_restart_pass(
-                api, retry_clusters, pass_name="PASS 2"
+            retry_successes, retry_skipped, failures = run_pass(
+                api, retry_clusters, action
             )
             successes.extend(retry_successes)
-            failures = retry_failures
+            skipped.extend(retry_skipped)
 
-        if failures:
-            failed_file = write_failures_file(failures, config.logs_dir)
-            log_error(f"Failed clusters were written to: {failed_file}", log_file)
+        state_file = (
+            write_stopped_artifact(successes, config, config.logs_dir)
+            if args.mode == MODE_STOP and successes
+            else None
+        )
+        failed_file = (
+            write_failures_file(failures, config.logs_dir) if failures else None
+        )
 
         print_summary(
+            mode=args.mode,
             clusters=clusters,
             successes=successes,
+            skipped=skipped,
             failures=failures,
             log_file=log_file,
             global_start=global_start,
             execution_start=execution_start,
+            state_file=state_file,
+            failed_file=failed_file,
+            env_file=args.env_file,
         )
+
+        return EXIT_FAILURES if failures else EXIT_OK
     finally:
         api.close()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
