@@ -314,6 +314,64 @@ class ParserTest {
     }
 
     @Test
+    fun `environment variable placeholders are substituted`() {
+        val json =
+            """
+            {
+              "source": { "type": "s3", "bucket": "b", "accessKey": "${'$'}{SRC_KEY}", "secretKey": "${'$'}{SRC_SECRET}" },
+              "target": { "type": "s3", "bucket": "t", "accessKey": "k", "secretKey": "s" }
+            }
+            """.trimIndent()
+
+        val source =
+            Parser.parse(
+                json,
+                mapOf("SRC_KEY" to "134122@ecstestdrive.emc.com", "SRC_SECRET" to """a"b\c"""),
+            ).source as S3Config
+
+        assertEquals("134122@ecstestdrive.emc.com", source.accessKey)
+        assertEquals("""a"b\c""", source.secretKey)
+    }
+
+    @Test
+    fun `only complete string values are substituted`() {
+        val json =
+            """
+            {
+              "source": {
+                "type": "s3",
+                "bucket": "b",
+                "accessKey": "prefix-${'$'}{SRC_KEY}",
+                "secretKey": "s",
+                "${'$'}{MISSING_KEY}": "ignored"
+              },
+              "target": { "type": "s3", "bucket": "t", "accessKey": "k", "secretKey": "s" }
+            }
+            """.trimIndent()
+
+        val source = Parser.parse(json, mapOf("SRC_KEY" to "k")).source as S3Config
+
+        assertEquals("prefix-${'$'}{SRC_KEY}", source.accessKey)
+    }
+
+    @Test
+    fun `undefined environment variables are named`() {
+        val json =
+            """
+            {
+              "source": { "type": "s3", "bucket": "b", "accessKey": "${'$'}{SRC_KEY}", "secretKey": "${'$'}{SRC_SECRET}" },
+              "target": { "type": "s3", "bucket": "t", "accessKey": "k", "secretKey": "s" }
+            }
+            """.trimIndent()
+
+        val e = assertThrows<ConfigParseException> { Parser.parse(json, mapOf("SRC_KEY" to "k")) }
+        assertEquals(
+            "Undefined environment variable(s) referenced in configuration: SRC_SECRET",
+            e.message,
+        )
+    }
+
+    @Test
     fun `malformed JSON reports line and column`() {
         val json = """{ "source": { "type": "s3" "bucket": "x" } }"""
 

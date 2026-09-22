@@ -3,12 +3,14 @@ package com.iomete.backup.config.internal
 import com.fasterxml.jackson.core.JsonProcessingException
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.JsonMappingException
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.exc.InvalidFormatException
 import com.fasterxml.jackson.databind.exc.InvalidNullException
 import com.fasterxml.jackson.databind.exc.InvalidTypeIdException
 import com.fasterxml.jackson.databind.exc.MismatchedInputException
+import com.fasterxml.jackson.databind.node.ArrayNode
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import com.fasterxml.jackson.module.kotlin.readValue
 import com.iomete.backup.config.ApplicationConfig
 import com.iomete.backup.config.ConfigParseException
 import org.slf4j.LoggerFactory
@@ -17,6 +19,8 @@ import java.io.IOException
 
 object Parser {
     private val logger = LoggerFactory.getLogger(Parser::class.java)
+
+    private val PLACEHOLDER = Regex("""\$\{([A-Za-z_][A-Za-z0-9_]*)}""")
 
     private val mapper =
         jacksonObjectMapper().apply {
@@ -46,9 +50,15 @@ object Parser {
         return parse(content)
     }
 
-    fun parse(json: String): ApplicationConfig =
+    fun parse(
+        json: String,
+        env: Map<String, String> = System.getenv(),
+    ): ApplicationConfig =
         try {
-            mapper.readValue<ApplicationConfig>(json)
+            val root = mapper.readTree(json)
+            mapper.treeToValue(resolveEnvironment(root, env), ApplicationConfig::class.java)
+        } catch (e: ConfigParseException) {
+            throw e
         } catch (e: MismatchedInputException) {
             logger.debug("Configuration binding failed", e)
             throw ConfigParseException(buildParseErrorMessage(e), e)
@@ -59,6 +69,47 @@ object Parser {
             logger.debug("Configuration parsing failed", e)
             throw ConfigParseException("Failed to parse configuration", e)
         }
+
+    private fun resolveEnvironment(
+        root: JsonNode,
+        env: Map<String, String>,
+    ): JsonNode {
+        val missing = sortedSetOf<String>()
+        val resolved = resolveEnvironment(root, env, missing)
+        if (missing.isNotEmpty()) {
+            throw ConfigParseException(
+                "Undefined environment variable(s) referenced in configuration: ${missing.joinToString(", ")}",
+            )
+        }
+        return resolved
+    }
+
+    private fun resolveEnvironment(
+        node: JsonNode,
+        env: Map<String, String>,
+        missing: MutableSet<String>,
+    ): JsonNode {
+        if (node.isTextual) {
+            val match = PLACEHOLDER.matchEntire(node.textValue()) ?: return node
+            val name = match.groupValues[1]
+            return env[name]?.let(mapper.nodeFactory::textNode) ?: node.also { missing += name }
+        }
+
+        when (node) {
+            is ObjectNode -> {
+                node.fieldNames().asSequence().toList().forEach { field ->
+                    node.set<JsonNode>(field, resolveEnvironment(node[field], env, missing))
+                }
+            }
+
+            is ArrayNode -> {
+                repeat(node.size()) { index ->
+                    node.set(index, resolveEnvironment(node[index], env, missing))
+                }
+            }
+        }
+        return node
+    }
 
     private fun syntaxErrorMessage(e: JsonProcessingException): String {
         val loc = e.location ?: return "Invalid JSON: malformed configuration"
