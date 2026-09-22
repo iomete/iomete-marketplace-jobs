@@ -57,6 +57,12 @@ The job reads a single JSON file (IOMETE mounts it at
 }
 ```
 
+You can store credentials in environment variables and reference them from the
+JSON. In IOMETE, add each environment variable and set its value from an IOMETE
+**Secret**. Use `${VAR_NAME}` as the complete JSON value. The job replaces it at
+startup and fails with the variable name if it is missing. Partial placeholders
+such as `https://${HOST}/path` are not supported.
+
 The remaining S3 fields are optional and have sensible defaults: `prefix`
 (empty), `endpoint` (AWS default), `pathStyleAccess` (`false`), `region`
 (`us-east-1`). The job scales automatically with your Spark cluster, so there is
@@ -300,10 +306,9 @@ To restore an HDFS backup to S3, swap the storage types:
 3. Choose the **Instance** size appropriate for the volume of data being copied.
 4. Under **Configuration**, paste your `application.json`. IOMETE mounts it at
    `/etc/configs/application.json`.
-5. Provide credentials via **Environment Variables** or IOMETE **Secrets**
-   (recommended) and reference them from the config with `${VAR_NAME}`
-   placeholders, which the platform substitutes at deploy time. Never commit
-   real access/secret keys into the config.
+5. Add each credential as an **Environment Variable** whose name matches the
+   `${VAR_NAME}` value in the JSON. Set its value from an IOMETE **Secret**
+   (recommended).
 6. Optionally set a **Schedule** (cron) to run the backup periodically, then
    click **Create**.
 7. Trigger a run from the job detail page and monitor progress under
