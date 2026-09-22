@@ -165,12 +165,20 @@ def parse_args() -> argparse.Namespace:
         "--state-file",
         help="State file written by --mode stop. Required by --mode start.",
     )
+    parser.add_argument(
+        "--domain",
+        help="Restart only the active computes in this domain. Restart mode only.",
+    )
     args = parser.parse_args()
 
     if args.mode == MODE_START and not args.state_file:
         parser.error("--mode start requires --state-file")
     if args.mode != MODE_START and args.state_file:
         parser.error("--state-file is only used with --mode start")
+    if args.domain is not None and not args.domain.strip():
+        parser.error("--domain requires a non-empty value")
+    if args.domain and args.mode != MODE_RESTART:
+        parser.error("--domain is only used with --mode restart")
 
     return args
 
@@ -241,18 +249,24 @@ def open_db_connection(config: Config) -> PgConnection:
     )
 
 
-def fetch_active_clusters(config: Config) -> list[Cluster]:
+def fetch_active_clusters(config: Config, domain: str | None = None) -> list[Cluster]:
     query = """
         SELECT id, domain, namespace, name, driver_status
         FROM lakehouse
         WHERE is_deleted = false
           AND driver_status = 'ACTIVE'
-        ORDER BY created_at DESC;
-    """
+    """.rstrip()
+    params: tuple[str, ...] | None = None
+
+    if domain:
+        query += "\n          AND domain = %s"
+        params = (domain,)
+
+    query += "\n        ORDER BY created_at DESC;"
 
     with open_db_connection(config) as conn:
         with conn.cursor() as cur:
-            cur.execute(query)
+            cur.execute(query, params)
             rows = cur.fetchall()
 
     return [Cluster(*row) for row in rows]
@@ -571,6 +585,7 @@ def print_header(
     target_count: int,
     log_file: Path,
     source_note: str | None = None,
+    domain: str | None = None,
 ) -> None:
     run_mode = "DRY RUN" if config.dry_run else "EXECUTION"
 
@@ -582,6 +597,8 @@ def print_header(
     log(f" Environment : {config.api_base_url}", log_file)
     log(f" Env file    : {env_file}", log_file)
     log(f" API version : {COMPUTE_API_PATH_VERSION}", log_file)
+    if domain:
+        log(f" Domain      : {domain}", log_file)
     log(f" Targets     : {target_count}", log_file)
     if source_note:
         log(f" Source      : {source_note}", log_file)
@@ -637,6 +654,7 @@ def print_summary(
     state_file: Path | None,
     failed_file: Path | None,
     env_file: str,
+    domain: str | None = None,
 ) -> None:
     log("=" * RULE_WIDTH, log_file)
     _write_log(f" {mode.upper()} SUMMARY", log_file, color=BOLD)
@@ -645,6 +663,8 @@ def print_summary(
     log(f" Skipped   : {len(skipped)}", log_file)
     log(f" Failed    : {len(failures)}", log_file)
     log(f" Targets   : {len(clusters)}", log_file)
+    if domain:
+        log(f" Domain    : {domain}", log_file)
     log(
         f" Duration  : {time.time() - execution_start:.1f}s "
         f"(total {time.time() - global_start:.1f}s)",
@@ -711,17 +731,26 @@ def main() -> int:
             clusters, stopped_at = load_stopped_artifact(Path(args.state_file), config)
             source_note = f"{args.state_file} (stopped at {stopped_at})"
         else:
-            clusters = fetch_active_clusters(config)
+            clusters = fetch_active_clusters(config, args.domain)
     except Exception as exc:
         log_status("FAIL", str(exc), log_file)
         return EXIT_CONFIG_ERROR
 
     print_header(
-        args.mode, config, args.env_file, len(clusters), log_file, source_note
+        args.mode,
+        config,
+        args.env_file,
+        len(clusters),
+        log_file,
+        source_note,
+        args.domain,
     )
 
     if not clusters:
-        log_warning("Nothing to do.", log_file)
+        if args.domain:
+            log_warning(f"No ACTIVE computes found in domain {args.domain}.", log_file)
+        else:
+            log_warning("Nothing to do.", log_file)
         return EXIT_OK
 
     api = ComputeApiClient(config=config, log_file=log_file)
@@ -781,6 +810,7 @@ def main() -> int:
             state_file=state_file,
             failed_file=failed_file,
             env_file=args.env_file,
+            domain=args.domain,
         )
 
         return EXIT_FAILURES if failures else EXIT_OK

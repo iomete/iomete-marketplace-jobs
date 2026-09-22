@@ -154,6 +154,15 @@ python restart_computes.py --mode restart --env-file .env.release
 python restart_computes.py --env-file .env.release
 ```
 
+**Restart one domain only**, for example after a Spark configuration change scoped to that domain:
+
+```bash
+python restart_computes.py --domain fde --env-file .env.release
+python restart_computes.py --mode restart --domain fde --env-file .env.release
+```
+
+Without `--domain` every ACTIVE compute is restarted, as before. `--domain` works with restart only and is rejected with `--mode stop` or `--mode start`.
+
 `--state-file` is required by `--mode start` and rejected by the other modes, since `stop` names its own file and `restart` needs none.
 
 `--env-file` works with every mode and defaults to `.env`.

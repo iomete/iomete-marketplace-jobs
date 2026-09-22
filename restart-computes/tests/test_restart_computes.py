@@ -92,10 +92,15 @@ def run_main(monkeypatch, argv, discovered=None, setup=None):
         sys, "argv", ["restart_computes.py", "--env-file", "missing.env", *argv]
     )
     if discovered is not None:
-        monkeypatch.setattr(rc, "fetch_active_clusters", lambda _config: list(discovered))
+
+        def _discover(_config, domain=None):
+            rows = list(discovered)
+            return [c for c in rows if c.domain == domain] if domain else rows
+
+        monkeypatch.setattr(rc, "fetch_active_clusters", _discover)
     else:
 
-        def _no_db(_config):
+        def _no_db(_config, domain=None):
             raise AssertionError("START must not query PostgreSQL")
 
         monkeypatch.setattr(rc, "fetch_active_clusters", _no_db)
@@ -357,3 +362,141 @@ def test_retry_pass_recovers_a_transient_failure(tmp_path, monkeypatch):
 
     assert [c["id"] for c in read_state(tmp_path)["computes"]] == ["id-a"]
     assert code == rc.EXIT_OK
+
+
+# --- domain filter ---------------------------------------------------------
+
+
+class RecordingCursor:
+    def __init__(self, sink):
+        self.sink = sink
+
+    def execute(self, query, params=None):
+        self.sink.append((query, params))
+
+    def fetchall(self):
+        return []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+class RecordingConnection:
+    def __init__(self, sink):
+        self.sink = sink
+
+    def cursor(self):
+        return RecordingCursor(self.sink)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+def capture_discovery_query(monkeypatch, domain):
+    sink = []
+    monkeypatch.setattr(rc, "open_db_connection", lambda _config: RecordingConnection(sink))
+    rc.fetch_active_clusters(None, domain)
+    return sink[0]
+
+
+def test_domain_filter_is_a_parameterized_query(monkeypatch):
+    query, params = capture_discovery_query(monkeypatch, "fde")
+
+    assert "AND domain = %s" in query
+    assert params == ("fde",)
+    assert "fde" not in query
+
+
+def test_discovery_without_domain_is_unchanged(monkeypatch):
+    query, params = capture_discovery_query(monkeypatch, None)
+
+    assert "domain = " not in query
+    assert "driver_status = 'ACTIVE'" in query
+    assert params is None
+
+
+def test_restart_with_domain_targets_only_that_domain(tmp_path, monkeypatch):
+    code = run_main(
+        monkeypatch,
+        ["--domain", "fde"],
+        discovered=[
+            cluster("alpha", "id-a", domain="fde"),
+            cluster("beta", "id-b", domain="default"),
+        ],
+    )
+
+    assert FakeApi.instances[-1].calls == [("stop", "id-a"), ("start", "id-a")]
+    assert code == rc.EXIT_OK
+
+
+def test_restart_with_domain_works_when_mode_is_explicit(tmp_path, monkeypatch):
+    run_main(
+        monkeypatch,
+        ["--mode", "restart", "--domain", "fde"],
+        discovered=[
+            cluster("alpha", "id-a", domain="fde"),
+            cluster("beta", "id-b", domain="default"),
+        ],
+    )
+
+    assert FakeApi.instances[-1].calls == [("stop", "id-a"), ("start", "id-a")]
+
+
+def test_restart_without_domain_targets_every_active_compute(tmp_path, monkeypatch):
+    code = run_main(
+        monkeypatch,
+        ["--mode", "restart"],
+        discovered=[
+            cluster("alpha", "id-a", domain="fde"),
+            cluster("beta", "id-b", domain="default"),
+        ],
+    )
+
+    assert FakeApi.instances[-1].calls == [
+        ("stop", "id-a"),
+        ("start", "id-a"),
+        ("stop", "id-b"),
+        ("start", "id-b"),
+    ]
+    assert code == rc.EXIT_OK
+
+
+def test_domain_with_no_match_reports_the_domain(tmp_path, monkeypatch, capsys):
+    code = run_main(
+        monkeypatch,
+        ["--domain", "missing"],
+        discovered=[cluster("alpha", "id-a", domain="fde")],
+    )
+
+    assert "No ACTIVE computes found in domain missing." in capsys.readouterr().out
+    assert FakeApi.instances == []
+    assert code == rc.EXIT_OK
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_blank_domain_is_rejected(monkeypatch, value):
+    monkeypatch.setattr(sys, "argv", ["restart_computes.py", "--domain", value])
+
+    with pytest.raises(SystemExit) as excinfo:
+        rc.parse_args()
+
+    assert excinfo.value.code == rc.EXIT_CONFIG_ERROR
+
+
+@pytest.mark.parametrize("mode", ["stop", "start"])
+def test_domain_is_rejected_outside_restart_mode(monkeypatch, mode):
+    argv = ["restart_computes.py", "--mode", mode, "--domain", "fde"]
+    if mode == "start":
+        argv += ["--state-file", "x.json"]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(SystemExit) as excinfo:
+        rc.parse_args()
+
+    assert excinfo.value.code == rc.EXIT_CONFIG_ERROR
