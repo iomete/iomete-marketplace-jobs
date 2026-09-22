@@ -167,7 +167,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--domain",
-        help="Restart only the active computes in this domain. Restart mode only.",
+        help="Restart only the active computes in this domain ID. Restart mode only.",
     )
     args = parser.parse_args()
 
