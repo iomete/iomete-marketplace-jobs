@@ -10,6 +10,7 @@ class CleanupAuditDiagnosticDetailsBuilder {
         storageFolderPaths: List<String> = emptyList(),
         candidateFolderPaths: List<String> = emptyList(),
         nonCandidateStorageFolderPaths: List<String> = emptyList(),
+        unresolvedTables: List<String> = emptyList(),
     ): Map<String, String> {
         val details = mutableMapOf(
             "active_table_locations_sample" to auditPathSample(activeTableLocations),
@@ -27,6 +28,11 @@ class CleanupAuditDiagnosticDetailsBuilder {
             details["candidate_folder_paths_sample"] = auditPathSample(candidateFolderPaths)
             details["candidate_folder_paths_truncated"] =
                 isAuditPathSampleTruncated(candidateFolderPaths).toString()
+        }
+
+        if (unresolvedTables.isNotEmpty()) {
+            details["unresolved_tables_sample"] = auditPathSample(unresolvedTables)
+            details["unresolved_tables_truncated"] = isAuditPathSampleTruncated(unresolvedTables).toString()
         }
 
         if (nonCandidateStorageFolderPaths.isNotEmpty()) {

@@ -26,6 +26,7 @@ data class CleanupAuditRecord(
     val discoveredDatabaseLocation: String?,
     val storageScanLocation: String,
     val activeTableCount: Long,
+    val unresolvedTableCount: Long,
     val storageFolderCount: Long,
     val candidateFolderCount: Long,
     val candidateObjectCount: Long?,

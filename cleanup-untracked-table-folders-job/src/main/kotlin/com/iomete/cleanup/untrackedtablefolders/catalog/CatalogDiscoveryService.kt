@@ -10,7 +10,9 @@ data class DiscoveredDatabase(
     val database: String,
     val location: String?,
     val tables: List<DiscoveredTable>,
-)
+) {
+    val unresolvedTables: List<DiscoveredTable> get() = tables.filter { it.isUnresolved }
+}
 
 data class DiscoveredTable(
     val catalog: String,
@@ -18,7 +20,19 @@ data class DiscoveredTable(
     val table: String,
     val isTemporary: Boolean,
     val location: String?,
-)
+    val unresolvedReason: String? = null,
+) {
+    // A null location means the catalog object owns no storage, such as a view. Unresolved means
+    // the table owns storage we could not locate, so its folder cannot be identified.
+    val isUnresolved: Boolean get() = unresolvedReason != null
+
+    val qualifiedName: String get() = "$catalog.$database.$table"
+}
+
+private class TableLocationUnresolvedException(
+    val reason: String,
+    cause: Throwable,
+) : RuntimeException(reason, cause)
 
 class DatabaseNotFoundException(
     val catalog: String,
@@ -28,6 +42,25 @@ class DatabaseNotFoundException(
     "Database not found: catalog=$catalog, database=$database",
     cause,
 )
+
+// REST catalog errors preserve this Iceberg missing-location message.
+private const val MISSING_METADATA_MESSAGE = "Location does not exist:"
+
+internal fun isMetadataNotFoundError(error: Throwable): Boolean {
+    var current: Throwable? = error
+
+    while (current != null) {
+        if (current is java.io.FileNotFoundException ||
+            current.message.orEmpty().contains(MISSING_METADATA_MESSAGE)
+        ) {
+            return true
+        }
+
+        current = current.cause
+    }
+
+    return false
+}
 
 private fun isDatabaseNotFoundError(error: Throwable): Boolean {
     var current: Throwable? = error
@@ -101,18 +134,35 @@ class CatalogDiscoveryService {
 
         return rows.map { row ->
             val tableName = row.getString(1)
+            val isTemporary = row.getBoolean(2)
 
-            DiscoveredTable(
-                catalog = catalog,
-                database = database,
-                table = tableName,
-                isTemporary = row.getBoolean(2),
-                location = discoverTableLocation(
+            try {
+                DiscoveredTable(
                     catalog = catalog,
                     database = database,
                     table = tableName,
-                ),
-            )
+                    isTemporary = isTemporary,
+                    location = discoverTableLocation(
+                        catalog = catalog,
+                        database = database,
+                        table = tableName,
+                    ),
+                )
+            } catch (th: TableLocationUnresolvedException) {
+                logger.warn(
+                    "Catalog lists a table whose Iceberg metadata or storage location could not be resolved: " +
+                        "catalog=$catalog, database=$database, table=$tableName, reason=${th.reason}"
+                )
+
+                DiscoveredTable(
+                    catalog = catalog,
+                    database = database,
+                    table = tableName,
+                    isTemporary = isTemporary,
+                    location = null,
+                    unresolvedReason = th.reason,
+                )
+            }
         }
     }
 
@@ -160,6 +210,10 @@ class CatalogDiscoveryService {
             try {
                 spark.sql("DESCRIBE EXTENDED $qualifiedTableName").collectAsList()
             } catch (th: Throwable) {
+                if (isMetadataNotFoundError(th)) {
+                    throw TableLocationUnresolvedException(th.message ?: th::class.java.name, th)
+                }
+
                 throw IllegalStateException(
                     "Failed to discover location for table=$qualifiedTableName",
                     th,

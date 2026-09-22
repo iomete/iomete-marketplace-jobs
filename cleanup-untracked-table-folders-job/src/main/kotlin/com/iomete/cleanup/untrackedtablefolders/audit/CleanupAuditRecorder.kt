@@ -65,6 +65,39 @@ class CleanupAuditRecorder {
         )
     }
 
+    fun recordUnresolvedTables(
+        runId: String,
+        databaseStartTime: Instant,
+        catalogName: String,
+        databaseName: String,
+        discoveredDatabaseLocation: String?,
+        activeTableCount: Long,
+        unresolvedTables: List<String>,
+        activeTableLocations: List<String>,
+        excludedPaths: List<String>,
+    ) {
+        writeAuditRecord(
+            runId = runId,
+            databaseStartTime = databaseStartTime,
+            catalogName = catalogName,
+            databaseName = databaseName,
+            status = STATUS_SKIPPED,
+            statusReason = "unresolved_catalog_tables",
+            errorMessage =
+                "${unresolvedTables.size} catalog table(s) exist but their Iceberg metadata or storage location could " +
+                    "not be resolved. Storage ownership cannot be determined, so cleanup was skipped for this database.",
+            discoveredDatabaseLocation = discoveredDatabaseLocation,
+            activeTableCount = activeTableCount,
+            unresolvedTableCount = unresolvedTables.size.toLong(),
+            excludedPaths = excludedPaths,
+            diagnosticDetails =
+                auditDiagnosticDetailsBuilder.build(
+                    activeTableLocations = activeTableLocations,
+                    unresolvedTables = unresolvedTables,
+                ),
+        )
+    }
+
     fun recordTooManyCandidateFolders(
         runId: String,
         databaseStartTime: Instant,
@@ -204,6 +237,7 @@ class CleanupAuditRecorder {
         discoveredDatabaseLocation: String? = null,
         storageScanLocation: String = "",
         activeTableCount: Long = 0,
+        unresolvedTableCount: Long = 0,
         storageFolderCount: Long = 0,
         candidateFolderCount: Long = 0,
         candidateObjectCount: Long? = null,
@@ -242,6 +276,7 @@ class CleanupAuditRecorder {
                 discoveredDatabaseLocation = discoveredDatabaseLocation,
                 storageScanLocation = storageScanLocation,
                 activeTableCount = activeTableCount,
+                unresolvedTableCount = unresolvedTableCount,
                 storageFolderCount = storageFolderCount,
                 candidateFolderCount = candidateFolderCount,
                 candidateObjectCount = candidateObjectCount,

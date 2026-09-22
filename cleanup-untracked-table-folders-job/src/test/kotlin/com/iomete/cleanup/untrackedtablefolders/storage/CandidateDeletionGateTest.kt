@@ -9,6 +9,7 @@ import io.mockk.mockk
 import io.mockk.verify
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class CandidateDeletionGateTest {
@@ -246,6 +247,34 @@ class CandidateDeletionGateTest {
 
     private fun storageFolder(path: String): StorageFolder =
         StorageFolder(path = path, modificationTimeMillis = 0)
+
+    @Test
+    fun `refuses to delete when the pre-delete recheck finds an unresolved table`() {
+        every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
+            DiscoveredDatabase(
+                catalog = "spark_catalog",
+                database = "analytics",
+                location = "s3a://bucket/db",
+                tables = listOf(
+                    DiscoveredTable("spark_catalog", "analytics", "table_a", false, "s3a://bucket/db/table_a"),
+                    DiscoveredTable("spark_catalog", "analytics", "table_b", false, null, "metadata file not found"),
+                ),
+            )
+
+        val gate = gateFor(config = applicationConfig(dryRun = false, deleteEnabled = true))
+
+        val error =
+            assertThrows(IllegalStateException::class.java) {
+                gate.deleteCandidates(
+                    catalog = "spark_catalog",
+                    database = "analytics",
+                    candidateFolders = listOf(storageFolder("s3a://bucket/db/orphan_a")),
+                )
+            }
+
+        assertTrue(error.message!!.contains("Refusing to delete"))
+        verify(exactly = 0) { objectStorageDeletionService.deleteFoldersRecursively(any(), any()) }
+    }
 
     private fun discoveredDatabase(activeTableLocations: List<String>): DiscoveredDatabase =
         DiscoveredDatabase(

@@ -46,12 +46,21 @@ class CandidateDeletionGate {
             .sorted()
     }
 
-    private fun currentActiveTableLocations(catalog: String, database: String): List<String> =
-        catalogDiscoveryService
-            .discoverDatabase(catalog = catalog, database = database)
+    private fun currentActiveTableLocations(catalog: String, database: String): List<String> {
+        val discoveredDatabase = catalogDiscoveryService.discoverDatabase(catalog = catalog, database = database)
+
+        // A table that became unresolved since discovery leaves an unknown location behind, so no
+        // candidate in this database can still be proven untracked.
+        check(discoveredDatabase.unresolvedTables.isEmpty()) {
+            "Refusing to delete: ${discoveredDatabase.unresolvedTables.size} catalog table(s) could not be resolved to a " +
+                "storage location during the pre-delete recheck. catalog=$catalog, database=$database"
+        }
+
+        return discoveredDatabase
             .tables
             .mapNotNull { it.location }
             .map { StoragePathUtils.normalizeLocation(it) }
+    }
 
     private fun claimedByActiveTable(
         candidateFolder: StorageFolder,

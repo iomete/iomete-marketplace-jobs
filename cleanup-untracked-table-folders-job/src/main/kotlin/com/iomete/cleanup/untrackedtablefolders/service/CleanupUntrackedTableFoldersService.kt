@@ -67,6 +67,31 @@ class CleanupUntrackedTableFoldersService {
                     )
                 }
 
+                if (discoveredDatabase.unresolvedTables.isNotEmpty()) {
+                    val unresolvedTableNames = discoveredDatabase.unresolvedTables.map { it.qualifiedName }.sorted()
+
+                    logger.warn(
+                        "Skipping cleanup because ${unresolvedTableNames.size} catalog table(s) could not be resolved to a " +
+                            "storage location. Their folders cannot be told apart from untracked folders, so no deletion is " +
+                            "safe here. catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
+                    )
+                    unresolvedTableNames.forEach { logger.warn("Unresolved catalog table: $it") }
+
+                    cleanupAuditRecorder.recordUnresolvedTables(
+                        runId = runId,
+                        databaseStartTime = databaseStartTime,
+                        catalogName = discoveredDatabase.catalog,
+                        databaseName = discoveredDatabase.database,
+                        discoveredDatabaseLocation = discoveredDatabase.location,
+                        activeTableCount = discoveredDatabase.tables.size.toLong(),
+                        unresolvedTables = unresolvedTableNames,
+                        activeTableLocations = discoveredDatabase.tables.mapNotNull { it.location }.sorted(),
+                        excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
+                    )
+
+                    return@forEach
+                }
+
                 if (discoveredDatabase.tables.mapNotNull { it.location }.isEmpty()) {
                     logger.warn(
                         "Skipping cleanup because database has no active tables with discoverable locations in the catalog. " +
