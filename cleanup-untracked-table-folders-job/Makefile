@@ -1,5 +1,5 @@
 image := iomete.azurecr.io/iomete/cleanup-untracked-table-folders
-tag   := 0.1.2
+tag   := 0.1.3
 
 .PHONY: build
 build:
