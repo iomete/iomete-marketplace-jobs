@@ -11,6 +11,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.hdfs.MiniDFSCluster
 import org.apache.spark.sql.SparkSession
 import org.testcontainers.containers.MinIOContainer
+import org.testcontainers.utility.DockerImageName
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.regions.Region
@@ -27,7 +28,13 @@ object IntegrationHarness {
     private const val REGION = "us-east-1"
 
     private val minioLazy =
-        lazy { MinIOContainer("minio/minio:RELEASE.2025-09-07T16-13-09Z").also { it.start() } }
+        lazy {
+            val image =
+                DockerImageName
+                    .parse("quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z")
+                    .asCompatibleSubstituteFor("minio/minio")
+            MinIOContainer(image).also { it.start() }
+        }
     val minio: MinIOContainer by minioLazy
 
     private val hdfsLazy =
