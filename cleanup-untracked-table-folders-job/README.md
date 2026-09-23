@@ -423,6 +423,8 @@ Outcome meanings:
 
 - `SUCCESS` means the database was processed normally.
 - `SKIPPED` means a guardrail intentionally stopped cleanup for that database.
+- `BLOCKED` means reconciliation completed far enough to inspect catalog and storage state, but a
+  safety condition prevented cleanup. The reconciliation result is still reported.
 - `FAILED` means an unexpected error occurred and should be investigated.
 
 This distinction matters when a single job scans multiple databases. Each configured database gets its own audit row, and the shared run ID groups those rows together.
@@ -458,8 +460,8 @@ Defaults when the catalog does not state them:
 - `fs.s3a.connection.ssl.enabled` follows the endpoint scheme: `false` for `http://`, otherwise
   `true`.
 - When the catalog does not declare its own endpoint and carries no access key, no credentials
-  are set and S3A falls through to its own credential chain. This preserves Hadoop’s normal credential-chain behavior for catalogs that do not declare their own endpoint. A catalog that declares its own endpoint must
-  supply its own credentials; see [Failure behavior](#failure-behavior).
+  are set and S3A falls through to its own credential chain. A catalog that declares its own
+  endpoint must supply its own credentials; see [Failure behavior](#failure-behavior).
 
 The `s3://` and `s3n://` schemes are bound to `S3AFileSystem`, because catalog locations are
 stored with whatever scheme the catalog was created with and Hadoop 3 has no built-in binding for
@@ -559,8 +561,10 @@ Audit rows include:
 - Discovered database location
 - Storage scan location
 - Active table count
+- Unresolved table count
 - Storage folder count
 - Candidate folder count
+- Potentially untracked folder count
 - Candidate object count and estimated size in bytes
 - Deleted folder count
 - Deleted object count and size in bytes
@@ -581,11 +585,14 @@ Audit rows include:
 | `runtime_compute_namespace` | Runtime Kubernetes namespace exposed through `IOMETE_COMPUTE_NAMESPACE`, for example `spark-resources-1`. |
 | `runtime_domain` | Runtime IOMETE domain exposed through `IOMETE_DOMAIN`, for example `fde`. |
 | `runtime_user` | Runtime Spark user exposed through `SPARK_USER`. This is useful for comparing the audit row with the run-as user shown in the platform UI. Read from the env var rather than `SparkContext.sparkUser()` so the value remains the run-as identity even when Spark is configured with proxy-user impersonation. |
-| `status` | High-level outcome: `SUCCESS`, `SKIPPED`, or `FAILED`. |
-| `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, or `unexpected_error`. |
+| `status` | High-level outcome: `SUCCESS`, `SKIPPED`, `BLOCKED`, or `FAILED`. |
+| `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, `unresolved_catalog_ownership`, or `unexpected_error`. |
 | `older_than_hours` | Configured age threshold used for candidate detection. |
 | `cutoff_time` | Calculated timestamp used to decide whether a folder is old enough to be considered. |
 | `max_candidate_folders_per_database` | Configured per-database candidate-folder safety limit. |
+| `unresolved_table_count` | Number of catalog tables in this database whose storage location could not be read during discovery. |
+| `candidate_folder_count` | Number of folders confirmed as untracked and eligible for deletion. Reserved for confirmed deletion-eligible candidates, so it stays `0` when table storage ownership could not be fully verified. |
+| `potentially_untracked_folder_count` | Number of storage folders that matched no verified table location while at least one table's storage location was unresolved. These folders are reported for review only. They are not confirmed untracked and are never deletion candidates, which is why they are counted separately from `candidate_folder_count`. |
 | `candidate_object_count` | Number of objects found under candidate folders when `collect_size_statistics=true`; otherwise `0`. |
 | `candidate_total_size_bytes` | Total size in bytes under candidate folders when size statistics are collected. |
 | `deleted_object_count` | Number of objects under folders that were actually deleted. |
@@ -606,6 +613,8 @@ It may include values such as:
 active_table_locations_sample
 storage_folder_paths_sample
 candidate_folder_paths_sample
+potentially_untracked_folder_paths_sample
+unresolved_tables_sample
 non_candidate_storage_folder_paths_sample
 *_truncated
 ```
@@ -622,7 +631,39 @@ Path lists are sampled to avoid writing very large audit rows.
 | Database location is missing | `SKIPPED` | Storage discovery is skipped |
 | Too many candidate folders | `SKIPPED` | Candidate count exceeded configured limit |
 | Configured database does not exist | `SKIPPED` | Logged as a warning with `status_reason=database_not_found` |
+| One or more table storage locations could not be resolved | `BLOCKED` | Reconciliation is still reported, nothing is deleted, `status_reason=unresolved_catalog_ownership` |
 | Unexpected catalog, storage, or deletion failure | `FAILED` | Real failure path remains an error |
+
+---
+
+## Unresolved table storage ownership
+
+A table is unresolved when it exists in the catalog but the job cannot read its Iceberg metadata or
+storage location during the run. This says nothing about whether the table is wanted or healthy. It
+only means the job does not currently know which storage folder that table owns.
+
+Storage reconciliation still runs. The job lists the database's storage folders and compares them
+against the table locations it could verify, so the operator still gets the full picture of what is
+in storage.
+
+What changes is what the job is allowed to conclude. If even one table in the database has an
+unresolved storage location, that table could own any of the unmatched folders. No unmatched folder
+in that database can be proven untracked. So for that database:
+
+- Every unmatched folder is reported as potentially untracked, not as a candidate.
+- `potentially_untracked_folder_count` carries those folders.
+- `candidate_folder_count` stays `0`, because it is reserved for confirmed deletion-eligible candidates.
+- Nothing is deleted, in dry-run mode or in deletion mode.
+- The audit row is written with `status=BLOCKED` and `status_reason=unresolved_catalog_ownership`.
+
+Ownership certainty is a property of the whole database, not of an individual folder. The job never
+mixes confirmed candidates and unverified folders in the same database.
+
+The per-database folder limit is still checked first. If the number of unmatched folders exceeds
+`max_candidate_folders_per_database`, the database is reported as `SKIPPED` with
+`status_reason=too_many_candidate_folders` instead. Both outcomes stop deletion for that database.
+
+Other configured databases are unaffected and continue to be processed normally.
 
 ---
 

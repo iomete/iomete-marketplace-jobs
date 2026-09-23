@@ -1,5 +1,6 @@
 package com.iomete.cleanup.untrackedtablefolders.storage
 
+import com.iomete.cleanup.untrackedtablefolders.candidate.StorageFolderReconciliation
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import jakarta.enterprise.context.ApplicationScoped
@@ -18,7 +19,7 @@ class CandidateDeletionGate {
     fun deleteCandidates(
         catalog: String,
         database: String,
-        candidateFolders: List<StorageFolder>,
+        reconciliation: StorageFolderReconciliation.DeletionEligible,
     ): List<String> {
         if (config.dryRun) {
             return emptyList()
@@ -28,14 +29,14 @@ class CandidateDeletionGate {
             "delete_enabled must be true before deleting candidate folders"
         }
 
-        if (candidateFolders.isEmpty()) {
+        if (reconciliation.folders.isEmpty()) {
             return emptyList()
         }
 
         val currentActiveTableLocations = currentActiveTableLocations(catalog, database)
 
         val deletableFolders =
-            candidateFolders.filterNot { candidateFolder ->
+            reconciliation.folders.filterNot { candidateFolder ->
                 claimedByActiveTable(candidateFolder, currentActiveTableLocations)
             }
 

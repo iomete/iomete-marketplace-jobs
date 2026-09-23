@@ -2,6 +2,7 @@ package com.iomete.cleanup.untrackedtablefolders.candidate
 
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageFolder
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 
@@ -18,12 +19,13 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = listOf("s3a://bucket/db/active_table"),
             excludedPaths = emptyList(),
             cutoffTimeMillis = 200,
+            unresolvedTableCount = 0,
             maxCandidateFolders = 10,
         )
 
         assertEquals(
             listOf("s3a://bucket/db/deleted_table"),
-            candidates.map { it.path },
+            candidates.folders.map { it.path },
         )
     }
 
@@ -37,12 +39,13 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = emptyList(),
             excludedPaths = listOf("s3a://bucket/db/excluded_table"),
             cutoffTimeMillis = 200,
+            unresolvedTableCount = 0,
             maxCandidateFolders = 10,
         )
 
         assertEquals(
             listOf("s3a://bucket/db/deleted_table"),
-            candidates.map { it.path },
+            candidates.folders.map { it.path },
         )
     }
 
@@ -58,12 +61,13 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = emptyList(),
             excludedPaths = listOf(resolvedDatabaseFolderExclusion),
             cutoffTimeMillis = 200,
+            unresolvedTableCount = 0,
             maxCandidateFolders = 10,
         )
 
         assertEquals(
             listOf("s3a://bucket/db/deleted_table"),
-            candidates.map { it.path },
+            candidates.folders.map { it.path },
         )
     }
 
@@ -78,12 +82,13 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = listOf("s3a://bucket/db/active_table"),
             excludedPaths = listOf("s3a://bucket/db/excluded_table"),
             cutoffTimeMillis = 200,
+            unresolvedTableCount = 0,
             maxCandidateFolders = 10,
         )
 
         assertEquals(
             listOf("s3a://bucket/db/deleted_table/"),
-            candidates.map { it.path },
+            candidates.folders.map { it.path },
         )
     }
 
@@ -97,12 +102,13 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = emptyList(),
             excludedPaths = emptyList(),
             cutoffTimeMillis = 200,
+            unresolvedTableCount = 0,
             maxCandidateFolders = 10,
         )
 
         assertEquals(
             listOf("s3a://bucket/db/old_deleted_table"),
-            candidates.map { it.path },
+            candidates.folders.map { it.path },
         )
     }
 
@@ -117,7 +123,8 @@ class UntrackedFolderCandidateDetectorTest {
                 activeTableLocations = emptyList(),
                 excludedPaths = emptyList(),
                 cutoffTimeMillis = 200,
-                maxCandidateFolders = 1,
+                unresolvedTableCount = 0,
+            maxCandidateFolders = 1,
             )
         }
     }
@@ -132,12 +139,13 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = emptyList(),
             excludedPaths = emptyList(),
             cutoffTimeMillis = 200,
+            unresolvedTableCount = 0,
             maxCandidateFolders = 10,
         )
 
         assertEquals(
             listOf("s3a://bucket/db/orphan_table"),
-            candidates.map { it.path },
+            candidates.folders.map { it.path },
         )
     }
 
@@ -151,12 +159,13 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = emptyList(),
             excludedPaths = emptyList(),
             cutoffTimeMillis = 200,
+            unresolvedTableCount = 0,
             maxCandidateFolders = 10,
         )
 
         assertEquals(
             listOf("s3a://bucket/db/orphan_table"),
-            candidates.map { it.path },
+            candidates.folders.map { it.path },
         )
     }
 
@@ -170,13 +179,69 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = emptyList(),
             excludedPaths = emptyList(),
             cutoffTimeMillis = 200,
+            unresolvedTableCount = 0,
             maxCandidateFolders = 10,
         )
 
         assertEquals(
             listOf("s3a://bucket/db/orphan_table"),
-            candidates.map { it.path },
+            candidates.folders.map { it.path },
         )
+    }
+
+    @Test
+    fun `zero unresolved tables yields a deletion-eligible reconciliation`() {
+        val result =
+            detector.detectCandidates(
+                storageFolders = listOf(storageFolder("s3a://bucket/db/old_1", 100)),
+                activeTableLocations = emptyList(),
+                excludedPaths = emptyList(),
+                cutoffTimeMillis = 200,
+                unresolvedTableCount = 0,
+                maxCandidateFolders = 10,
+            )
+
+        assertTrue(result is StorageFolderReconciliation.DeletionEligible)
+        assertEquals(listOf("s3a://bucket/db/old_1"), result.folders.map { it.path })
+    }
+
+    @Test
+    fun `any unresolved table yields an ownership-unverified reconciliation for every folder`() {
+        val result =
+            detector.detectCandidates(
+                storageFolders =
+                    listOf(storageFolder("s3a://bucket/db/old_1", 100), storageFolder("s3a://bucket/db/old_2", 100)),
+                activeTableLocations = emptyList(),
+                excludedPaths = emptyList(),
+                cutoffTimeMillis = 200,
+                unresolvedTableCount = 1,
+                maxCandidateFolders = 10,
+            )
+
+        assertTrue(result is StorageFolderReconciliation.OwnershipUnverified)
+        assertEquals(1, (result as StorageFolderReconciliation.OwnershipUnverified).unresolvedTableCount)
+        assertEquals(
+            listOf("s3a://bucket/db/old_1", "s3a://bucket/db/old_2"),
+            result.folders.map { it.path },
+        )
+    }
+
+    @Test
+    fun `the candidate limit is enforced even when ownership is unverified`() {
+        val error =
+            assertThrows(TooManyCandidateFoldersException::class.java) {
+                detector.detectCandidates(
+                    storageFolders =
+                        listOf(storageFolder("s3a://bucket/db/old_1", 100), storageFolder("s3a://bucket/db/old_2", 100)),
+                    activeTableLocations = emptyList(),
+                    excludedPaths = emptyList(),
+                    cutoffTimeMillis = 200,
+                    unresolvedTableCount = 1,
+                    maxCandidateFolders = 1,
+                )
+            }
+
+        assertEquals(2, error.candidateCount)
     }
 
     private fun storageFolder(
@@ -202,12 +267,13 @@ class UntrackedFolderCandidateDetectorTest {
             ),
             excludedPaths = emptyList(),
             cutoffTimeMillis = 200,
+            unresolvedTableCount = 0,
             maxCandidateFolders = 10,
         )
 
         assertEquals(
             listOf("s3a://bucket/db/abandoned"),
-            candidates.map { it.path },
+            candidates.folders.map { it.path },
         )
     }
 
@@ -220,12 +286,13 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = listOf("s3a://bucket/db/team_a/orders/"),
             excludedPaths = emptyList(),
             cutoffTimeMillis = 200,
+            unresolvedTableCount = 0,
             maxCandidateFolders = 10,
         )
 
         assertEquals(
             emptyList<String>(),
-            candidates.map { it.path },
+            candidates.folders.map { it.path },
         )
     }
 }

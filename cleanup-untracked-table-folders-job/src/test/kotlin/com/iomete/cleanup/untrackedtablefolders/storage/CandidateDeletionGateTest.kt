@@ -1,5 +1,6 @@
 package com.iomete.cleanup.untrackedtablefolders.storage
 
+import com.iomete.cleanup.untrackedtablefolders.candidate.StorageFolderReconciliation
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredTable
@@ -26,10 +27,7 @@ class CandidateDeletionGateTest {
         val result = gate.deleteCandidates(
             catalog = "spark_catalog",
             database = "analytics",
-            candidateFolders = listOf(
-                storageFolder("s3a://bucket/db/orphan_a"),
-                storageFolder("s3a://bucket/db/orphan_b"),
-            ),
+            reconciliation = deletionEligible("s3a://bucket/db/orphan_a", "s3a://bucket/db/orphan_b"),
         )
 
         assertEquals(emptyList<String>(), result)
@@ -47,7 +45,7 @@ class CandidateDeletionGateTest {
             gate.deleteCandidates(
                 catalog = "spark_catalog",
                 database = "analytics",
-                candidateFolders = listOf(storageFolder("s3a://bucket/db/orphan_a")),
+                reconciliation = deletionEligible("s3a://bucket/db/orphan_a"),
             )
         }
 
@@ -68,7 +66,7 @@ class CandidateDeletionGateTest {
         val result = gate.deleteCandidates(
             catalog = "spark_catalog",
             database = "analytics",
-            candidateFolders = emptyList(),
+            reconciliation = deletionEligible(),
         )
 
         assertEquals(emptyList<String>(), result)
@@ -91,10 +89,7 @@ class CandidateDeletionGateTest {
         val result = gate.deleteCandidates(
             catalog = "spark_catalog",
             database = "analytics",
-            candidateFolders = listOf(
-                storageFolder("s3a://bucket/db/orphan_b"),
-                storageFolder("s3a://bucket/db/orphan_a"),
-            ),
+            reconciliation = deletionEligible("s3a://bucket/db/orphan_b", "s3a://bucket/db/orphan_a"),
         )
 
         assertEquals(
@@ -129,10 +124,7 @@ class CandidateDeletionGateTest {
         val result = gate.deleteCandidates(
             catalog = "spark_catalog",
             database = "analytics",
-            candidateFolders = listOf(
-                storageFolder("s3a://bucket/db/now_active"),
-                storageFolder("s3a://bucket/db/still_orphan"),
-            ),
+            reconciliation = deletionEligible("s3a://bucket/db/now_active", "s3a://bucket/db/still_orphan"),
         )
 
         assertEquals(listOf("s3a://bucket/db/still_orphan"), result)
@@ -158,10 +150,7 @@ class CandidateDeletionGateTest {
         val result = gate.deleteCandidates(
             catalog = "spark_catalog",
             database = "analytics",
-            candidateFolders = listOf(
-                storageFolder("s3a://bucket/db/team_a"),
-                storageFolder("s3a://bucket/db/abandoned"),
-            ),
+            reconciliation = deletionEligible("s3a://bucket/db/team_a", "s3a://bucket/db/abandoned"),
         )
 
         assertEquals(listOf("s3a://bucket/db/abandoned"), result)
@@ -187,10 +176,7 @@ class CandidateDeletionGateTest {
         val result = gate.deleteCandidates(
             catalog = "spark_catalog",
             database = "analytics",
-            candidateFolders = listOf(
-                storageFolder("s3a://bucket/db/missing"),
-                storageFolder("s3a://bucket/db/present"),
-            ),
+            reconciliation = deletionEligible("s3a://bucket/db/missing", "s3a://bucket/db/present"),
         )
 
         assertEquals(listOf("s3a://bucket/db/present"), result)
@@ -211,11 +197,7 @@ class CandidateDeletionGateTest {
             gate.deleteCandidates(
                 catalog = "spark_catalog",
                 database = "analytics",
-                candidateFolders = listOf(
-                    storageFolder("s3a://bucket/db/orphan_a"),
-                    storageFolder("s3a://bucket/db/orphan_b"),
-                    storageFolder("s3a://bucket/db/orphan_c"),
-                ),
+                reconciliation = deletionEligible("s3a://bucket/db/orphan_a", "s3a://bucket/db/orphan_b", "s3a://bucket/db/orphan_c"),
             )
         }
 
@@ -268,13 +250,16 @@ class CandidateDeletionGateTest {
                 gate.deleteCandidates(
                     catalog = "spark_catalog",
                     database = "analytics",
-                    candidateFolders = listOf(storageFolder("s3a://bucket/db/orphan_a")),
+                    reconciliation = deletionEligible("s3a://bucket/db/orphan_a"),
                 )
             }
 
         assertTrue(error.message!!.contains("Refusing to delete"))
         verify(exactly = 0) { objectStorageDeletionService.deleteFoldersRecursively(any(), any()) }
     }
+
+    private fun deletionEligible(vararg paths: String): StorageFolderReconciliation.DeletionEligible =
+        StorageFolderReconciliation.DeletionEligible(paths.map { storageFolder(it) })
 
     private fun discoveredDatabase(activeTableLocations: List<String>): DiscoveredDatabase =
         DiscoveredDatabase(
