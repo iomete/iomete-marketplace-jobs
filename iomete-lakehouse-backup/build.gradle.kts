@@ -57,7 +57,7 @@ testing {
                 implementation("org.apache.hadoop:hadoop-aws:$hadoopAwsVersion")
                 implementation("org.apache.hadoop:hadoop-minicluster:$hadoopAwsVersion")
                 implementation("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:$icebergVersion")
-                runtimeOnly("org.mockito:mockito-core:5.23.0") // MiniDFSCluster uses Mockito internally
+                runtimeOnly("org.mockito:mockito-core:5.24.0") // MiniDFSCluster uses Mockito internally
                 implementation("org.testcontainers:junit-jupiter:1.21.4")
                 implementation("org.testcontainers:minio:1.21.4")
                 implementation("software.amazon.awssdk:s3:2.49.6")
