@@ -23,12 +23,12 @@ fun Map<String, Any?>.matchesAnyExclusion(exclusionRules: Map<String, String>): 
 
 fun ExclusionRules.enforceCatalogExclusionRules(catalog: CatalogDetails) {
     throwIf({ catalog.name in catalogs.names }) {
-        ExcludedItemException("Catalog `$catalog` is excluded from indexing due to name matching.")
+        ExcludedItemException("Catalog `${catalog.name}` is excluded from indexing due to name matching.")
     }
 
     val filters = catalogs.filterByProperties + defaultRule.filterByProperties
     throwIf({ catalog.sparkProperties.matchesAnyExclusion(filters) }) {
-        ExcludedItemException("Catalog `$catalog` is excluded from indexing due to properties matching.")
+        ExcludedItemException("Catalog `${catalog.name}` is excluded from indexing due to properties matching.")
     }
 }
 
