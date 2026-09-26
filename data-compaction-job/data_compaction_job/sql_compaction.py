@@ -128,8 +128,8 @@ class SqlCompaction:
 
     def __run_compaction_operations(self, table_metadata: TableMetadata):
         """Run enabled compaction operations for a table"""
-        self.__rewrite_manifest(table_metadata)
         self.__rewrite_data_files(table_metadata)
+        self.__rewrite_manifest(table_metadata)
         self.__expire_snapshots(table_metadata)
         self.__remove_orphan_files(table_metadata)
 
