@@ -1,6 +1,5 @@
 package com.iomete.cleanup.untrackedtablefolders.storage
 
-import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import org.apache.hadoop.fs.Path
@@ -16,37 +15,43 @@ class ObjectStorageDeletionService {
     private val logger = Logger.getLogger(ObjectStorageDeletionService::class.java)
 
     @Inject
-    lateinit var sparkSessionProvider: SparkSessionProvider
+    lateinit var catalogFileSystemProvider: CatalogFileSystemProvider
 
-    fun deleteFolderRecursively(location: String): DeletedStorageFolder {
-        logger.warn("Deleting storage folder recursively: location=$location")
-
-        val spark = sparkSessionProvider.getOrCreate()
-        val path = Path(location)
-
-        val deleted =
-            try {
-                val fileSystem = path.getFileSystem(spark.sparkContext().hadoopConfiguration())
-
-                if (!fileSystem.exists(path)) {
-                    logger.warn("Storage folder does not exist, skipping delete: location=$location")
-                    false
-                } else {
-                    fileSystem.delete(path, true)
-                }
-            } catch (th: Throwable) {
-                throw IllegalStateException("Failed to delete storage folder recursively: location=$location", th)
-            }
-
-        if (!deleted) {
-            logger.warn("Storage folder was not deleted: location=$location")
-        } else {
-            logger.warn("Storage folder deleted successfully: location=$location")
+    fun deleteFoldersRecursively(
+        catalog: String,
+        locations: List<String>,
+    ): List<DeletedStorageFolder> {
+        if (locations.isEmpty()) {
+            return emptyList()
         }
 
-        return DeletedStorageFolder(
-            path = location,
-            deleted = deleted,
-        )
+        return catalogFileSystemProvider.withFileSystem(
+            catalog = catalog,
+            operation = "delete storage folder recursively",
+            locations = locations,
+        ) { fileSystem ->
+            locations.map { location ->
+                logger.warn("Deleting storage folder recursively: catalog=$catalog, location=$location")
+
+                val deleted =
+                    catalogFileSystemProvider.runOperation(catalog, "delete storage folder recursively", location) {
+                        val path = Path(location)
+                        if (!fileSystem.exists(path)) {
+                            logger.warn("Storage folder does not exist, skipping delete: location=$location")
+                            false
+                        } else {
+                            fileSystem.delete(path, true)
+                        }
+                    }
+
+                if (!deleted) {
+                    logger.warn("Storage folder was not deleted: location=$location")
+                } else {
+                    logger.warn("Storage folder deleted successfully: location=$location")
+                }
+
+                DeletedStorageFolder(path = location, deleted = deleted)
+            }
+        }
     }
 }

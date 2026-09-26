@@ -65,6 +65,47 @@ class CleanupAuditRecorder {
         )
     }
 
+    fun recordOwnershipUnverified(
+        runId: String,
+        databaseStartTime: Instant,
+        catalogName: String,
+        databaseName: String,
+        discoveredDatabaseLocation: String?,
+        storageScanLocation: String,
+        activeTableCount: Long,
+        unresolvedTables: List<String>,
+        activeTableLocations: List<String>,
+        storageFolderPaths: List<String>,
+        potentiallyUntrackedFolderPaths: List<String>,
+        cutoffTime: Instant,
+        excludedPaths: List<String>,
+    ) {
+        writeAuditRecord(
+            runId = runId,
+            databaseStartTime = databaseStartTime,
+            catalogName = catalogName,
+            databaseName = databaseName,
+            status = STATUS_BLOCKED,
+            statusReason = "unresolved_catalog_ownership",
+            errorMessage = null,
+            discoveredDatabaseLocation = discoveredDatabaseLocation,
+            storageScanLocation = storageScanLocation,
+            activeTableCount = activeTableCount,
+            unresolvedTableCount = unresolvedTables.size.toLong(),
+            potentiallyUntrackedFolderCount = potentiallyUntrackedFolderPaths.size.toLong(),
+            storageFolderCount = storageFolderPaths.size.toLong(),
+            cutoffTime = cutoffTime,
+            excludedPaths = excludedPaths,
+            diagnosticDetails =
+                auditDiagnosticDetailsBuilder.build(
+                    activeTableLocations = activeTableLocations,
+                    storageFolderPaths = storageFolderPaths,
+                    unresolvedTables = unresolvedTables,
+                    potentiallyUntrackedFolderPaths = potentiallyUntrackedFolderPaths,
+                ),
+        )
+    }
+
     fun recordTooManyCandidateFolders(
         runId: String,
         databaseStartTime: Instant,
@@ -204,6 +245,8 @@ class CleanupAuditRecorder {
         discoveredDatabaseLocation: String? = null,
         storageScanLocation: String = "",
         activeTableCount: Long = 0,
+        unresolvedTableCount: Long = 0,
+        potentiallyUntrackedFolderCount: Long = 0,
         storageFolderCount: Long = 0,
         candidateFolderCount: Long = 0,
         candidateObjectCount: Long? = null,
@@ -242,6 +285,8 @@ class CleanupAuditRecorder {
                 discoveredDatabaseLocation = discoveredDatabaseLocation,
                 storageScanLocation = storageScanLocation,
                 activeTableCount = activeTableCount,
+                unresolvedTableCount = unresolvedTableCount,
+                potentiallyUntrackedFolderCount = potentiallyUntrackedFolderCount,
                 storageFolderCount = storageFolderCount,
                 candidateFolderCount = candidateFolderCount,
                 candidateObjectCount = candidateObjectCount,
@@ -262,6 +307,7 @@ class CleanupAuditRecorder {
         const val OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS = "DISCOVER_UNTRACKED_TABLE_FOLDERS"
         const val STATUS_SUCCESS = "SUCCESS"
         const val STATUS_SKIPPED = "SKIPPED"
+        const val STATUS_BLOCKED = "BLOCKED"
         const val STATUS_FAILED = "FAILED"
     }
 }

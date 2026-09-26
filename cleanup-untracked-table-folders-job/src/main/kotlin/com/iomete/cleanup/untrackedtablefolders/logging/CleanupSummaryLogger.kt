@@ -9,11 +9,14 @@ data class CleanupSummary(
     val database: String,
     val discoveredDatabaseLocation: String?,
     val storageScanLocation: String,
+    val catalogTableCount: Int,
+    val unresolvedTableNames: List<String>,
     val activeTableLocations: List<String>,
     val storageFolderPaths: List<String>,
     val excludedPaths: List<String>,
-    val candidateFolderPaths: List<String>,
-    val candidateSizeStats: StorageSizeStats?,
+    val unmatchedFolderPaths: List<String>,
+    val unmatchedSizeStats: StorageSizeStats?,
+    val deletionEligible: Boolean,
     val deletedFolderPaths: List<String>,
     val deletedSizeStats: StorageSizeStats?,
 )
@@ -24,52 +27,116 @@ class CleanupSummaryLogger {
     private val logger = Logger.getLogger(CleanupSummaryLogger::class.java)
 
     fun logCleanupSummary(summary: CleanupSummary) {
-        val candidateFolderSet = summary.candidateFolderPaths.toSet()
-        val protectedFolderPaths = summary.activeTableLocations.toSet()
-        val nonCandidateStorageFolderPaths =
-            summary.storageFolderPaths.filter { it !in candidateFolderSet }.sorted()
-
-        logBlankLines(3)
-        logger.info("========== Cleanup Untracked Table Folders Summary ==========")
-        logger.info("Catalog: ${summary.catalog}")
-        logger.info("Configured database: ${summary.database}")
-        logger.info("Discovered database location: ${summary.discoveredDatabaseLocation}")
-        logger.info("Object storage scan root: ${summary.storageScanLocation}")
-        logger.info("Protected catalog active table location count: ${summary.activeTableLocations.size}")
-        logger.info("Immediate child storage folders scanned: ${summary.storageFolderPaths.size}")
-        logger.info("Untracked candidate folder count: ${summary.candidateFolderPaths.size}")
-        logger.info(
-            if (summary.candidateSizeStats != null) {
-                "Estimated candidate size: ${formatBytes(summary.candidateSizeStats.totalSizeBytes)} across ${summary.candidateSizeStats.objectCount} object(s)"
-            } else {
-                "Estimated candidate size: skipped because collect_size_statistics=false"
-            }
-        )
-        logger.info("Deleted untracked folder count: ${summary.deletedFolderPaths.size}")
-        logger.info(
-            if (summary.deletedSizeStats != null) {
-                "Deleted size: ${formatBytes(summary.deletedSizeStats.totalSizeBytes)} across ${summary.deletedSizeStats.objectCount} object(s)"
-            } else {
-                "Deleted size: skipped because collect_size_statistics=false"
-            }
-        )
-        logger.info("Deletion performed: ${summary.deletedFolderPaths.isNotEmpty()}")
-        logger.info("Protected catalog active table locations:")
-        logListOrNone(protectedFolderPaths.sorted())
-        logger.info("Effective excluded paths:")
-        logListOrNone(summary.excludedPaths.sorted())
-        logger.info("Storage folders not selected as candidates:")
-        logListOrNone(nonCandidateStorageFolderPaths)
-        logger.info("Untracked candidate folders selected for cleanup:")
-        logListOrNone(summary.candidateFolderPaths)
-        logger.info("Deleted folders:")
-        logListOrNone(summary.deletedFolderPaths)
-        logger.info("============================================================")
-        logBlankLines(3)
+        buildReportLines(summary).forEach { logger.info(it) }
     }
 
-    private fun logBlankLines(count: Int) {
-        repeat(count) { logger.info("") }
+    internal fun buildReportLines(summary: CleanupSummary): List<String> = buildList {
+        val unmatchedFolderSet = summary.unmatchedFolderPaths.toSet()
+        val matchedFolderPaths = summary.storageFolderPaths.filter { it !in unmatchedFolderSet }
+
+        repeat(BLANK_LINES_AROUND_REPORT) { add("") }
+
+        add(SEPARATOR)
+        add(" CLEANUP REPORT - ${summary.catalog}.${summary.database}")
+        add(SEPARATOR)
+        add("")
+        add("CATALOG")
+        add("")
+        add("  Tables found                                     ${summary.catalogTableCount}")
+        add("  Tables with verified storage locations           ${summary.activeTableLocations.size}")
+        add("  Tables whose storage location could not be read  ${summary.unresolvedTableNames.size}")
+
+        if (summary.unresolvedTableNames.isNotEmpty()) {
+            add("")
+            add("TABLES WHOSE STORAGE LOCATION COULD NOT BE RESOLVED")
+            add("")
+            add("  These tables exist in the catalog, but their Iceberg metadata or storage")
+            add("  location could not be read.")
+            add("")
+            addListOrNone(summary.unresolvedTableNames)
+        }
+
+        add("")
+        add("STORAGE")
+        add("")
+        add("  Database location                                ${summary.discoveredDatabaseLocation}")
+        add("  Folders scanned under                            ${summary.storageScanLocation}")
+        add("  Folders discovered                               ${summary.storageFolderPaths.size}")
+        add("  Folders belonging to verified catalog tables     ${matchedFolderPaths.size}")
+        add("  Folders with no verified catalog owner           ${summary.unmatchedFolderPaths.size}")
+        add(
+            if (summary.unmatchedSizeStats != null) {
+                "  Size of folders with no verified owner           ${formatBytes(summary.unmatchedSizeStats.totalSizeBytes)} across ${summary.unmatchedSizeStats.objectCount} object(s)"
+            } else {
+                "  Size of folders with no verified owner           not collected (collect_size_statistics=false)"
+            }
+        )
+
+        add("")
+        add("STORAGE FOLDERS PROTECTED BY A VERIFIED CATALOG TABLE")
+        add("")
+        addListOrNone(summary.activeTableLocations.sorted())
+
+        add("")
+        add("STORAGE FOLDERS EXCLUDED BY CONFIGURATION")
+        add("")
+        addListOrNone(summary.excludedPaths.sorted())
+
+        add("")
+        if (summary.deletionEligible) {
+            add("UNTRACKED STORAGE FOLDERS")
+            add("")
+            add("  These folders are not referenced by the discovered catalog tables and are")
+            add("  eligible for cleanup under the configured safety rules.")
+        } else {
+            add("POTENTIALLY UNTRACKED STORAGE FOLDERS")
+            add("")
+            add("  These folders are not referenced by any table whose storage location could")
+            add("  be verified.")
+            add("")
+            add("  Because ${summary.unresolvedTableNames.size} catalog table(s) have unknown storage locations,")
+            add("  these ${summary.unmatchedFolderPaths.size} unmatched storage folders cannot be proven safe to delete.")
+        }
+        add("")
+        addListOrNone(summary.unmatchedFolderPaths)
+
+        add("")
+        add("DELETION")
+        add("")
+        if (summary.deletionEligible) {
+            add("  Folders deleted                                  ${summary.deletedFolderPaths.size}")
+            add(
+                if (summary.deletedSizeStats != null) {
+                    "  Size deleted                                     ${formatBytes(summary.deletedSizeStats.totalSizeBytes)} across ${summary.deletedSizeStats.objectCount} object(s)"
+                } else {
+                    "  Size deleted                                     not collected (collect_size_statistics=false)"
+                }
+            )
+            add("")
+            addListOrNone(summary.deletedFolderPaths)
+        } else {
+            add("  BLOCKED")
+            add("")
+            add("  Reason:")
+            add("  ${summary.unresolvedTableNames.size} catalog table(s) have unresolved storage ownership.")
+            add("  No folder in this database was deleted.")
+        }
+
+        add(SEPARATOR)
+        repeat(BLANK_LINES_AROUND_REPORT) { add("") }
+    }
+
+    private fun MutableList<String>.addListOrNone(values: List<String>) {
+        if (values.isEmpty()) {
+            add("- none")
+            return
+        }
+
+        values.take(MAX_LOG_PATH_SAMPLE_SIZE).forEach { add("- $it") }
+
+        if (values.size > MAX_LOG_PATH_SAMPLE_SIZE) {
+            add("- ... truncated ${values.size - MAX_LOG_PATH_SAMPLE_SIZE} additional path(s)")
+        }
     }
 
     private fun formatBytes(bytes: Long): String {
@@ -89,21 +156,9 @@ class CleanupSummaryLogger {
         }
     }
 
-    private fun logListOrNone(values: List<String>) {
-        if (values.isEmpty()) {
-            logger.info("- none")
-        } else {
-            values.take(MAX_LOG_PATH_SAMPLE_SIZE).forEach { value ->
-                logger.info("- $value")
-            }
-
-            if (values.size > MAX_LOG_PATH_SAMPLE_SIZE) {
-                logger.info("- ... truncated ${values.size - MAX_LOG_PATH_SAMPLE_SIZE} additional path(s)")
-            }
-        }
-    }
-
     private companion object {
         const val MAX_LOG_PATH_SAMPLE_SIZE = 100
+        const val BLANK_LINES_AROUND_REPORT = 3
+        const val SEPARATOR = "================================================================"
     }
 }

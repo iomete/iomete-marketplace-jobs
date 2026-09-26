@@ -111,6 +111,8 @@ class CleanupAuditTableServiceTest {
             discoveredDatabaseLocation = "s3a://bucket/db.db",
             storageScanLocation = "s3a://bucket/db",
             activeTableCount = 1,
+            unresolvedTableCount = 0,
+            potentiallyUntrackedFolderCount = 0,
             storageFolderCount = 2,
             candidateFolderCount = 1,
             candidateObjectCount = candidateObjectCount,

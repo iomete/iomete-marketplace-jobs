@@ -145,6 +145,11 @@ The Spark/Iceberg catalog to inspect.
 
 The job uses Spark SQL against this catalog to discover databases, tables, and table locations.
 
+Object-storage access uses the same catalog. For S3 and S3-compatible catalogs, the job reads
+the available storage properties from the catalog's runtime configuration and uses them for
+direct filesystem access. See [Object-storage configuration](#object-storage-configuration).
+You do not configure storage credentials separately for this job.
+
 ---
 
 ### `databases`
@@ -397,6 +402,7 @@ The main safety principle is **fail closed**: if the job cannot prove that a fol
 | Pre-delete catalog revalidation | Deleting a folder that became active after initial discovery |
 | Audit row per database | Clear outcome tracking when a run scans multiple databases |
 | Empty-database guard | Deleting every folder in a database whose catalog has no active table locations (likely misconfiguration) |
+| Catalog-scoped storage access | Reading or deleting in the platform's storage instead of the catalog's, and vice versa |
 | Framework sentinel folder protection | Deleting `_temporary`, `.spark-staging-*`, `.hive-staging_*`, `__magic`, and similar working folders left by in-flight Hadoop, Spark, or Hive writes |
 
 ---
@@ -407,13 +413,96 @@ Catalog and object-storage discovery failures are not treated as empty results.
 
 For example, if the job cannot list storage folders or cannot discover catalog metadata, it does not assume there are zero candidates. Unknown state is not considered safe for destructive cleanup.
 
+The same rule covers storage configuration. A catalog whose storage configuration cannot be
+resolved fails the database instead of falling back to the platform's storage. Size statistics are
+reporting only, so a single unreadable candidate folder is tolerated and recorded as an unknown
+size, but a configuration failure, or every candidate folder failing, fails the database rather
+than producing a run that looks successful with no sizes.
+
 Outcome meanings:
 
 - `SUCCESS` means the database was processed normally.
 - `SKIPPED` means a guardrail intentionally stopped cleanup for that database.
+- `BLOCKED` means reconciliation completed far enough to inspect catalog and storage state, but a
+  safety condition prevented cleanup. The reconciliation result is still reported.
 - `FAILED` means an unexpected error occurred and should be investigated.
 
 This distinction matters when a single job scans multiple databases. Each configured database gets its own audit row, and the shared run ID groups those rows together.
+
+---
+
+## Object-storage configuration
+
+The job never asks for storage credentials, and never overrides Spark's global Hadoop
+configuration.
+
+### Where the settings come from
+
+The job reads the configured catalog's `spark.sql.catalog.<name>.*` properties from the Spark
+application's `sparkConf`. For S3 and S3-compatible catalogs, it maps the available catalog
+storage properties into an isolated Hadoop S3A configuration used for direct filesystem access.
+
+| Catalog property | Hadoop setting |
+|---|---|
+| `s3.endpoint` | `fs.s3a.endpoint` |
+| `s3.access-key-id` | `fs.s3a.access.key` |
+| `s3.secret-access-key` | `fs.s3a.secret.key` |
+| `s3.path-style-access` | `fs.s3a.path.style.access` |
+| `s3.region`, `s3.client.region` or `client.region` | `fs.s3a.endpoint.region` |
+| `s3.connection-ssl-enabled` | `fs.s3a.connection.ssl.enabled` |
+
+The mapping follows the catalog-to-Hadoop S3A property conventions used by the IOMETE Spark catalog extension.
+
+Defaults when the catalog does not state them:
+
+- When a catalog declares an endpoint and does not specify path-style access, the job defaults
+  `fs.s3a.path.style.access` to `true`.
+- `fs.s3a.connection.ssl.enabled` follows the endpoint scheme: `false` for `http://`, otherwise
+  `true`.
+- When the catalog does not declare its own endpoint and carries no access key, no credentials
+  are set and S3A falls through to its own credential chain. A catalog that declares its own
+  endpoint must supply its own credentials; see [Failure behavior](#failure-behavior).
+
+The `s3://` and `s3n://` schemes are bound to `S3AFileSystem`, because catalog locations are
+stored with whatever scheme the catalog was created with and Hadoop 3 has no built-in binding for
+those two.
+
+### Why it is done per catalog
+
+One run holds two storage systems at once: the audited catalog's bucket, and the platform bucket
+that carries the audit table and the Spark event log. Setting a catalog endpoint globally, through
+`spark.hadoop.fs.s3a.endpoint` or by writing to Spark's Hadoop configuration, sends the platform's
+own traffic to the catalog's endpoint and breaks the run.
+
+So each storage operation builds a **copy** of Spark's Hadoop configuration, applies that
+catalog's settings to the copy, and creates the filesystem with `FileSystem.newInstance`. Spark's
+configuration object is read, never written. The Hadoop filesystem cache is bypassed, so an
+instance built for one endpoint can never be handed back for another. Each filesystem is closed
+when the operation finishes.
+
+A catalog that declares its own endpoint is never accessed with platform or runtime credentials.
+It must supply its own static credentials, and the job fails closed otherwise.
+
+### Failure behavior
+
+The job stops for the database and records `FAILED` when the catalog's storage configuration
+cannot be resolved safely:
+
+- The catalog declares `s3.endpoint` but does not supply a complete `s3.access-key-id` and
+  `s3.secret-access-key` pair. Platform and runtime credentials are never used against a
+  catalog-owned endpoint, so the job refuses to run rather than fall back to them.
+- Only one of `s3.access-key-id` and `s3.secret-access-key` is set.
+- The catalog sets `s3.session-token`. Temporary session credentials are not supported by this
+  job. The token is rejected rather than silently ignored, because dropping it would leave an
+  incomplete credential set. Configure static credentials instead.
+
+If the configured catalog is not registered in the Spark session, the job stops for that database
+and records `FAILED`. It does not fall back to Spark's global configuration, because that
+configuration belongs to the platform's storage and silently scanning or deleting there is exactly
+what the per-catalog design prevents.
+
+The usual cause is that the catalog does not exist, or that the job's domain has no permission for
+it. Check the catalog in the console rather than adding storage settings to the job.
 
 ---
 
@@ -472,8 +561,10 @@ Audit rows include:
 - Discovered database location
 - Storage scan location
 - Active table count
+- Unresolved table count
 - Storage folder count
 - Candidate folder count
+- Potentially untracked folder count
 - Candidate object count and estimated size in bytes
 - Deleted folder count
 - Deleted object count and size in bytes
@@ -494,11 +585,14 @@ Audit rows include:
 | `runtime_compute_namespace` | Runtime Kubernetes namespace exposed through `IOMETE_COMPUTE_NAMESPACE`, for example `spark-resources-1`. |
 | `runtime_domain` | Runtime IOMETE domain exposed through `IOMETE_DOMAIN`, for example `fde`. |
 | `runtime_user` | Runtime Spark user exposed through `SPARK_USER`. This is useful for comparing the audit row with the run-as user shown in the platform UI. Read from the env var rather than `SparkContext.sparkUser()` so the value remains the run-as identity even when Spark is configured with proxy-user impersonation. |
-| `status` | High-level outcome: `SUCCESS`, `SKIPPED`, or `FAILED`. |
-| `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, or `unexpected_error`. |
+| `status` | High-level outcome: `SUCCESS`, `SKIPPED`, `BLOCKED`, or `FAILED`. |
+| `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, `unresolved_catalog_ownership`, or `unexpected_error`. |
 | `older_than_hours` | Configured age threshold used for candidate detection. |
 | `cutoff_time` | Calculated timestamp used to decide whether a folder is old enough to be considered. |
 | `max_candidate_folders_per_database` | Configured per-database candidate-folder safety limit. |
+| `unresolved_table_count` | Number of catalog tables in this database whose storage location could not be read during discovery. |
+| `candidate_folder_count` | Number of folders confirmed as untracked and eligible for deletion. Reserved for confirmed deletion-eligible candidates, so it stays `0` when table storage ownership could not be fully verified. |
+| `potentially_untracked_folder_count` | Number of storage folders that matched no verified table location while at least one table's storage location was unresolved. These folders are reported for review only. They are not confirmed untracked and are never deletion candidates, which is why they are counted separately from `candidate_folder_count`. |
 | `candidate_object_count` | Number of objects found under candidate folders when `collect_size_statistics=true`; otherwise `0`. |
 | `candidate_total_size_bytes` | Total size in bytes under candidate folders when size statistics are collected. |
 | `deleted_object_count` | Number of objects under folders that were actually deleted. |
@@ -519,6 +613,8 @@ It may include values such as:
 active_table_locations_sample
 storage_folder_paths_sample
 candidate_folder_paths_sample
+potentially_untracked_folder_paths_sample
+unresolved_tables_sample
 non_candidate_storage_folder_paths_sample
 *_truncated
 ```
@@ -535,7 +631,39 @@ Path lists are sampled to avoid writing very large audit rows.
 | Database location is missing | `SKIPPED` | Storage discovery is skipped |
 | Too many candidate folders | `SKIPPED` | Candidate count exceeded configured limit |
 | Configured database does not exist | `SKIPPED` | Logged as a warning with `status_reason=database_not_found` |
+| One or more table storage locations could not be resolved | `BLOCKED` | Reconciliation is still reported, nothing is deleted, `status_reason=unresolved_catalog_ownership` |
 | Unexpected catalog, storage, or deletion failure | `FAILED` | Real failure path remains an error |
+
+---
+
+## Unresolved table storage ownership
+
+A table is unresolved when it exists in the catalog but the job cannot read its Iceberg metadata or
+storage location during the run. This says nothing about whether the table is wanted or healthy. It
+only means the job does not currently know which storage folder that table owns.
+
+Storage reconciliation still runs. The job lists the database's storage folders and compares them
+against the table locations it could verify, so the operator still gets the full picture of what is
+in storage.
+
+What changes is what the job is allowed to conclude. If even one table in the database has an
+unresolved storage location, that table could own any of the unmatched folders. No unmatched folder
+in that database can be proven untracked. So for that database:
+
+- Every unmatched folder is reported as potentially untracked, not as a candidate.
+- `potentially_untracked_folder_count` carries those folders.
+- `candidate_folder_count` stays `0`, because it is reserved for confirmed deletion-eligible candidates.
+- Nothing is deleted, in dry-run mode or in deletion mode.
+- The audit row is written with `status=BLOCKED` and `status_reason=unresolved_catalog_ownership`.
+
+Ownership certainty is a property of the whole database, not of an individual folder. The job never
+mixes confirmed candidates and unverified folders in the same database.
+
+The per-database folder limit is still checked first. If the number of unmatched folders exceeds
+`max_candidate_folders_per_database`, the database is reported as `SKIPPED` with
+`status_reason=too_many_candidate_folders` instead. Both outcomes stop deletion for that database.
+
+Other configured databases are unaffected and continue to be processed normally.
 
 ---
 
@@ -750,5 +878,8 @@ Any old unreferenced files inside that active table folder should be handled by 
 - Candidate discovery is table-folder-level: the job only selects immediate child folders under the resolved scan root as cleanup candidates.
 - When a selected candidate folder is deleted, the full object-storage prefix under that folder is deleted, including nested data and metadata objects.
 - The job relies on Spark catalog discovery for active table locations.
+- Object-storage access supports S3 and S3-compatible storage. A non-S3 catalog location falls back to Spark's own Hadoop configuration, which carries no catalog-specific endpoint or credentials.
+- Catalogs using vended or remotely signed credentials are not supported for storage access, because those credentials are issued per Iceberg request and never appear in `sparkConf`.
+- Folder names are compared case-sensitively, because `ORDERS` and `orders` are different object-storage prefixes.
 - The job is intended for controlled cleanup workflows, not blind automatic deletion.
 - Size statistics require recursively listing objects under final candidate folders. This can add overhead for folders with many objects and can be disabled with `collect_size_statistics=false`.

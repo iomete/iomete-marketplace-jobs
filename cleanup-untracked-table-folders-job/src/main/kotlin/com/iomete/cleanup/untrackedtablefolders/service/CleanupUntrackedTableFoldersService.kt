@@ -2,6 +2,7 @@ package com.iomete.cleanup.untrackedtablefolders.service
 
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecorder
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditTableService
+import com.iomete.cleanup.untrackedtablefolders.candidate.StorageFolderReconciliation
 import com.iomete.cleanup.untrackedtablefolders.candidate.TooManyCandidateFoldersException
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
 import com.iomete.cleanup.untrackedtablefolders.catalog.DatabaseNotFoundException
@@ -67,6 +68,17 @@ class CleanupUntrackedTableFoldersService {
                     )
                 }
 
+                val unresolvedTableNames = discoveredDatabase.unresolvedTables.map { it.qualifiedName }.sorted()
+
+                if (unresolvedTableNames.isNotEmpty()) {
+                    logger.warn(
+                        "${unresolvedTableNames.size} catalog table(s) could not be resolved to a storage location. " +
+                            "Reconciliation continues, but no folder in this database is eligible for deletion. " +
+                            "catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
+                    )
+                    unresolvedTableNames.forEach { logger.warn("Unresolved catalog table: $it") }
+                }
+
                 if (discoveredDatabase.tables.mapNotNull { it.location }.isEmpty()) {
                     logger.warn(
                         "Skipping cleanup because database has no active tables with discoverable locations in the catalog. " +
@@ -118,6 +130,7 @@ class CleanupUntrackedTableFoldersService {
 
                     val storageFolders =
                         objectStorageDiscoveryService.listImmediateChildFolders(
+                            catalog = discoveredDatabase.catalog,
                             location = storageScanLocation,
                         )
                     logger.info(
@@ -159,7 +172,7 @@ class CleanupUntrackedTableFoldersService {
 
                     val storageFolderPaths = storageFolders.map { it.path }.sorted()
 
-                    val candidateFolders =
+                    val reconciliation =
                         try {
                             untrackedFolderCandidateDetector.detectCandidates(
                                 storageFolders = storageFolders,
@@ -168,6 +181,7 @@ class CleanupUntrackedTableFoldersService {
                                 excludedPaths = effectiveExcludedPaths,
                                 cutoffTimeMillis = cutoffTimeMillis,
                                 maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
+                                unresolvedTableCount = unresolvedTableNames.size,
                             )
                         } catch (th: TooManyCandidateFoldersException) {
 
@@ -196,13 +210,17 @@ class CleanupUntrackedTableFoldersService {
                             return@forEach
                         }
 
+                    val unmatchedFolders = reconciliation.folders
                     logger.info(
-                        "Detected ${candidateFolders.size} candidate untracked table folder(s) for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
+                        "Detected ${unmatchedFolders.size} storage folder(s) with no verified catalog owner for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
                     )
 
-                    val candidateFolderPaths = candidateFolders.map { it.path }.sorted()
+                    val unmatchedFolderPaths = unmatchedFolders.map { it.path }.sorted()
                     val candidateSizeStatsByFolder =
-                        candidateSizeStatCollector.collectPerFolder(candidateFolderPaths)
+                        candidateSizeStatCollector.collectPerFolder(
+                            catalog = discoveredDatabase.catalog,
+                            candidateFolderPaths = unmatchedFolderPaths,
+                        )
                     val candidateSizeStats: StorageSizeStats? =
                         if (config.collectSizeStatistics) {
                             candidateSizeStatCollector.sum(candidateSizeStatsByFolder.values)
@@ -210,19 +228,24 @@ class CleanupUntrackedTableFoldersService {
                             null
                         }
 
-                    candidateFolders.forEach { folder ->
+                    unmatchedFolders.forEach { folder ->
                         val modifiedAt = Instant.ofEpochMilli(folder.modificationTimeMillis)
                         logger.info(
-                            "Candidate untracked table folder selected for cleanup: path=${folder.path}, modifiedAt=$modifiedAt"
+                            "Storage folder with no verified catalog owner: path=${folder.path}, modifiedAt=$modifiedAt"
                         )
                     }
 
                     val deletedFolders =
-                        candidateDeletionGate.deleteCandidates(
-                            catalog = discoveredDatabase.catalog,
-                            database = discoveredDatabase.database,
-                            candidateFolders = candidateFolders,
-                        )
+                        when (reconciliation) {
+                            is StorageFolderReconciliation.DeletionEligible ->
+                                candidateDeletionGate.deleteCandidates(
+                                    catalog = discoveredDatabase.catalog,
+                                    database = discoveredDatabase.database,
+                                    reconciliation = reconciliation,
+                                )
+
+                            is StorageFolderReconciliation.OwnershipUnverified -> emptyList()
+                        }
 
                     val deletedSizeStats: StorageSizeStats? =
                         if (config.collectSizeStatistics) {
@@ -248,33 +271,56 @@ class CleanupUntrackedTableFoldersService {
                             database = discoveredDatabase.database,
                             discoveredDatabaseLocation = discoveredDatabase.location,
                             storageScanLocation = storageScanLocation,
+                            catalogTableCount = discoveredDatabase.tables.size,
+                            unresolvedTableNames = unresolvedTableNames,
                             activeTableLocations = activeTableLocations,
                             storageFolderPaths = storageFolderPaths,
                             excludedPaths = effectiveExcludedPaths,
-                            candidateFolderPaths = candidateFolderPaths,
-                            candidateSizeStats = candidateSizeStats,
+                            unmatchedFolderPaths = unmatchedFolderPaths,
+                            unmatchedSizeStats = candidateSizeStats,
+                            deletionEligible = reconciliation is StorageFolderReconciliation.DeletionEligible,
                             deletedFolderPaths = deletedFolders,
                             deletedSizeStats = deletedSizeStats,
                         )
                     )
 
-                    cleanupAuditRecorder.recordSuccess(
-                        runId = runId,
-                        databaseStartTime = databaseStartTime,
-                        catalogName = discoveredDatabase.catalog,
-                        databaseName = discoveredDatabase.database,
-                        discoveredDatabaseLocation = discoveredDatabase.location,
-                        storageScanLocation = storageScanLocation,
-                        activeTableCount = discoveredDatabase.tables.size.toLong(),
-                        activeTableLocations = activeTableLocations,
-                        storageFolderPaths = storageFolderPaths,
-                        candidateFolderPaths = candidateFolderPaths,
-                        candidateSizeStats = candidateSizeStats,
-                        deletedFolderPaths = deletedFolders,
-                        deletedSizeStats = deletedSizeStats,
-                        cutoffTime = cutoffTime,
-                        excludedPaths = effectiveExcludedPaths,
-                    )
+                    when (reconciliation) {
+                        is StorageFolderReconciliation.DeletionEligible ->
+                            cleanupAuditRecorder.recordSuccess(
+                                runId = runId,
+                                databaseStartTime = databaseStartTime,
+                                catalogName = discoveredDatabase.catalog,
+                                databaseName = discoveredDatabase.database,
+                                discoveredDatabaseLocation = discoveredDatabase.location,
+                                storageScanLocation = storageScanLocation,
+                                activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                activeTableLocations = activeTableLocations,
+                                storageFolderPaths = storageFolderPaths,
+                                candidateFolderPaths = unmatchedFolderPaths,
+                                candidateSizeStats = candidateSizeStats,
+                                deletedFolderPaths = deletedFolders,
+                                deletedSizeStats = deletedSizeStats,
+                                cutoffTime = cutoffTime,
+                                excludedPaths = effectiveExcludedPaths,
+                            )
+
+                        is StorageFolderReconciliation.OwnershipUnverified ->
+                            cleanupAuditRecorder.recordOwnershipUnverified(
+                                runId = runId,
+                                databaseStartTime = databaseStartTime,
+                                catalogName = discoveredDatabase.catalog,
+                                databaseName = discoveredDatabase.database,
+                                discoveredDatabaseLocation = discoveredDatabase.location,
+                                storageScanLocation = storageScanLocation,
+                                activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                unresolvedTables = unresolvedTableNames,
+                                activeTableLocations = activeTableLocations,
+                                storageFolderPaths = storageFolderPaths,
+                                potentiallyUntrackedFolderPaths = unmatchedFolderPaths,
+                                cutoffTime = cutoffTime,
+                                excludedPaths = effectiveExcludedPaths,
+                            )
+                    }
                 }
             } catch (th: DatabaseNotFoundException) {
                 logger.warn(

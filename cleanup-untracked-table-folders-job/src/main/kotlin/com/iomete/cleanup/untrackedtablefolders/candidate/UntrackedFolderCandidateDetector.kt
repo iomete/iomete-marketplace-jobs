@@ -6,6 +6,19 @@ import jakarta.enterprise.context.ApplicationScoped
 import org.jboss.logging.Logger
 import java.time.Instant
 
+sealed interface StorageFolderReconciliation {
+    val folders: List<StorageFolder>
+
+    data class DeletionEligible(
+        override val folders: List<StorageFolder>,
+    ) : StorageFolderReconciliation
+
+    data class OwnershipUnverified(
+        override val folders: List<StorageFolder>,
+        val unresolvedTableCount: Int,
+    ) : StorageFolderReconciliation
+}
+
 class TooManyCandidateFoldersException(
     val candidateCount: Int,
     val maxCandidateFolders: Int,
@@ -24,7 +37,8 @@ class UntrackedFolderCandidateDetector {
         excludedPaths: List<String>,
         cutoffTimeMillis: Long,
         maxCandidateFolders: Int,
-    ): List<StorageFolder> {
+        unresolvedTableCount: Int,
+    ): StorageFolderReconciliation {
         require(maxCandidateFolders >= 0) {
             "maxCandidateFolders must be greater than or equal to 0"
         }
@@ -74,7 +88,13 @@ class UntrackedFolderCandidateDetector {
             )
         }
 
-        return candidateFolders
+        // Ownership certainty is a property of the whole database: one unresolved table makes
+        // every unmatched folder unverifiable, never a mix.
+        return if (unresolvedTableCount > 0) {
+            StorageFolderReconciliation.OwnershipUnverified(candidateFolders, unresolvedTableCount)
+        } else {
+            StorageFolderReconciliation.DeletionEligible(candidateFolders)
+        }
     }
 
     private fun skipReason(
