@@ -9,6 +9,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, TimestampType, MapType
 
 from config import TableMetadata
+from data_compaction_job.compaction_results import ProcedureOutcome
 from data_compaction_job.constants import StatsDefaults
 
 logger = logging.getLogger(__name__)
@@ -212,6 +213,8 @@ def emit_stats(operation: str):
                     end_time=datetime.fromtimestamp(end_time, timezone.utc)
                 )
                 logger.error(f"[{args[1].database}.{args[1].table}] Error running {operation} on table, error={e}")
+                return ProcedureOutcome(query=getattr(e, "compaction_query", None), rows=None, error=e,
+                                        started_at=start_time, ended_at=end_time)
             else:
                 # post-execute happy scenario
                 end_time = time.time()
@@ -219,7 +222,8 @@ def emit_stats(operation: str):
                 if operation == "REMOVE_ORPHAN_FILES":
                     removed_files = [row['orphan_file_location'] for row in metrics]
                     _add_orphan_files_metrics(removed_files, args, operation, sql, start_time, end_time)
-                    return
+                    return ProcedureOutcome(query=sql, rows=metrics, error=None,
+                                            started_at=start_time, ended_at=end_time)
                 else:
                     metrics_map = {key: str(value) for key, value in metrics[0].asDict().items()}
 
@@ -232,6 +236,7 @@ def emit_stats(operation: str):
                     start_time=datetime.fromtimestamp(start_time, timezone.utc),
                     end_time=datetime.fromtimestamp(end_time, timezone.utc)
                 )
+                return ProcedureOutcome(query=sql, rows=metrics, error=None, started_at=start_time, ended_at=end_time)
 
         return wrapper_func
 

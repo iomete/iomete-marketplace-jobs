@@ -1,12 +1,21 @@
 import logging
 import os
+import threading
+import time
 from collections import defaultdict
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from functools import cache
 
 import requests
 
 from config import TableMetadata
+from data_compaction_job.compaction_results import (
+    OPERATION_SPECS, RunResult, TableResult, classify_operation, disabled_operation, skipped_operation,
+    unreadable_operation,
+)
+from data_compaction_job.compaction_summary import render_summary
+from data_compaction_job.compaction_table_state import read_table_state
 from data_compaction_job.config import ApplicationConfig
 from data_compaction_job.constants import CompactionOperation, ConfigProperty
 from data_compaction_job.decorators import operation_enabled, timer
@@ -27,8 +36,16 @@ class SqlCompaction:
         self.spark = spark
         self.config = config
         self._databases = None
+        self.run_result = RunResult(catalog=config.catalog)
+        self._table_results = {}
+        self._table_results_lock = threading.Lock()
 
     def run_compaction(self):
+        self.run_result.started_at = time.time()
+        try:
+            self.run_result.spark_app_id = self.spark.sparkContext.applicationId
+        except Exception:
+            self.run_result.spark_app_id = None
         with ThreadPoolExecutor(max_workers=self.config.parallelism) as executor:
             futures = []
             catalog = self.__get_catalog()
@@ -44,6 +61,7 @@ class SqlCompaction:
                 logger.info(f"Tables in database '{database}' considered for optimisation : {tables}")
                 if tables:
                     db_table_mapping[database] = tables
+            self.run_result.tables_discovered = sum(len(tables) for tables in db_table_mapping.values())
 
             init_emitter(self.spark,
                          batch_size=self.config.stats_batch_size,
@@ -66,15 +84,34 @@ class SqlCompaction:
                     logger.error(f"Error processing table, error={e}")
 
             close_emitter(self.spark)
+            self.run_result.ended_at = time.time()
+            self.__log_summary()
+
+    def __log_summary(self):
+        try:
+            logger.info("\n" + render_summary(self.run_result))
+        except Exception as e:
+            logger.error(f"Could not render the Data Compaction summary, error={e}")
+
+    def __table_result(self, table_metadata: TableMetadata) -> TableResult:
+        key = (table_metadata.catalog, table_metadata.database, table_metadata.table)
+        with self._table_results_lock:
+            if key not in self._table_results:
+                self._table_results[key] = TableResult(*key)
+                self.run_result.tables.append(self._table_results[key])
+            return self._table_results[key]
 
     def __process_table_if_iceberg(self, table_metadata: TableMetadata):
         catalog, db_name, table = table_metadata.catalog, table_metadata.database, table_metadata.table
+        table_result = self.__table_result(table_metadata)
 
         try:
             table_meta = self.spark.sql(f"describe extended `{catalog}`.`{db_name}`.`{table}`").collect()
 
             # Skip, if not an `iceberg` table
             if not any(row.col_name == "Provider" and row.data_type == "iceberg" for row in table_meta):
+                table_result.skip_reason_code = "not_iceberg"
+                table_result.skip_reason = "Table is not an Iceberg table."
                 return
 
             message = f"[{db_name}.{table}] table compaction"
@@ -82,6 +119,9 @@ class SqlCompaction:
 
         except Exception as e:
             logger.error(f"[{db_name}.{table}] Error processing table, error={e}")
+            if not any(op.reason_code == "result_unreadable" for op in table_result.operations):
+                table_result.error_type = type(e).__name__
+                table_result.error_message = str(e)
 
     def __process_table(self, table_metadata: TableMetadata):
         catalog, database, table_name = table_metadata.catalog, table_metadata.database, table_metadata.table
@@ -91,6 +131,9 @@ class SqlCompaction:
             lock = TablePropertyLock(self.spark, self.config)
             if not lock.acquire(catalog, database, table_name):
                 logger.info(f"[{database}.{table_name}] Skipping compaction: lock held by another instance.")
+                table_result = self.__table_result(table_metadata)
+                table_result.skip_reason_code = "lock_held"
+                table_result.skip_reason = "The compaction lock was not acquired."
                 return
 
             try:
@@ -128,10 +171,58 @@ class SqlCompaction:
 
     def __run_compaction_operations(self, table_metadata: TableMetadata):
         """Run enabled compaction operations for a table"""
-        self.__rewrite_data_files(table_metadata)
-        self.__rewrite_manifest(table_metadata)
-        self.__expire_snapshots(table_metadata)
-        self.__remove_orphan_files(table_metadata)
+
+        table_result = self.__table_result(table_metadata)
+        table_result.before = self.__read_table_state(table_metadata)
+        attempts = []
+        try:
+            self.__track(attempts, "REWRITE_DATA_FILES", self.__rewrite_data_files, table_metadata)
+            self.__track(attempts, "REWRITE_MANIFESTS", self.__rewrite_manifest, table_metadata)
+            self.__track(attempts, "EXPIRE_SNAPSHOTS", self.__expire_snapshots, table_metadata)
+            self.__track(attempts, "REMOVE_ORPHAN_FILES", self.__remove_orphan_files, table_metadata)
+        finally:
+            table_result.after = self.__read_table_state(table_metadata)
+            self.__record_operations(table_result, table_metadata, attempts)
+
+    @staticmethod
+    def __track(attempts, operation, method, table_metadata):
+        try:
+            attempts.append((operation, method(table_metadata)))
+        except Exception as e:
+            attempts.append((operation, e))
+            raise
+
+    def __record_operations(self, table_result, table_metadata, attempts):
+        try:
+            for operation, outcome in attempts:
+                if outcome is None:
+                    table_result.operations.append(disabled_operation(operation))
+                elif isinstance(outcome, Exception):
+                    table_result.operations.append(unreadable_operation(operation, outcome))
+                else:
+                    options = (self.__rewrite_data_files_options(table_metadata)
+                               if operation == "REWRITE_DATA_FILES" else None)
+                    table_result.operations.append(classify_operation(
+                        operation, outcome, options, table_result.before, table_result.after))
+            attempted = {operation for operation, _ in attempts}
+            for operation in OPERATION_SPECS:
+                if operation not in attempted:
+                    table_result.operations.append(skipped_operation(
+                        operation, "not_attempted", "Not attempted because an earlier step raised an unhandled error."))
+        except Exception as e:
+            logger.error(f"[{table_metadata.database}.{table_metadata.table}] Could not record operation results, "
+                         f"error={e}")
+
+    def __read_table_state(self, table_metadata: TableMetadata):
+        return read_table_state(self.spark, table_metadata.catalog, table_metadata.database, table_metadata.table)
+
+    def __call_procedure(self, query):
+        try:
+            return self.spark.sql(query).collect()
+        except Exception as e:
+            with suppress(Exception):
+                e.compaction_query = query
+            raise
 
     def __check_gc_enabled(self, catalog, database, table_name):
         try:
@@ -165,7 +256,7 @@ class SqlCompaction:
     @emit_stats("EXPIRE_SNAPSHOTS")
     def __expire_snapshots(self, table_metadata: TableMetadata):
         query = get_expire_snapshots_query(self.config.expire_snapshot, table_metadata)
-        result = self.spark.sql(query).collect()
+        result = self.__call_procedure(query)
         return result, query
 
     @operation_enabled(CompactionOperation.REMOVE_ORPHAN_FILES)
@@ -180,7 +271,7 @@ class SqlCompaction:
         timestamp = datetime.now(timezone.utc) - timedelta(days=days)
         options = f"table => '`{catalog}`.`{database}`.`{table_name}`', older_than => TIMESTAMP '{timestamp}'"
         query = f"CALL `{catalog}`.system.remove_orphan_files({options})"
-        result = self.spark.sql(query).collect()
+        result = self.__call_procedure(query)
         return result, query
 
     @operation_enabled(CompactionOperation.REWRITE_MANIFESTS)
@@ -197,7 +288,7 @@ class SqlCompaction:
             use_caching = str(use_caching).lower()
             options += f", use_caching => {use_caching}"
         query = f"CALL `{catalog}`.system.rewrite_manifests({options})"
-        result = self.spark.sql(query).collect()
+        result = self.__call_procedure(query)
         return result, query
 
     @operation_enabled(CompactionOperation.REWRITE_DATA_FILES)
@@ -213,10 +304,7 @@ class SqlCompaction:
                                           CompactionOperation.REWRITE_DATA_FILES,
                                           ConfigProperty.SORT_ORDER)
                       or self.config.rewrite_data_files.sort_order)
-        rewrite_options = (get_config_overrides(table_metadata.table_overrides,
-                                               CompactionOperation.REWRITE_DATA_FILES,
-                                               ConfigProperty.OPTIONS)
-                           or self.config.rewrite_data_files.options)
+        rewrite_options = self.__rewrite_data_files_options(table_metadata)
         where = (get_config_overrides(table_metadata.table_overrides,
                                      CompactionOperation.REWRITE_DATA_FILES,
                                      ConfigProperty.WHERE)
@@ -235,8 +323,14 @@ class SqlCompaction:
             options += f", where => \"{where}\""
 
         query = f"CALL `{catalog}`.system.rewrite_data_files({options})"
-        result = self.spark.sql(query).collect()
+        result = self.__call_procedure(query)
         return result, query
+
+    def __rewrite_data_files_options(self, table_metadata: TableMetadata):
+        return (get_config_overrides(table_metadata.table_overrides,
+                                     CompactionOperation.REWRITE_DATA_FILES,
+                                     ConfigProperty.OPTIONS)
+                or self.config.rewrite_data_files.options)
 
     def __get_catalog(self):
         catalog = self.config.catalog
