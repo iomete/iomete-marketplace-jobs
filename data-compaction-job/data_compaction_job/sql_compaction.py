@@ -3,7 +3,6 @@ import os
 import threading
 import time
 from collections import defaultdict
-from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from functools import cache
 
@@ -11,8 +10,8 @@ import requests
 
 from config import TableMetadata
 from data_compaction_job.compaction_results import (
-    OPERATION_SPECS, RunResult, TableResult, classify_operation, disabled_operation, skipped_operation,
-    unreadable_operation,
+    OPERATION_SPECS, ReasonCode, RunResult, TableResult, attach_query_to_errors, classify_operation,
+    disabled_operation, raised_operation, skipped_operation,
 )
 from data_compaction_job.compaction_summary import render_summary
 from data_compaction_job.compaction_table_state import read_table_state
@@ -110,7 +109,7 @@ class SqlCompaction:
 
             # Skip, if not an `iceberg` table
             if not any(row.col_name == "Provider" and row.data_type == "iceberg" for row in table_meta):
-                table_result.skip_reason_code = "not_iceberg"
+                table_result.skip_reason_code = ReasonCode.NOT_ICEBERG
                 table_result.skip_reason = "Table is not an Iceberg table."
                 return
 
@@ -119,9 +118,12 @@ class SqlCompaction:
 
         except Exception as e:
             logger.error(f"[{db_name}.{table}] Error processing table, error={e}")
-            if not any(op.reason_code == "result_unreadable" for op in table_result.operations):
-                table_result.error_type = type(e).__name__
-                table_result.error_message = str(e)
+            error_type, error_message = type(e).__name__, str(e)
+            recorded_by_operation = any(op.error_type == error_type and op.error_message == error_message
+                                        for op in table_result.operations)
+            if not recorded_by_operation:
+                table_result.error_type = error_type
+                table_result.error_message = error_message
 
     def __process_table(self, table_metadata: TableMetadata):
         catalog, database, table_name = table_metadata.catalog, table_metadata.database, table_metadata.table
@@ -132,7 +134,7 @@ class SqlCompaction:
             if not lock.acquire(catalog, database, table_name):
                 logger.info(f"[{database}.{table_name}] Skipping compaction: lock held by another instance.")
                 table_result = self.__table_result(table_metadata)
-                table_result.skip_reason_code = "lock_held"
+                table_result.skip_reason_code = ReasonCode.LOCK_HELD
                 table_result.skip_reason = "The compaction lock was not acquired."
                 return
 
@@ -176,10 +178,10 @@ class SqlCompaction:
         table_result.before = self.__read_table_state(table_metadata)
         attempts = []
         try:
-            self.__track(attempts, "REWRITE_DATA_FILES", self.__rewrite_data_files, table_metadata)
-            self.__track(attempts, "REWRITE_MANIFESTS", self.__rewrite_manifest, table_metadata)
-            self.__track(attempts, "EXPIRE_SNAPSHOTS", self.__expire_snapshots, table_metadata)
-            self.__track(attempts, "REMOVE_ORPHAN_FILES", self.__remove_orphan_files, table_metadata)
+            self.__track(attempts, CompactionOperation.REWRITE_DATA_FILES, self.__rewrite_data_files, table_metadata)
+            self.__track(attempts, CompactionOperation.REWRITE_MANIFESTS, self.__rewrite_manifest, table_metadata)
+            self.__track(attempts, CompactionOperation.EXPIRE_SNAPSHOT, self.__expire_snapshots, table_metadata)
+            self.__track(attempts, CompactionOperation.REMOVE_ORPHAN_FILES, self.__remove_orphan_files, table_metadata)
         finally:
             table_result.after = self.__read_table_state(table_metadata)
             self.__record_operations(table_result, table_metadata, attempts)
@@ -198,17 +200,18 @@ class SqlCompaction:
                 if outcome is None:
                     table_result.operations.append(disabled_operation(operation))
                 elif isinstance(outcome, Exception):
-                    table_result.operations.append(unreadable_operation(operation, outcome))
+                    table_result.operations.append(raised_operation(operation, outcome))
                 else:
                     options = (self.__rewrite_data_files_options(table_metadata)
-                               if operation == "REWRITE_DATA_FILES" else None)
+                               if operation == CompactionOperation.REWRITE_DATA_FILES else None)
                     table_result.operations.append(classify_operation(
                         operation, outcome, options, table_result.before, table_result.after))
             attempted = {operation for operation, _ in attempts}
             for operation in OPERATION_SPECS:
                 if operation not in attempted:
                     table_result.operations.append(skipped_operation(
-                        operation, "not_attempted", "Not attempted because an earlier step raised an unhandled error."))
+                        operation, ReasonCode.NOT_ATTEMPTED,
+                        "Not attempted because an earlier step raised an unhandled error."))
         except Exception as e:
             logger.error(f"[{table_metadata.database}.{table_metadata.table}] Could not record operation results, "
                          f"error={e}")
@@ -217,12 +220,8 @@ class SqlCompaction:
         return read_table_state(self.spark, table_metadata.catalog, table_metadata.database, table_metadata.table)
 
     def __call_procedure(self, query):
-        try:
+        with attach_query_to_errors(query):
             return self.spark.sql(query).collect()
-        except Exception as e:
-            with suppress(Exception):
-                e.compaction_query = query
-            raise
 
     def __check_gc_enabled(self, catalog, database, table_name):
         try:

@@ -2,6 +2,7 @@ from collections import Counter
 from typing import Any, Optional
 
 from data_compaction_job.compaction_results import (
+    SEVERITY,
     OperationResult,
     OperationStatus,
     RunResult,
@@ -13,7 +14,7 @@ from data_compaction_job.compaction_results import (
 DELIMITER = "=" * 80
 SEPARATOR = "-" * 80
 DETAILED_STATUSES = {OperationStatus.FAILED, OperationStatus.PARTIAL, OperationStatus.UNVERIFIED,
-                     OperationStatus.SUCCESS_WITH_WORK}
+                     OperationStatus.SUCCESS}
 BLANK_LINES = "\n" * 7
 
 
@@ -25,10 +26,7 @@ def render_summary(run: RunResult) -> str:
     quiet = [table for table in processed if table.status not in DETAILED_STATUSES]
 
     outcome_counts = Counter(table.status for table in tables)
-    outcomes = " | ".join(f"{status.value} {outcome_counts[status]}" for status in
-                          [OperationStatus.FAILED, OperationStatus.PARTIAL, OperationStatus.UNVERIFIED,
-                           OperationStatus.SUCCESS_WITH_WORK, OperationStatus.NO_WORK, OperationStatus.DISABLED,
-                           OperationStatus.SKIPPED]
+    outcomes = " | ".join(f"{status.value} {outcome_counts[status]}" for status in SEVERITY
                           if outcome_counts[status])
 
     lines = [
@@ -50,7 +48,7 @@ def render_summary(run: RunResult) -> str:
         lines += [f"  {table.name}  {table.status.value}" for table in quiet]
     if skipped:
         lines += [SEPARATOR, f"SKIPPED ({len(skipped)} table(s))"]
-        lines += [f"  {table.name}  {table.skip_reason_code}: {table.skip_reason}" for table in skipped]
+        lines += [f"  {table.name}  {table.skip_reason_code.value}: {table.skip_reason}" for table in skipped]
     failures = _failure_lines(tables)
     if failures:
         lines += [SEPARATOR, f"FAILURES ({len(failures)})"] + failures
@@ -121,7 +119,7 @@ def _change_lines(before: Optional[TableState], after: Optional[TableState]) -> 
         if old is not None and new is not None and old != new:
             changes.append(_field("Change", f"Table state changed from {old:,} to {new:,} {label}.", 8, "  "))
     if changes:
-        changes.append(_field("Note", "Table-state changes are not attributed to individual operations.", 8, "  "))
+        changes.append(_field("Note", "Table-state changes may include concurrent writes and are not attributed to individual maintenance operations.", 8, "  "))
     else:
         changes.append(_field("Change", "No table state change was observed.", 8, "  "))
     if before.snapshots is not None and after.snapshots is not None:
@@ -138,7 +136,7 @@ def _change_lines(before: Optional[TableState], after: Optional[TableState]) -> 
 
 def _operation_lines(operation: OperationResult) -> list[str]:
     indent = "      "
-    lines = [f"    {operation.operation}",
+    lines = [f"    {operation.name}",
              _field("Status", operation.status.value, 8, indent),
              _field("Reason", operation.reason, 8, indent)]
     if operation.started_at is not None:
@@ -186,11 +184,11 @@ def _failure_lines(tables: list[TableResult]) -> list[str]:
         for operation in table.operations:
             if operation.status == OperationStatus.FAILED:
                 detail = _error(operation.error_type, operation.error_message) or operation.reason
-                lines.append(f"  {table.name}  {operation.operation}  {detail}")
+                lines.append(f"  {table.name}  {operation.name}  {detail}")
     return lines
 
 
 def _review_lines(tables: list[TableResult]) -> list[str]:
-    return [f"  {table.name}  {operation.operation}  {operation.reason}"
+    return [f"  {table.name}  {operation.name}  {operation.reason}"
             for table in tables for operation in table.operations
             if operation.status == OperationStatus.UNVERIFIED]

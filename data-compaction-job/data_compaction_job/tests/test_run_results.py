@@ -12,12 +12,15 @@ import pytest
 from pyspark.sql import Row
 
 import stats_emitter
+from data_compaction_job.compaction_results import OperationStatus, ReasonCode
 from data_compaction_job.config import (
     ApplicationConfig,
+    GCHandlingConfig,
     LockConfig,
     RewriteDataFilesConfig,
     RewriteManifestsConfig,
 )
+from data_compaction_job.constants import CompactionOperation
 from data_compaction_job.sql_compaction import SqlCompaction
 
 CATALOG = "spark_catalog"
@@ -51,13 +54,15 @@ DEFAULT_RESULTS = {
 
 class Warehouse:
     def __init__(self, tables=("orders",), providers=None, results=None, lock_value=None,
-                 state_error=False, describe_errors=None):
+                 state_error=False, describe_errors=None, gc_enabled=None, gc_restore_error=None):
         self.tables = list(tables)
         self.providers = providers or {}
         self.results = dict(DEFAULT_RESULTS, **(results or {}))
         self.lock_value = lock_value
         self.state_error = state_error
         self.describe_errors = describe_errors or {}
+        self.gc_enabled = gc_enabled
+        self.gc_restore_error = gc_restore_error
         self.snapshots = {table: [snapshot(1)] for table in self.tables}
         self.queries = []
         self.state_reads = {}
@@ -95,10 +100,17 @@ class Warehouse:
             current = max(row.snapshot_id for row in self.snapshots[table])
             return [Row(key="current-snapshot-id", value=str(current))]
         if ".snapshots" in query:
-            return list(self.snapshots[names[2]])
+            current = re.search(r"WHERE snapshot_id = (\d+)", query)
+            rows = self.snapshots[names[2]]
+            return [row for row in rows if current is None or row.snapshot_id == int(current.group(1))]
         if normalized.startswith("show tblproperties"):
-            return [Row(key="iomete.compaction.lock", value=self.lock_value)] if self.lock_value else []
+            rows = [Row(key="iomete.compaction.lock", value=self.lock_value)] if self.lock_value else []
+            if self.gc_enabled is not None:
+                rows.append(Row(key="gc.enabled", value=self.gc_enabled))
+            return rows
         if normalized.startswith("alter table"):
+            if self.gc_restore_error and "'gc.enabled' = 'false'" in query:
+                raise self.gc_restore_error
             return []
         if normalized.startswith("call"):
             procedure = re.search(r"system\.(\w+)\(", query).group(1)
@@ -163,6 +175,15 @@ def test_unchanged_metrics_row_for_a_successful_rewrite():
     assert rewrite_calls[0].kwargs["query"] == warehouse.calls("rewrite_data_files")[0]
 
 
+def test_persisted_operation_names_match_the_reported_names():
+    with patch.object(stats_emitter.StatsBatcher, "add_metric", autospec=True) as add_metric:
+        job = run(Warehouse())
+
+    persisted = {c.kwargs["operation"] for c in add_metric.call_args_list}
+    assert persisted == {"REWRITE_MANIFESTS", "REWRITE_DATA_FILES", "EXPIRE_SNAPSHOTS", "REMOVE_ORPHAN_FILES"}
+    assert persisted == {result.name for result in table_result(job).operations}
+
+
 def test_unchanged_run_does_not_raise_when_an_operation_fails():
     warehouse = Warehouse(results={"rewrite_data_files": ValidationException("boom")})
 
@@ -201,8 +222,8 @@ def test_records_one_result_per_discovered_table():
 def test_records_disabled_operation():
     job = run(Warehouse(), make_config(rewrite_manifests=RewriteManifestsConfig(enabled=False)))
 
-    result = operation_result(job, "REWRITE_MANIFESTS")
-    assert result.status == "DISABLED"
+    result = operation_result(job, CompactionOperation.REWRITE_MANIFESTS)
+    assert result.status == OperationStatus.DISABLED
     assert result.reason == "Disabled by configuration."
 
 
@@ -210,7 +231,7 @@ def test_records_every_operation_once():
     # Ordering belongs to PR1; only membership is pinned here.
     job = run(Warehouse())
 
-    assert sorted(result.operation for result in table_result(job).operations) == [
+    assert sorted(result.name for result in table_result(job).operations) == [
         "EXPIRE_SNAPSHOTS", "REMOVE_ORPHAN_FILES", "REWRITE_DATA_FILES", "REWRITE_MANIFESTS"]
 
 
@@ -218,8 +239,8 @@ def test_non_iceberg_table_is_skipped():
     job = run(Warehouse(tables=("raw_view",), providers={"raw_view": "hive"}))
 
     table = table_result(job, "raw_view")
-    assert table.status == "SKIPPED"
-    assert table.skip_reason_code == "not_iceberg"
+    assert table.status == OperationStatus.SKIPPED
+    assert table.skip_reason_code == ReasonCode.NOT_ICEBERG
     assert table.operations == []
 
 
@@ -227,8 +248,8 @@ def test_table_with_held_lock_is_skipped():
     job = run(Warehouse(lock_value=HELD_LOCK), make_config(lock=LockConfig(enabled=True)))
 
     table = table_result(job)
-    assert table.status == "SKIPPED"
-    assert table.skip_reason_code == "lock_held"
+    assert table.status == OperationStatus.SKIPPED
+    assert table.skip_reason_code == ReasonCode.LOCK_HELD
 
 
 def test_procedure_failure_is_recorded_with_error_and_query():
@@ -236,20 +257,51 @@ def test_procedure_failure_is_recorded_with_error_and_query():
 
     job = run(warehouse)
 
-    result = operation_result(job, "REWRITE_DATA_FILES")
-    assert result.status == "FAILED"
-    assert result.reason_code == "procedure_error"
+    result = operation_result(job, CompactionOperation.REWRITE_DATA_FILES)
+    assert result.status == OperationStatus.FAILED
+    assert result.reason_code == ReasonCode.PROCEDURE_ERROR
+    assert result.reason == "The Iceberg procedure call failed."
     assert result.error_type == "ValidationException"
     assert result.error_message == "Missing required files to delete: x"
     assert result.query == warehouse.calls("rewrite_data_files")[0]
-    assert operation_result(job, "EXPIRE_SNAPSHOTS").status == "NO_WORK"
+    assert operation_result(job, CompactionOperation.EXPIRE_SNAPSHOT).status == OperationStatus.NO_WORK
+
+
+def test_error_before_the_procedure_call_is_not_reported_as_a_procedure_failure():
+    warehouse = Warehouse()
+    overrides = {"db.orders": {"remove_orphan_files": {"older_than_days": "abc"}}}
+
+    job = run(warehouse, make_config(table_overrides=overrides))
+
+    result = operation_result(job, CompactionOperation.REMOVE_ORPHAN_FILES)
+    assert result.status == OperationStatus.FAILED
+    assert result.reason_code == ReasonCode.FAILED_BEFORE_PROCEDURE_CALL
+    assert result.error_type == "ValueError"
+    assert result.query is None
+    assert not warehouse.calls("remove_orphan_files")
+
+
+def test_error_outside_the_procedure_call_is_reported_neutrally():
+    warehouse = Warehouse()
+    overrides = {"db.orders": {"rewrite_manifests": False}}
+
+    job = run(warehouse, make_config(table_overrides=overrides))
+
+    table = table_result(job)
+    result = operation_result(job, CompactionOperation.REWRITE_MANIFESTS)
+    assert result.status == OperationStatus.FAILED
+    assert result.reason_code == ReasonCode.FAILED_OUTSIDE_PROCEDURE_CALL
+    assert result.error_type == "AttributeError"
+    assert not warehouse.calls("rewrite_manifests")
+    assert table.status == OperationStatus.FAILED
+    assert table.error_type is None
 
 
 def test_zero_rewrite_without_partial_progress_is_no_work():
     job = run(Warehouse(), make_config(rewrite_data_files=RewriteDataFilesConfig(options={"min-input-files": 2})))
 
-    result = operation_result(job, "REWRITE_DATA_FILES")
-    assert result.status == "NO_WORK"
+    result = operation_result(job, CompactionOperation.REWRITE_DATA_FILES)
+    assert result.status == OperationStatus.NO_WORK
     assert result.reason == "No files required rewriting."
 
 
@@ -264,9 +316,9 @@ def test_zero_rewrite_under_partial_progress_is_unverified_and_reports_window_ev
 
     job = run(warehouse, make_config(rewrite_data_files=RewriteDataFilesConfig(options=options)))
 
-    result = operation_result(job, "REWRITE_DATA_FILES")
-    assert result.status == "UNVERIFIED"
-    assert result.reason_code == "zero_committed_under_partial_progress"
+    result = operation_result(job, CompactionOperation.REWRITE_DATA_FILES)
+    assert result.status == OperationStatus.UNVERIFIED
+    assert result.reason_code == ReasonCode.ZERO_COMMITTED_UNDER_PARTIAL_PROGRESS
     assert "Non-replace snapshots observed during the operation window: 1 (append 1)." in result.notes
 
 
@@ -291,7 +343,7 @@ def test_state_read_failure_does_not_change_execution():
     assert table.before is None and table.after is None
     for procedure in ("rewrite_manifests", "rewrite_data_files", "expire_snapshots", "remove_orphan_files"):
         assert warehouse.calls(procedure)
-    assert operation_result(job, "EXPIRE_SNAPSHOTS").reason_code == "table_state_unavailable"
+    assert operation_result(job, CompactionOperation.EXPIRE_SNAPSHOT).reason_code == ReasonCode.TABLE_STATE_UNAVAILABLE
 
 
 def test_effective_options_and_sql_are_recorded_verbatim():
@@ -300,7 +352,7 @@ def test_effective_options_and_sql_are_recorded_verbatim():
 
     job = run(warehouse, make_config(rewrite_data_files=RewriteDataFilesConfig(options=options)))
 
-    result = operation_result(job, "REWRITE_DATA_FILES")
+    result = operation_result(job, CompactionOperation.REWRITE_DATA_FILES)
     assert result.options == options
     assert result.query == warehouse.calls("rewrite_data_files")[0]
     assert "'future-iceberg-option', 'x'" in result.query
@@ -309,22 +361,38 @@ def test_effective_options_and_sql_are_recorded_verbatim():
 def test_duration_is_recorded():
     job = run(Warehouse())
 
-    result = operation_result(job, "REWRITE_DATA_FILES")
+    result = operation_result(job, CompactionOperation.REWRITE_DATA_FILES)
     assert result.started_at is not None
     assert result.ended_at >= result.started_at
-    assert result.duration_seconds >= 0
 
 
 def test_zero_row_result_is_recorded_as_unreadable_and_later_operations_as_not_attempted():
-    job = run(Warehouse(results={"rewrite_manifests": lambda wh: []}))
+    warehouse = Warehouse(results={"rewrite_manifests": lambda wh: []})
+
+    job = run(warehouse)
 
     table = table_result(job)
-    assert operation_result(job, "REWRITE_MANIFESTS").status == "FAILED"
-    assert operation_result(job, "REWRITE_MANIFESTS").reason_code == "result_unreadable"
-    for operation in ("REWRITE_DATA_FILES", "EXPIRE_SNAPSHOTS", "REMOVE_ORPHAN_FILES"):
-        assert operation_result(job, operation).status == "SKIPPED"
-        assert operation_result(job, operation).reason_code == "not_attempted"
-    assert table.status == "FAILED"
+    result = operation_result(job, CompactionOperation.REWRITE_MANIFESTS)
+    assert result.status == OperationStatus.FAILED
+    assert result.reason_code == ReasonCode.RESULT_UNREADABLE
+    assert result.query == warehouse.calls("rewrite_manifests")[0]
+    for operation in (CompactionOperation.REWRITE_DATA_FILES, CompactionOperation.EXPIRE_SNAPSHOT,
+                      CompactionOperation.REMOVE_ORPHAN_FILES):
+        assert operation_result(job, operation).status == OperationStatus.SKIPPED
+        assert operation_result(job, operation).reason_code == ReasonCode.NOT_ATTEMPTED
+    assert table.status == OperationStatus.FAILED
+    assert table.error_type is None
+
+
+def test_gc_restore_failure_is_reported_even_after_an_operation_error():
+    warehouse = Warehouse(results={"rewrite_manifests": lambda wh: []}, gc_enabled="false",
+                          gc_restore_error=RuntimeError("could not restore gc.enabled"))
+
+    job = run(warehouse, make_config(gc_handling=GCHandlingConfig(enabled=True)))
+
+    table = table_result(job)
+    assert operation_result(job, CompactionOperation.REWRITE_MANIFESTS).reason_code == ReasonCode.RESULT_UNREADABLE
+    assert (table.error_type, table.error_message) == ("RuntimeError", "could not restore gc.enabled")
 
 
 def test_describe_failure_is_a_table_level_failure():
@@ -333,7 +401,7 @@ def test_describe_failure_is_a_table_level_failure():
     job = run(warehouse)
 
     table = table_result(job)
-    assert table.status == "FAILED"
+    assert table.status == OperationStatus.FAILED
     assert table.error_message == "catalog unreachable"
     assert table.operations == []
 
@@ -344,7 +412,7 @@ def test_run_status_is_the_most_severe_table_status():
 
     job = run(warehouse)
 
-    assert job.run_result.status == "FAILED"
+    assert job.run_result.status == OperationStatus.FAILED
 
 
 def test_summary_is_logged_once_at_the_end(caplog):
@@ -408,7 +476,7 @@ def test_unchanged_override_option_keys_are_not_cleaned():
 def test_recorded_options_match_what_was_sent(table_overrides, expected):
     job, _ = rewrite_run(table_overrides)
 
-    assert operation_result(job, "REWRITE_DATA_FILES").options == expected
+    assert operation_result(job, CompactionOperation.REWRITE_DATA_FILES).options == expected
 
 
 def test_concurrent_lookups_create_exactly_one_result_per_table():
