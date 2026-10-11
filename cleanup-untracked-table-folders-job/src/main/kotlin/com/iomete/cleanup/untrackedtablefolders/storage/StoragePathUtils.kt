@@ -57,6 +57,16 @@ object StoragePathUtils {
             )
         }
 
+    fun overlaps(
+        firstLocation: String,
+        secondLocation: String,
+    ): Boolean =
+        isSameOrChildLocation(candidateLocation = firstLocation, rootLocation = secondLocation) ||
+            isSameOrChildLocation(candidateLocation = secondLocation, rootLocation = firstLocation)
+
+    fun isStorageRoot(location: String): Boolean =
+        normalizeUriPath(Path(location.trim().trimEnd('/').ifEmpty { "/" }).toUri().normalize()) == "/"
+
     private fun canonicalizeScheme(scheme: String): String =
         when (scheme) {
             "s3", "s3a", "s3n" -> "s3a"

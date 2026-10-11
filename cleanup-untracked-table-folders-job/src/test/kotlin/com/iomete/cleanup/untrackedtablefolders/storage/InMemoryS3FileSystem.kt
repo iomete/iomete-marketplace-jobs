@@ -41,11 +41,15 @@ class InMemoryS3FileSystem : FileSystem() {
         @Volatile
         var failDeleteFor: String? = null
 
+        @Volatile
+        var refuseDeleteFor: String? = null
+
         fun reset() {
             stores.clear()
             opened.clear()
             closedEndpoints.clear()
             failDeleteFor = null
+            refuseDeleteFor = null
         }
 
         fun store(endpoint: String): MutableMap<String, Entry> =
@@ -138,6 +142,7 @@ class InMemoryS3FileSystem : FileSystem() {
         if (target == failDeleteFor) {
             throw java.io.IOException("simulated delete failure: $target")
         }
+        if (target == refuseDeleteFor) return false
         val victims = entries().keys.filter { it == target || it.startsWith("$target/") }
         if (victims.isEmpty()) return false
         if (!recursive && victims.size > 1) return false

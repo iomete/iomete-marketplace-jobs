@@ -31,6 +31,30 @@ class CleanupAuditRecorderTest {
     }
 
     @Test
+    fun `unsafe scan root writes a SKIPPED record with its reason`() {
+        recorder.recordUnsafeScanRoot(
+            runId = "run-1",
+            databaseStartTime = Instant.EPOCH,
+            catalogName = "example_catalog",
+            databaseName = "default",
+            discoveredDatabaseLocation = "s3a://bucket/lake",
+            activeTableCount = 1,
+            activeTableLocations = listOf("s3a://bucket/lake/events"),
+            reason = "database_location_contains_warehouse_root",
+            errorMessage = "Database location equals or contains the catalog warehouse root",
+            excludedPaths = emptyList(),
+        )
+
+        val record = capturedRecord()
+
+        assertEquals("SKIPPED", record.status)
+        assertEquals("database_location_contains_warehouse_root", record.statusReason)
+        assertEquals("Database location equals or contains the catalog warehouse root", record.errorMessage)
+        assertEquals(0, record.candidateFolderCount)
+        assertEquals(0, record.deletedFolderCount)
+    }
+
+    @Test
     fun `ownership unverified writes a BLOCKED record with no error message`() {
         recorder.recordOwnershipUnverified(
             runId = "run-1",

@@ -107,4 +107,26 @@ class StoragePathUtilsTest {
             )
         )
     }
+
+    @Test
+    fun `overlap holds in both directions and for equal paths`() {
+        assertTrue(StoragePathUtils.overlaps("s3a://bucket/db/table", "s3a://bucket/db/table/"))
+        assertTrue(StoragePathUtils.overlaps("s3a://bucket/db", "s3a://bucket/db/table/data"))
+        assertTrue(StoragePathUtils.overlaps("s3a://bucket/db/table/data", "s3a://bucket/db"))
+        assertTrue(StoragePathUtils.overlaps("s3://bucket/db/table", "s3a://bucket/db/table/data"))
+    }
+
+    @Test
+    fun `overlap matches whole path segments only`() {
+        assertFalse(StoragePathUtils.overlaps("s3a://bucket/db/table1", "s3a://bucket/db/table10"))
+        assertFalse(StoragePathUtils.overlaps("s3a://bucket/db/table10", "s3a://bucket/db/table1"))
+    }
+
+    @Test
+    fun `detects bucket roots with or without a trailing slash`() {
+        assertTrue(StoragePathUtils.isStorageRoot("s3a://bucket"))
+        assertTrue(StoragePathUtils.isStorageRoot("s3a://bucket/"))
+        assertTrue(StoragePathUtils.isStorageRoot("s3a://bucket//"))
+        assertFalse(StoragePathUtils.isStorageRoot("s3a://bucket/db"))
+    }
 }

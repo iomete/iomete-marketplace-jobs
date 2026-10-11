@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.catalog
 
 import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
+import com.iomete.cleanup.untrackedtablefolders.storage.CatalogStorageProperties
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import org.jboss.logging.Logger
@@ -45,6 +46,10 @@ class DatabaseNotFoundException(
 
 // REST catalog errors preserve this Iceberg missing-location message.
 private const val MISSING_METADATA_MESSAGE = "Location does not exist:"
+
+private const val WAREHOUSE_PROPERTY = "warehouse"
+private const val SESSION_CATALOG_NAME = "spark_catalog"
+private const val SESSION_WAREHOUSE_KEY = "spark.sql.warehouse.dir"
 
 internal fun isMetadataNotFoundError(error: Throwable): Boolean {
     var current: Throwable? = error
@@ -104,6 +109,28 @@ class CatalogDiscoveryService {
                 database = database,
             ),
         )
+    }
+
+    fun sharedWarehouseRoots(catalog: String): List<String> {
+        val spark = sparkSessionProvider.getOrCreate()
+        val catalogWarehouse =
+            spark.sparkContext().getConf()
+                .get(CatalogStorageProperties.catalogPropertyPrefix(catalog) + WAREHOUSE_PROPERTY, "")
+                .trim()
+
+        // The session warehouse alone does not cover REST namespaces.
+        if (catalogWarehouse.isEmpty()) {
+            return emptyList()
+        }
+
+        val sessionWarehouse =
+            if (catalog == SESSION_CATALOG_NAME) {
+                spark.conf().get(SESSION_WAREHOUSE_KEY, "").trim()
+            } else {
+                ""
+            }
+
+        return listOf(catalogWarehouse, sessionWarehouse).filter { it.isNotEmpty() }.distinct()
     }
 
     fun discoverTables(

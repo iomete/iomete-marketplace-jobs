@@ -54,7 +54,8 @@ class CleanupUntrackedTableFoldersServiceTest {
         )
         every { candidateSizeStatCollector.collectPerFolder(any(), any()) } returns emptyMap()
         every { candidateSizeStatCollector.sum(any()) } returns StorageSizeStats.ZERO
-        every { candidateDeletionGate.deleteCandidates(any(), any(), any()) } returns emptyList()
+        every { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) } returns emptyList()
+        every { catalogDiscoveryService.sharedWarehouseRoots(any()) } returns listOf("s3a://warehouse-bucket/warehouse")
     }
 
     @Test
@@ -79,6 +80,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 reconciliation = match { reconciliation ->
                     reconciliation.folders.map { it.path } == listOf("s3a://bucket/db/orphan")
                 },
+                excludedPaths = any(),
             )
         }
         verify(exactly = 1) {
@@ -121,6 +123,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 catalog = "spark_catalog",
                 database = "analytics",
                 reconciliation = any(),
+                excludedPaths = any(),
             )
         } returns listOf("s3a://bucket/db/orphan_a", "s3a://bucket/db/orphan_b")
 
@@ -172,7 +175,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 excludedPaths = any(),
             )
         }
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
         verify(exactly = 0) { objectStorageDiscoveryService.listImmediateChildFolders(any(), any()) }
         verifyNoOtherAuditCalls(except = "recordNoActiveTables")
     }
@@ -206,7 +209,7 @@ class CleanupUntrackedTableFoldersServiceTest {
             )
         }
         verify(exactly = 0) { objectStorageDiscoveryService.listImmediateChildFolders(any(), any()) }
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
         verifyNoOtherAuditCalls(except = "recordDatabaseLocationMissing")
     }
 
@@ -232,7 +235,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 error = any(),
             )
         }
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
         verifyNoOtherAuditCalls(except = "recordDatabaseNotFound")
     }
 
@@ -257,7 +260,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 error = any(),
             )
         }
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
         verifyNoOtherAuditCalls(except = "recordFailed")
     }
 
@@ -342,7 +345,7 @@ class CleanupUntrackedTableFoldersServiceTest {
 
         service.run()
 
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
         verify(exactly = 1) {
             cleanupAuditRecorder.recordOwnershipUnverified(
                 runId = any(),
@@ -387,7 +390,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         verify(exactly = 1) {
             candidateSizeStatCollector.collectPerFolder("spark_catalog", listOf("s3a://bucket/db/old_1"))
         }
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
         verifyNoOtherAuditCalls(except = "recordOwnershipUnverified")
     }
 
@@ -408,7 +411,7 @@ class CleanupUntrackedTableFoldersServiceTest {
 
         service.run()
 
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
         verify(exactly = 0) { cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
@@ -451,7 +454,65 @@ class CleanupUntrackedTableFoldersServiceTest {
         }
     }
 
+    @Test
+    fun `unsafe scan root records SKIPPED and never lists storage or reaches the gate`() {
+        val service = serviceFor(
+            applicationConfig(dryRun = false, deleteEnabled = true, databases = listOf("analytics")),
+        )
+        every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
+            discoveredDatabase(activeTableLocations = listOf("s3a://bucket/db/active_table"))
+        every { catalogDiscoveryService.sharedWarehouseRoots("spark_catalog") } returns listOf("s3a://bucket/db")
+
+        service.run()
+
+        verify(exactly = 1) {
+            cleanupAuditRecorder.recordUnsafeScanRoot(
+                runId = any(),
+                databaseStartTime = any(),
+                catalogName = "spark_catalog",
+                databaseName = "analytics",
+                discoveredDatabaseLocation = "s3a://bucket/db",
+                activeTableCount = 1,
+                activeTableLocations = listOf("s3a://bucket/db/active_table"),
+                reason = "database_location_contains_warehouse_root",
+                errorMessage = any(),
+                excludedPaths = any(),
+            )
+        }
+        verify(exactly = 0) { objectStorageDiscoveryService.listImmediateChildFolders(any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
+        verifyNoOtherAuditCalls(except = "recordUnsafeScanRoot")
+    }
+
+    @Test
+    fun `passes the effective exclusions to the final deletion gate`() {
+        val service = serviceFor(
+            applicationConfig(dryRun = false, deleteEnabled = true, databases = listOf("analytics"))
+                .copy(excludePaths = listOf("s3a://bucket/db/keep/")),
+        )
+        every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
+            discoveredDatabase(activeTableLocations = listOf("s3a://bucket/db/active_table"))
+        every { objectStorageDiscoveryService.listImmediateChildFolders(any(), "s3a://bucket/db") } returns
+            listOf(storageFolder("s3a://bucket/db/active_table"), storageFolder("s3a://bucket/db/orphan"))
+
+        service.run()
+
+        verify(exactly = 1) {
+            candidateDeletionGate.deleteCandidates(
+                catalog = "spark_catalog",
+                database = "analytics",
+                reconciliation = any(),
+                excludedPaths = listOf("s3a://bucket/db/keep"),
+            )
+        }
+    }
+
     private fun verifyNoOtherAuditCalls(except: String = "recordSuccess") {
+        if (except != "recordUnsafeScanRoot") {
+            verify(exactly = 0) {
+                cleanupAuditRecorder.recordUnsafeScanRoot(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+            }
+        }
         if (except != "recordNoActiveTables") {
             verify(exactly = 0) {
                 cleanupAuditRecorder.recordNoActiveTables(any(), any(), any(), any(), any(), any())

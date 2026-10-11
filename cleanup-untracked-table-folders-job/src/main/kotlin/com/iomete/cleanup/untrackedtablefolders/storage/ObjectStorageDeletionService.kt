@@ -40,7 +40,10 @@ class ObjectStorageDeletionService {
                             logger.warn("Storage folder does not exist, skipping delete: location=$location")
                             false
                         } else {
-                            fileSystem.delete(path, true)
+                            check(fileSystem.delete(path, true)) {
+                                "Recursive delete returned false for an existing folder; its state is unknown: location=$location"
+                            }
+                            true
                         }
                     }
 

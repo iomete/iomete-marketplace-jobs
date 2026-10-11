@@ -188,7 +188,7 @@ If a configured database does not exist, that database is skipped and the job wr
 
 ### `exclude_paths`
 
-Exact physical object-storage folder paths that should be protected from cleanup.
+Physical object-storage paths that should be protected from cleanup.
 
 ```json
 "exclude_paths": [
@@ -198,11 +198,15 @@ Exact physical object-storage folder paths that should be protected from cleanup
 
 `exclude_paths` is intentionally path-based. It does **not** accept table names, catalog identifiers, partial paths, or substring matches.
 
+A candidate folder is skipped when it equals an excluded path, contains one, or sits inside one. Paths are compared by whole path segments, so `customer_events` does not protect `customer_events_v2`.
+
+Candidate folders are deleted recursively, so an excluded path nested inside a candidate protects the whole candidate folder. The job never deletes around an exclusion.
+
 For a shorter database-scoped exclusion format, use `exclude_database_folders`.
 
 | Input | Supported? | Notes |
 |---|---:|---|
-| `s3a://bucket/data/analytics/customer_events` | Yes | Exact physical storage path |
+| `s3a://bucket/data/analytics/customer_events` | Yes | Full physical storage path |
 | `s3a://bucket/data/analytics/customer_events/` | Yes | Trailing slash is normalized |
 | `customer_events` | No | Table/folder name alone is ambiguous across databases |
 | `analytics.customer_events` | No for `exclude_paths` | Use `exclude_database_folders` for this database-scoped folder format |
@@ -376,11 +380,12 @@ The job has several independent fail-safe layers. These are intentionally redund
 - Dry-run mode can report candidates without deleting anything.
 - Deletion requires both `dry_run=false` and `delete_enabled=true`; changing only one flag cannot delete data.
 - Only immediate child folders under the resolved scan root are considered.
-- Active catalog table locations are protected.
-- Configured `exclude_paths` and `exclude_database_folders` are protected.
+- Active catalog table locations are protected. A folder that equals, contains, or sits inside one is never a candidate.
+- Configured `exclude_paths` and `exclude_database_folders` are protected the same way.
+- A database location that is a bucket root, or that equals or contains the catalog warehouse root, is never scanned.
 - Candidate folders must satisfy `older_than_hours`.
 - Candidate count is capped by `max_candidate_folders_per_database`.
-- Candidate folders are revalidated against active catalog table locations before deletion.
+- Candidate folders are revalidated against active catalog table locations and exclusions before deletion.
 - Catalog or storage uncertainty fails closed instead of being treated as an empty result.
 - Results are written to an audit table.
 
@@ -395,11 +400,13 @@ The main safety principle is **fail closed**: if the job cannot prove that a fol
 | `delete_enabled=true` required separately | Accidental deletion from changing only `dry_run` |
 | Immediate-child-folder scan only | Recursive scanning of arbitrary nested files |
 | Scan-root boundary validation | Scanning outside the intended database storage area |
-| Active table location protection | Deleting folders still claimed by the catalog |
-| Configured exclusions | Deleting folders explicitly protected through `exclude_paths` or `exclude_database_folders` |
+| Bucket-root database location rejection | Treating a whole bucket as one database's storage |
+| Warehouse-root rejection | Scanning a shared warehouse root where other databases live |
+| Active table location protection | Deleting folders still claimed by the catalog, including folders inside a table location |
+| Configured exclusions | Deleting folders explicitly protected through `exclude_paths` or `exclude_database_folders`, including an excluded path nested inside a candidate |
 | `older_than_hours` cutoff | Selecting very recent folders too quickly |
 | `max_candidate_folders_per_database` | Broad accidental deletion when too many candidates appear |
-| Pre-delete catalog revalidation | Deleting a folder that became active after initial discovery |
+| Pre-delete revalidation | Deleting a folder that became active after initial discovery, or that overlaps an exclusion |
 | Audit row per database | Clear outcome tracking when a run scans multiple databases |
 | Empty-database guard | Deleting every folder in a database whose catalog has no active table locations (likely misconfiguration) |
 | Catalog-scoped storage access | Reading or deleting in the platform's storage instead of the catalog's, and vice versa |
@@ -418,6 +425,9 @@ resolved fails the database instead of falling back to the platform's storage. S
 reporting only, so a single unreadable candidate folder is tolerated and recorded as an unknown
 size, but a configuration failure, or every candidate folder failing, fails the database rather
 than producing a run that looks successful with no sizes.
+
+If a recursive delete reports that an existing folder was not deleted, the folder's state is
+unknown. The job stops deleting for that database and records `FAILED`.
 
 Outcome meanings:
 
@@ -525,6 +535,24 @@ Object-storage scan root:
 
 The job resolves the scan root from active table locations when possible, then validates that the resolved scan root stays inside the allowed database boundary.
 
+Before choosing a scan root, the job checks the database location itself:
+
+- A database location that is a bucket root, such as `s3a://bucket`, is rejected even when the tables sit deeper. A whole bucket is not a narrow enough ownership boundary.
+- A database location that equals or contains the catalog warehouse root is rejected. Databases created without their own location live under the warehouse root, so scanning it could reach other databases. This applies, for example, to a `default` database whose location is the warehouse root.
+- A table stored directly at a bucket root does not contribute a scan root.
+
+The warehouse root is read from `spark.sql.catalog.<catalog>.warehouse`. For `spark_catalog`, Spark's `spark.sql.warehouse.dir` is checked as well. If the catalog warehouse is not configured, the job cannot run this check and skips the database.
+
+A rejected database is recorded as `SKIPPED` with one of these reasons, and its storage is never listed:
+
+| `status_reason` | Meaning |
+|---|---|
+| `database_location_is_bucket_root` | The database location is a bucket root |
+| `database_location_contains_warehouse_root` | The database location equals or contains the catalog warehouse root |
+| `catalog_warehouse_unknown` | The catalog warehouse location is not configured |
+| `scan_root_outside_database_boundary` | The resolved scan root falls outside the database location |
+| `invalid_storage_location` | A database, table, or warehouse location cannot be parsed |
+
 ---
 
 ## Audit table
@@ -586,7 +614,7 @@ Audit rows include:
 | `runtime_domain` | Runtime IOMETE domain exposed through `IOMETE_DOMAIN`, for example `fde`. |
 | `runtime_user` | Runtime Spark user exposed through `SPARK_USER`. This is useful for comparing the audit row with the run-as user shown in the platform UI. Read from the env var rather than `SparkContext.sparkUser()` so the value remains the run-as identity even when Spark is configured with proxy-user impersonation. |
 | `status` | High-level outcome: `SUCCESS`, `SKIPPED`, `BLOCKED`, or `FAILED`. |
-| `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, `unresolved_catalog_ownership`, or `unexpected_error`. |
+| `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, `unresolved_catalog_ownership`, `database_location_contains_warehouse_root`, or `unexpected_error`. See [Object-storage scan root](#object-storage-scan-root) for the scan-root reasons. |
 | `older_than_hours` | Configured age threshold used for candidate detection. |
 | `cutoff_time` | Calculated timestamp used to decide whether a folder is old enough to be considered. |
 | `max_candidate_folders_per_database` | Configured per-database candidate-folder safety limit. |
@@ -631,6 +659,7 @@ Path lists are sampled to avoid writing very large audit rows.
 | Database location is missing | `SKIPPED` | Storage discovery is skipped |
 | Too many candidate folders | `SKIPPED` | Candidate count exceeded configured limit |
 | Configured database does not exist | `SKIPPED` | Logged as a warning with `status_reason=database_not_found` |
+| Database location or scan root is unsafe | `SKIPPED` | Storage is never listed; see [Object-storage scan root](#object-storage-scan-root) for the reasons |
 | One or more table storage locations could not be resolved | `BLOCKED` | Reconciliation is still reported, nothing is deleted, `status_reason=unresolved_catalog_ownership` |
 | Unexpected catalog, storage, or deletion failure | `FAILED` | Real failure path remains an error |
 
@@ -773,6 +802,7 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T08 | Candidate count exceeds max limit | `SKIPPED`, no deletion |
 | T09 | Candidate is listed in `exclude_paths` by full path | Candidate is protected |
 | T09b | Candidate is listed in `exclude_database_folders` as `database.folder` | Candidate is protected |
+| T09c | An excluded path sits inside a candidate folder | The whole candidate folder is protected |
 | T10 | Loose file directly under scan root | Ignored, not deleted |
 | T11 | Table is dropped then recreated at same location | Folder is protected because it is active again |
 | T12 | Table is dropped then recreated at different location | Old untracked folder can become a candidate |
@@ -780,6 +810,7 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T14 | Unexpected catalog/storage error | `FAILED` |
 | T15 | `collect_size_statistics=true` with candidate folders | Candidate object count and size are collected and logged |
 | T16 | `collect_size_statistics=false` with candidate folders | Candidate and deleted size audit fields remain `0` and size collection is skipped |
+| T17 | Database location is a bucket root or the catalog warehouse root | `SKIPPED`, storage is not listed |
 
 ---
 
@@ -881,5 +912,6 @@ Any old unreferenced files inside that active table folder should be handled by 
 - Object-storage access supports S3 and S3-compatible storage. A non-S3 catalog location falls back to Spark's own Hadoop configuration, which carries no catalog-specific endpoint or credentials.
 - Catalogs using vended or remotely signed credentials are not supported for storage access, because those credentials are issued per Iceberg request and never appear in `sparkConf`.
 - Folder names are compared case-sensitively, because `ORDERS` and `orders` are different object-storage prefixes.
+- A database whose location equals or contains the catalog warehouse root cannot be cleaned by this job.
 - The job is intended for controlled cleanup workflows, not blind automatic deletion.
 - Size statistics require recursively listing objects under final candidate folders. This can add overhead for folders with many objects and can be disabled with `collect_size_statistics=false`.
