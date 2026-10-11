@@ -102,4 +102,24 @@ class CleanupSummaryLoggerTest {
         assertTrue(report.contains("Folders belonging to verified catalog tables     1"))
         assertTrue(report.contains("Folders with no verified catalog owner           1"))
     }
+
+    @Test
+    fun `report lists table locations outside the scanned root`() {
+        val report =
+            logger.buildReportLines(
+                summary().copy(unscannedTableLocations = listOf("s3a://bucket/other/events")),
+            ).joinToString("\n")
+
+        assertTrue(report.contains("Table locations outside the scanned root         1"))
+        assertTrue(report.contains("TABLE LOCATIONS OUTSIDE THE SCANNED ROOT"))
+        assertTrue(report.contains("- s3a://bucket/other/events"))
+    }
+
+    @Test
+    fun `report omits the outside-root section when coverage is complete`() {
+        val report = logger.buildReportLines(summary()).joinToString("\n")
+
+        assertTrue(report.contains("Table locations outside the scanned root         0"))
+        assertFalse(report.contains("TABLE LOCATIONS OUTSIDE THE SCANNED ROOT"))
+    }
 }

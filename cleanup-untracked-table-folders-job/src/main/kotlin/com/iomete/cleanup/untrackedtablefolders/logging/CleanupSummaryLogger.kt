@@ -19,6 +19,7 @@ data class CleanupSummary(
     val deletionEligible: Boolean,
     val deletedFolderPaths: List<String>,
     val deletedSizeStats: StorageSizeStats?,
+    val unscannedTableLocations: List<String> = emptyList(),
 )
 
 @ApplicationScoped
@@ -64,11 +65,12 @@ class CleanupSummaryLogger {
         add("  Folders discovered                               ${summary.storageFolderPaths.size}")
         add("  Folders belonging to verified catalog tables     ${matchedFolderPaths.size}")
         add("  Folders with no verified catalog owner           ${summary.unmatchedFolderPaths.size}")
+        add("  Table locations outside the scanned root         ${summary.unscannedTableLocations.size}")
         add(
             if (summary.unmatchedSizeStats != null) {
                 "  Size of folders with no verified owner           ${formatBytes(summary.unmatchedSizeStats.totalSizeBytes)} across ${summary.unmatchedSizeStats.objectCount} object(s)"
             } else {
-                "  Size of folders with no verified owner           not collected (collect_size_statistics=false)"
+                "  Size of folders with no verified owner           not available"
             }
         )
 
@@ -81,6 +83,15 @@ class CleanupSummaryLogger {
         add("STORAGE FOLDERS EXCLUDED BY CONFIGURATION")
         add("")
         addListOrNone(summary.excludedPaths.sorted())
+
+        if (summary.unscannedTableLocations.isNotEmpty()) {
+            add("")
+            add("TABLE LOCATIONS OUTSIDE THE SCANNED ROOT")
+            add("")
+            add("  Storage around these table locations was not checked in this run.")
+            add("")
+            addListOrNone(summary.unscannedTableLocations)
+        }
 
         add("")
         if (summary.deletionEligible) {
@@ -109,7 +120,7 @@ class CleanupSummaryLogger {
                 if (summary.deletedSizeStats != null) {
                     "  Size deleted                                     ${formatBytes(summary.deletedSizeStats.totalSizeBytes)} across ${summary.deletedSizeStats.objectCount} object(s)"
                 } else {
-                    "  Size deleted                                     not collected (collect_size_statistics=false)"
+                    "  Size deleted                                     not available"
                 }
             )
             add("")

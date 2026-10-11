@@ -41,11 +41,18 @@ class InMemoryS3FileSystem : FileSystem() {
         @Volatile
         var failDeleteFor: String? = null
 
+        @Volatile
+        var failListFor: String? = null
+
+        val listStatusCalls = ConcurrentHashMap<String, Int>()
+
         fun reset() {
             stores.clear()
             opened.clear()
             closedEndpoints.clear()
             failDeleteFor = null
+            failListFor = null
+            listStatusCalls.clear()
         }
 
         fun store(endpoint: String): MutableMap<String, Entry> =
@@ -63,8 +70,9 @@ class InMemoryS3FileSystem : FileSystem() {
             endpoint: String,
             path: String,
             length: Long,
+            modificationTimeMillis: Long = 1L,
         ) {
-            store(endpoint)[normalize(path)] = Entry(false, length, 0)
+            store(endpoint)[normalize(path)] = Entry(false, length, modificationTimeMillis)
         }
 
         fun paths(endpoint: String): Set<String> = store(endpoint).keys.toSet()
@@ -121,6 +129,10 @@ class InMemoryS3FileSystem : FileSystem() {
 
     override fun listStatus(path: Path): Array<FileStatus> {
         val parent = key(path)
+        listStatusCalls.merge(parent, 1, Int::plus)
+        if (parent == failListFor) {
+            throw java.io.IOException("simulated listing failure: $parent")
+        }
         entries()[parent] ?: throw FileNotFoundException("No such path: $parent")
 
         return entries()

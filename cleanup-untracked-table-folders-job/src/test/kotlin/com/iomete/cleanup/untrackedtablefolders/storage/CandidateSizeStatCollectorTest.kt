@@ -78,10 +78,13 @@ class CandidateSizeStatCollectorTest {
     }
 
     @Test
-    fun `performs no storage access when size statistics are disabled`() {
+    fun `collects statistics even when collect_size_statistics is false`() {
+        every { objectStorageDiscoveryService.collectSizeStatsPerFolder("example_catalog", listOf("s3a://b/a")) } returns
+            SizeStatsBatch(mapOf("s3a://b/a" to StorageSizeStats(objectCount = 1, totalSizeBytes = 5)), emptyMap())
+
         val result = collectorFor(collectSizeStatistics = false).collectPerFolder("example_catalog", listOf("s3a://b/a"))
 
-        assertEquals(emptyMap<String, StorageSizeStats>(), result)
-        verify(exactly = 0) { objectStorageDiscoveryService.collectSizeStatsPerFolder(any(), any()) }
+        assertEquals(setOf("s3a://b/a"), result.keys)
+        verify(exactly = 1) { objectStorageDiscoveryService.collectSizeStatsPerFolder("example_catalog", listOf("s3a://b/a")) }
     }
 }

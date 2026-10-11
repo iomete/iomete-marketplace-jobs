@@ -267,13 +267,15 @@ Rules:
 
 ### `older_than_hours`
 
-Only folders with a modification time at or before the cutoff can become candidates.
+A folder's age is the modification time of the newest object anywhere under it. Only folders whose newest object is at or before the cutoff can become candidates.
 
 ```json
 "older_than_hours": 24
 ```
 
-This gives a safety buffer so recently created or recently modified folders are not selected immediately.
+This gives a safety buffer so folders with recently written objects are not selected immediately.
+
+Object storage does not keep a reliable modification time for folders themselves, so the job never uses folder timestamps. A folder whose age cannot be established is skipped: one that is empty or holds only directory markers, one that cannot be listed completely, or one whose objects report an invalid modification time.
 
 ---
 
@@ -350,15 +352,11 @@ Use a conservative value first. Increase it only after reviewing dry-run output 
 ---
 ### `collect_size_statistics`
 
-Whether to estimate object count and total size for candidate folders.
+Deprecated and ignored. The setting is still accepted so existing configurations keep working.
 
-When enabled, the job recursively lists objects under the final candidate folders and sums object count and size. This happens only after candidate detection and safety checks, so the job does not recursively scan the whole database.
+The job always lists the objects under each candidate folder, because that same listing establishes folder age. Object count and total size come from the same listing at no extra cost. The listing runs only after candidate detection and the `max_candidate_folders_per_database` check, so the job never recursively lists the whole database.
 
-This can take time for folders with many objects. If size estimation adds too much overhead, set:
-
-```json
-"collect_size_statistics": false
-```
+If the setting is `false`, the job logs one warning at startup and collects statistics anyway.
 
 Audit rows store raw byte values:
 
@@ -378,7 +376,7 @@ The job has several independent fail-safe layers. These are intentionally redund
 - Only immediate child folders under the resolved scan root are considered.
 - Active catalog table locations are protected.
 - Configured `exclude_paths` and `exclude_database_folders` are protected.
-- Candidate folders must satisfy `older_than_hours`.
+- The newest object in a candidate folder must be older than `older_than_hours`. A folder whose age cannot be established is skipped.
 - Candidate count is capped by `max_candidate_folders_per_database`.
 - Candidate folders are revalidated against active catalog table locations before deletion.
 - Catalog or storage uncertainty fails closed instead of being treated as an empty result.
@@ -397,7 +395,7 @@ The main safety principle is **fail closed**: if the job cannot prove that a fol
 | Scan-root boundary validation | Scanning outside the intended database storage area |
 | Active table location protection | Deleting folders still claimed by the catalog |
 | Configured exclusions | Deleting folders explicitly protected through `exclude_paths` or `exclude_database_folders` |
-| `older_than_hours` cutoff | Selecting very recent folders too quickly |
+| `older_than_hours` cutoff | Selecting folders that hold recently written objects; folders of unknown age are skipped |
 | `max_candidate_folders_per_database` | Broad accidental deletion when too many candidates appear |
 | Pre-delete catalog revalidation | Deleting a folder that became active after initial discovery |
 | Audit row per database | Clear outcome tracking when a run scans multiple databases |
@@ -414,10 +412,10 @@ Catalog and object-storage discovery failures are not treated as empty results.
 For example, if the job cannot list storage folders or cannot discover catalog metadata, it does not assume there are zero candidates. Unknown state is not considered safe for destructive cleanup.
 
 The same rule covers storage configuration. A catalog whose storage configuration cannot be
-resolved fails the database instead of falling back to the platform's storage. Size statistics are
-reporting only, so a single unreadable candidate folder is tolerated and recorded as an unknown
-size, but a configuration failure, or every candidate folder failing, fails the database rather
-than producing a run that looks successful with no sizes.
+resolved fails the database instead of falling back to the platform's storage. A candidate folder
+that cannot be listed completely has an unknown age, so it is skipped and never deleted. If every
+candidate folder fails to list, the database fails rather than producing a run that looks
+successful.
 
 Outcome meanings:
 
@@ -525,6 +523,13 @@ Object-storage scan root:
 
 The job resolves the scan root from active table locations when possible, then validates that the resolved scan root stays inside the allowed database boundary.
 
+When tables sit under more than one parent location, the job keeps the conservative fallback and scans only the database location. Table locations outside the scanned root are not checked in that run, and the job reports this instead of hiding it:
+
+- The summary log lists them under `TABLE LOCATIONS OUTSIDE THE SCANNED ROOT`.
+- A `SUCCESS` audit row gets `status_reason=partial_scan_coverage`.
+- A row with a stronger outcome, such as `BLOCKED`, keeps its own reason.
+- `diagnostic_details` holds `unscanned_table_location_count` and a bounded sample.
+
 ---
 
 ## Audit table
@@ -586,15 +591,15 @@ Audit rows include:
 | `runtime_domain` | Runtime IOMETE domain exposed through `IOMETE_DOMAIN`, for example `fde`. |
 | `runtime_user` | Runtime Spark user exposed through `SPARK_USER`. This is useful for comparing the audit row with the run-as user shown in the platform UI. Read from the env var rather than `SparkContext.sparkUser()` so the value remains the run-as identity even when Spark is configured with proxy-user impersonation. |
 | `status` | High-level outcome: `SUCCESS`, `SKIPPED`, `BLOCKED`, or `FAILED`. |
-| `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, `unresolved_catalog_ownership`, or `unexpected_error`. |
+| `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, `unresolved_catalog_ownership`, `partial_scan_coverage`, or `unexpected_error`. |
 | `older_than_hours` | Configured age threshold used for candidate detection. |
 | `cutoff_time` | Calculated timestamp used to decide whether a folder is old enough to be considered. |
 | `max_candidate_folders_per_database` | Configured per-database candidate-folder safety limit. |
 | `unresolved_table_count` | Number of catalog tables in this database whose storage location could not be read during discovery. |
 | `candidate_folder_count` | Number of folders confirmed as untracked and eligible for deletion. Reserved for confirmed deletion-eligible candidates, so it stays `0` when table storage ownership could not be fully verified. |
 | `potentially_untracked_folder_count` | Number of storage folders that matched no verified table location while at least one table's storage location was unresolved. These folders are reported for review only. They are not confirmed untracked and are never deletion candidates, which is why they are counted separately from `candidate_folder_count`. |
-| `candidate_object_count` | Number of objects found under candidate folders when `collect_size_statistics=true`; otherwise `0`. |
-| `candidate_total_size_bytes` | Total size in bytes under candidate folders when size statistics are collected. |
+| `candidate_object_count` | Number of objects found under candidate folders. |
+| `candidate_total_size_bytes` | Total size in bytes under candidate folders. |
 | `deleted_object_count` | Number of objects under folders that were actually deleted. |
 | `deleted_total_size_bytes` | Total size in bytes under folders that were actually deleted. |
 | `diagnostic_details` | Job-specific diagnostic/debug details such as path samples and truncation flags. This is not Spark metrics and not Iceberg metrics. |
@@ -616,6 +621,8 @@ candidate_folder_paths_sample
 potentially_untracked_folder_paths_sample
 unresolved_tables_sample
 non_candidate_storage_folder_paths_sample
+unscanned_table_location_count
+unscanned_table_locations_sample
 *_truncated
 ```
 
@@ -628,6 +635,7 @@ Path lists are sampled to avoid writing very large audit rows.
 | Scenario | Status | Notes |
 |---|---|---|
 | Database processed successfully | `SUCCESS` | Includes dry-run runs with zero candidates |
+| Database processed, but some table locations are outside the scanned root | `SUCCESS` | `status_reason=partial_scan_coverage` |
 | Database location is missing | `SKIPPED` | Storage discovery is skipped |
 | Too many candidate folders | `SKIPPED` | Candidate count exceeded configured limit |
 | Configured database does not exist | `SKIPPED` | Logged as a warning with `status_reason=database_not_found` |
@@ -720,7 +728,7 @@ Review:
 
 - Summary logs
 - Candidate folders
-- Estimated candidate object count and size, when `collect_size_statistics=true`
+- Candidate object count and size
 - Audit rows
 - Storage scan root
 - Active table locations
@@ -778,8 +786,9 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T12 | Table is dropped then recreated at different location | Old untracked folder can become a candidate |
 | T13 | Candidate becomes active between detection and deletion | Deletion is skipped for that folder |
 | T14 | Unexpected catalog/storage error | `FAILED` |
-| T15 | `collect_size_statistics=true` with candidate folders | Candidate object count and size are collected and logged |
-| T16 | `collect_size_statistics=false` with candidate folders | Candidate and deleted size audit fields remain `0` and size collection is skipped |
+| T15 | Candidate folders present | Candidate object count and size are collected and logged |
+| T16 | `collect_size_statistics=false` with candidate folders | One startup warning; statistics are still collected |
+| T18 | A candidate folder holds a recently written object | The folder is skipped as too new |
 
 ---
 
@@ -882,4 +891,4 @@ Any old unreferenced files inside that active table folder should be handled by 
 - Catalogs using vended or remotely signed credentials are not supported for storage access, because those credentials are issued per Iceberg request and never appear in `sparkConf`.
 - Folder names are compared case-sensitively, because `ORDERS` and `orders` are different object-storage prefixes.
 - The job is intended for controlled cleanup workflows, not blind automatic deletion.
-- Size statistics require recursively listing objects under final candidate folders. This can add overhead for folders with many objects and can be disabled with `collect_size_statistics=false`.
+- Folder age and size require recursively listing objects under each candidate folder, for at most `max_candidate_folders_per_database` folders per database. This can take time for folders with many objects and cannot be turned off, because it is needed to establish folder age.

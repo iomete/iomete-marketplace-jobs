@@ -113,4 +113,18 @@ class CleanupAuditDiagnosticDetailsBuilderTest {
             details.keys,
         )
     }
+
+    @Test
+    fun `adds unscanned table location count and sample only when present`() {
+        val withUnscanned =
+            builder.build(
+                activeTableLocations = listOf("s3a://bucket/db/orders"),
+                unscannedTableLocations = listOf("s3a://bucket/other/events"),
+            )
+
+        assertEquals("1", withUnscanned["unscanned_table_location_count"])
+        assertEquals("s3a://bucket/other/events", withUnscanned["unscanned_table_locations_sample"])
+        assertEquals("false", withUnscanned["unscanned_table_locations_truncated"])
+        assertFalse(builder.build(activeTableLocations = emptyList()).containsKey("unscanned_table_location_count"))
+    }
 }

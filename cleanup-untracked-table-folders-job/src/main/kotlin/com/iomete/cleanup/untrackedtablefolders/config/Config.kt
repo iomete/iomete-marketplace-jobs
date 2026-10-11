@@ -36,8 +36,18 @@ data class ApplicationConfig(
     val maxCandidateFoldersPerDatabase: Int = 10,
 
     @field:JsonProperty("collect_size_statistics")
-    val collectSizeStatistics: Boolean = true,
+    val collectSizeStatistics: Boolean? = null,
 ) {
+    fun deprecationWarnings(): List<String> =
+        if (collectSizeStatistics == false) {
+            listOf(
+                "collect_size_statistics=false is deprecated and ignored. Folder statistics are always collected " +
+                    "because the same object listing is needed to establish folder age safely."
+            )
+        } else {
+            emptyList()
+        }
+
     fun validate() {
         require(catalog.isNotBlank()) { "catalog must not be blank" }
 
@@ -98,10 +108,14 @@ class ConfigProducer {
             throw IllegalStateException(message)
         }
 
-        val objectMapper = ObjectMapper()
-            .registerModule(KotlinModule.Builder().build())
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true)
-
-        return objectMapper.readValue<ApplicationConfig>(configFile).also { it.validate() }
+        return applicationConfigObjectMapper().readValue<ApplicationConfig>(configFile).also { config ->
+            config.validate()
+            config.deprecationWarnings().forEach { logger.warn(it) }
+        }
     }
 }
+
+internal fun applicationConfigObjectMapper(): ObjectMapper =
+    ObjectMapper()
+        .registerModule(KotlinModule.Builder().build())
+        .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true)

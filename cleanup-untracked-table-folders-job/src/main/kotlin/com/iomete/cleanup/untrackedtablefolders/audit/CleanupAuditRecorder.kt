@@ -79,6 +79,7 @@ class CleanupAuditRecorder {
         potentiallyUntrackedFolderPaths: List<String>,
         cutoffTime: Instant,
         excludedPaths: List<String>,
+        unscannedTableLocations: List<String> = emptyList(),
     ) {
         writeAuditRecord(
             runId = runId,
@@ -102,6 +103,7 @@ class CleanupAuditRecorder {
                     storageFolderPaths = storageFolderPaths,
                     unresolvedTables = unresolvedTables,
                     potentiallyUntrackedFolderPaths = potentiallyUntrackedFolderPaths,
+                    unscannedTableLocations = unscannedTableLocations,
                 ),
         )
     }
@@ -120,6 +122,7 @@ class CleanupAuditRecorder {
         cutoffTime: Instant,
         excludedPaths: List<String>,
         errorMessage: String,
+        unscannedTableLocations: List<String> = emptyList(),
     ) {
         writeAuditRecord(
             runId = runId,
@@ -142,6 +145,7 @@ class CleanupAuditRecorder {
                     activeTableLocations = activeTableLocations,
                     storageFolderPaths = storageFolderPaths,
                     candidateFolderPaths = candidateFolderPaths,
+                    unscannedTableLocations = unscannedTableLocations,
                 ),
         )
     }
@@ -162,6 +166,7 @@ class CleanupAuditRecorder {
         deletedSizeStats: StorageSizeStats?,
         cutoffTime: Instant,
         excludedPaths: List<String>,
+        unscannedTableLocations: List<String> = emptyList(),
     ) {
         val candidateFolderPathSet = candidateFolderPaths.toSet()
 
@@ -171,7 +176,7 @@ class CleanupAuditRecorder {
             catalogName = catalogName,
             databaseName = databaseName,
             status = STATUS_SUCCESS,
-            statusReason = null,
+            statusReason = if (unscannedTableLocations.isEmpty()) null else "partial_scan_coverage",
             errorMessage = null,
             discoveredDatabaseLocation = discoveredDatabaseLocation,
             storageScanLocation = storageScanLocation,
@@ -194,6 +199,7 @@ class CleanupAuditRecorder {
                     candidateFolderPaths = candidateFolderPaths,
                     nonCandidateStorageFolderPaths =
                         storageFolderPaths.filter { it !in candidateFolderPathSet }.sorted(),
+                    unscannedTableLocations = unscannedTableLocations,
                 ),
         )
     }
