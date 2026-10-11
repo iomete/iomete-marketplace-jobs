@@ -126,8 +126,7 @@ Example:
   "older_than_hours": 24,
   "dry_run": true,
   "delete_enabled": false,
-  "max_candidate_folders_per_database": 10,
-  "collect_size_statistics": true
+  "max_candidate_folders_per_database": 10
 }
 ```
 
@@ -690,8 +689,7 @@ Example:
   "older_than_hours": 24,
   "dry_run": true,
   "delete_enabled": false,
-  "max_candidate_folders_per_database": 10,
-  "collect_size_statistics": true
+  "max_candidate_folders_per_database": 10
 }
 ```
 
@@ -719,8 +717,7 @@ The missing database is logged as a warning, not as a cleanup failure. Unexpecte
   "older_than_hours": 24,
   "dry_run": true,
   "delete_enabled": false,
-  "max_candidate_folders_per_database": 10,
-  "collect_size_statistics": true
+  "max_candidate_folders_per_database": 10
 }
 ```
 
@@ -756,8 +753,7 @@ Before enabling deletion, verify that each candidate folder:
   "older_than_hours": 24,
   "dry_run": false,
   "delete_enabled": true,
-  "max_candidate_folders_per_database": 10,
-  "collect_size_statistics": true
+  "max_candidate_folders_per_database": 10
 }
 ```
 
