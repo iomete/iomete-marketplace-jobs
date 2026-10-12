@@ -118,18 +118,24 @@ class ObjectStorageDiscoveryService {
         var objectCount = 0L
         var totalSizeBytes = 0L
         var newestModificationTimeMillis = Long.MIN_VALUE
+        var hasInvalidModificationTime = false
 
         while (files.hasNext()) {
             val fileStatus = files.next()
             objectCount += 1
             totalSizeBytes += fileStatus.len
             newestModificationTimeMillis = maxOf(newestModificationTimeMillis, fileStatus.modificationTime)
+            if (fileStatus.modificationTime <= 0) {
+                hasInvalidModificationTime = true
+            }
         }
 
         return StorageSizeStats(
             objectCount = objectCount,
             totalSizeBytes = totalSizeBytes,
-            newestObjectModificationTimeMillis = newestModificationTimeMillis.takeIf { objectCount > 0 },
+            // One object of unknown age makes the folder's age unknown, whatever the other objects report.
+            newestObjectModificationTimeMillis =
+                newestModificationTimeMillis.takeIf { objectCount > 0 && !hasInvalidModificationTime },
         )
     }
 }

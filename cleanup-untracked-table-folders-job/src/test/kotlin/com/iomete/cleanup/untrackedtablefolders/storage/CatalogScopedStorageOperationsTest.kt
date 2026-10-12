@@ -266,6 +266,20 @@ class CatalogScopedStorageOperationsTest {
     }
 
     @Test
+    fun `size collection reports no object time when any object time is invalid`() {
+        InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/mixed", modificationTimeMillis = 9_999)
+        InMemoryS3FileSystem.putFile(COMPAT, "s3a://example-bucket/db/mixed/part-0.parquet", 5, modificationTimeMillis = 100)
+        InMemoryS3FileSystem.putFile(COMPAT, "s3a://example-bucket/db/mixed/part-1.parquet", 7, modificationTimeMillis = 0)
+
+        val stats =
+            harness.discoveryService()
+                .collectSizeStatsPerFolder("example_catalog", listOf("s3a://example-bucket/db/mixed"))
+                .statsByFolder.getValue("s3a://example-bucket/db/mixed")
+
+        assertEquals(StorageSizeStats(objectCount = 2, totalSizeBytes = 12, newestObjectModificationTimeMillis = null), stats)
+    }
+
+    @Test
     fun `a folder whose listing fails is reported as a failure, not as stats`() {
         InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/unreadable")
         InMemoryS3FileSystem.putFile(COMPAT, "s3a://example-bucket/db/unreadable/part-0.parquet", 5)

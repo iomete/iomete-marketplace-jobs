@@ -84,6 +84,19 @@ class CandidateAgeFlowTest {
     }
 
     @Test
+    fun `an invalid modification time is not hidden by a valid older one`() {
+        folder("orphan_mixed", tenDaysAgo)
+        InMemoryS3FileSystem.putFile(ENDPOINT, "$DATABASE_LOCATION/orphan_mixed/part-1.parquet", length = 1, modificationTimeMillis = 0)
+        val flow = flow(deleteEnabled = true)
+
+        flow.run()
+
+        assertFalse("$DATABASE_LOCATION/orphan_mixed" in flow.auditRecords.single().candidateFolders)
+        assertTrue(flow.objectExists("$DATABASE_LOCATION/orphan_mixed/part-0.parquet"))
+        assertTrue(flow.objectExists("$DATABASE_LOCATION/orphan_mixed/part-1.parquet"))
+    }
+
+    @Test
     fun `collect_size_statistics false still collects statistics and checks age`() {
         folder("orphan_old", tenDaysAgo)
         folder("orphan_fresh", now - 5_000)
