@@ -129,4 +129,14 @@ class StoragePathUtilsTest {
         assertTrue(StoragePathUtils.isStorageRoot("s3a://bucket//"))
         assertFalse(StoragePathUtils.isStorageRoot("s3a://bucket/db"))
     }
+
+    @Test
+    fun `a location needs a scheme and, for S3, a bucket to be qualified`() {
+        assertTrue(StoragePathUtils.isQualifiedLocation("s3a://bucket/lake"))
+        assertTrue(StoragePathUtils.isQualifiedLocation("s3://bucket"))
+        assertTrue(StoragePathUtils.isQualifiedLocation("file:/opt/spark/warehouse"))
+        assertFalse(StoragePathUtils.isQualifiedLocation("/lake"))
+        assertFalse(StoragePathUtils.isQualifiedLocation("bucket/lake"))
+        assertFalse(StoragePathUtils.isQualifiedLocation("s3a:/lake"))
+    }
 }

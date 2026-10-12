@@ -85,6 +85,18 @@ class StorageScanLocationResolver {
             )
         }
 
+        val unqualifiedWarehouseRoot =
+            sharedWarehouseRoots.firstOrNull { warehouseRoot ->
+                !parsed(warehouseRoot) { StoragePathUtils.isQualifiedLocation(warehouseRoot) }
+            }
+
+        if (unqualifiedWarehouseRoot != null) {
+            throw UnsafeScanRootException(
+                UnsafeScanRootReason.INVALID_STORAGE_LOCATION,
+                "Catalog warehouse location has no scheme or bucket, so the database location cannot be checked against it. databaseLocation=$databaseLocation, warehouseRoot=$unqualifiedWarehouseRoot",
+            )
+        }
+
         // A database boundary that covers the warehouse root can also cover other databases.
         val coveredWarehouseRoot =
             sharedWarehouseRoots.firstOrNull { warehouseRoot ->

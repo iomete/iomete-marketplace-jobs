@@ -214,6 +214,22 @@ class StorageScanLocationResolverTest {
     }
 
     @Test
+    fun `fails closed when a warehouse root has no scheme or bucket`() {
+        listOf("/lake", "bucket/lake", "s3a:/lake").forEach { warehouseRoot ->
+            val error =
+                assertThrows(UnsafeScanRootException::class.java, {
+                    resolver.resolve(
+                        databaseLocation = "s3a://bucket/lake",
+                        activeTableLocations = listOf("s3a://bucket/lake/events"),
+                        sharedWarehouseRoots = listOf(warehouseRoot),
+                    )
+                }, "warehouseRoot=$warehouseRoot")
+
+            assertEquals(UnsafeScanRootReason.INVALID_STORAGE_LOCATION, error.reason, "warehouseRoot=$warehouseRoot")
+        }
+    }
+
+    @Test
     fun `reports a bucket root database location with its reason`() {
         val error =
             assertThrows(UnsafeScanRootException::class.java) {
