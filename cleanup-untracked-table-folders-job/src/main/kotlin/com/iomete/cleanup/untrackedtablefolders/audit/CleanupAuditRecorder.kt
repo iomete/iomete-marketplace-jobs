@@ -232,6 +232,104 @@ class CleanupAuditRecorder {
         )
     }
 
+    fun recordDeletionFailed(
+        runId: String,
+        databaseStartTime: Instant,
+        catalogName: String,
+        databaseName: String,
+        discoveredDatabaseLocation: String?,
+        storageScanLocation: String,
+        activeTableCount: Long,
+        activeTableLocations: List<String>,
+        storageFolderPaths: List<String>,
+        candidateFolderPaths: List<String>,
+        candidateSizeStats: StorageSizeStats?,
+        deletedFolderPaths: List<String>,
+        deletedSizeStats: StorageSizeStats?,
+        failedFolderPath: String?,
+        cutoffTime: Instant,
+        excludedPaths: List<String>,
+        unscannedTableLocations: List<String>,
+        error: Throwable,
+    ) {
+        writeAuditRecord(
+            runId = runId,
+            databaseStartTime = databaseStartTime,
+            catalogName = catalogName,
+            databaseName = databaseName,
+            status = STATUS_FAILED,
+            statusReason = "deletion_failed",
+            errorMessage = error.message ?: error::class.java.name,
+            discoveredDatabaseLocation = discoveredDatabaseLocation,
+            storageScanLocation = storageScanLocation,
+            activeTableCount = activeTableCount,
+            storageFolderCount = storageFolderPaths.size.toLong(),
+            candidateFolderCount = candidateFolderPaths.size.toLong(),
+            candidateObjectCount = candidateSizeStats?.objectCount,
+            candidateTotalSizeBytes = candidateSizeStats?.totalSizeBytes,
+            deletedFolderCount = deletedFolderPaths.size.toLong(),
+            deletedObjectCount = deletedSizeStats?.objectCount,
+            deletedTotalSizeBytes = deletedSizeStats?.totalSizeBytes,
+            candidateFolders = candidateFolderPaths,
+            deletedFolders = deletedFolderPaths,
+            cutoffTime = cutoffTime,
+            excludedPaths = excludedPaths,
+            diagnosticDetails =
+                auditDiagnosticDetailsBuilder.build(
+                    activeTableLocations = activeTableLocations,
+                    storageFolderPaths = storageFolderPaths,
+                    candidateFolderPaths = candidateFolderPaths,
+                    unscannedTableLocations = unscannedTableLocations,
+                    reportCompleteScanCoverage = true,
+                    deletionFailedFolderPath = failedFolderPath,
+                ),
+        )
+    }
+
+    fun recordAuditIntegrityLost(
+        runId: String,
+        databaseStartTime: Instant,
+        catalogName: String,
+        databaseName: String,
+        discoveredDatabaseLocation: String?,
+        storageScanLocation: String,
+        activeTableCount: Long,
+        activeTableLocations: List<String>,
+        storageFolderPaths: List<String>,
+        candidateFolderPaths: List<String>,
+        candidateSizeStats: StorageSizeStats?,
+        cutoffTime: Instant,
+        excludedPaths: List<String>,
+        unscannedTableLocations: List<String>,
+    ) {
+        writeAuditRecord(
+            runId = runId,
+            databaseStartTime = databaseStartTime,
+            catalogName = catalogName,
+            databaseName = databaseName,
+            status = STATUS_BLOCKED,
+            statusReason = "audit_integrity_lost",
+            errorMessage = null,
+            discoveredDatabaseLocation = discoveredDatabaseLocation,
+            storageScanLocation = storageScanLocation,
+            activeTableCount = activeTableCount,
+            storageFolderCount = storageFolderPaths.size.toLong(),
+            candidateFolderCount = candidateFolderPaths.size.toLong(),
+            candidateObjectCount = candidateSizeStats?.objectCount,
+            candidateTotalSizeBytes = candidateSizeStats?.totalSizeBytes,
+            candidateFolders = candidateFolderPaths,
+            cutoffTime = cutoffTime,
+            excludedPaths = excludedPaths,
+            diagnosticDetails =
+                auditDiagnosticDetailsBuilder.build(
+                    activeTableLocations = activeTableLocations,
+                    storageFolderPaths = storageFolderPaths,
+                    candidateFolderPaths = candidateFolderPaths,
+                    unscannedTableLocations = unscannedTableLocations,
+                ),
+        )
+    }
+
     fun recordDatabaseNotFound(
         runId: String,
         database: String,
@@ -254,6 +352,7 @@ class CleanupAuditRecorder {
         database: String,
         databaseStartTime: Instant,
         excludedPaths: List<String> = excludePathResolver.normalizedConfiguredExcludePaths(),
+        unscannedTableLocations: List<String>? = null,
         error: Throwable,
     ) {
         writeAuditRecord(
@@ -265,6 +364,10 @@ class CleanupAuditRecorder {
             statusReason = "unexpected_error",
             errorMessage = error.message ?: error::class.java.name,
             excludedPaths = excludedPaths,
+            diagnosticDetails =
+                unscannedTableLocations
+                    ?.let { auditDiagnosticDetailsBuilder.scanCoverageDetails(it, reportCompleteScanCoverage = true) }
+                    .orEmpty(),
         )
     }
 

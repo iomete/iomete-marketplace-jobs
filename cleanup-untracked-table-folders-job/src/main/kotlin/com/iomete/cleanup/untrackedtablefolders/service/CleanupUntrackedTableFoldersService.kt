@@ -14,6 +14,7 @@ import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
+import com.iomete.cleanup.untrackedtablefolders.storage.PartialDeletionException
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.UnsafeScanRootException
@@ -48,9 +49,29 @@ class CleanupUntrackedTableFoldersService {
         cleanupAuditTableService.logRuntimeIdentityEnvVars()
         cleanupAuditTableService.ensureAuditTableExists()
 
+        var auditFailure: Throwable? = null
+
+        fun recordAudit(
+            database: String,
+            write: () -> Unit,
+        ) {
+            try {
+                write()
+            } catch (th: Throwable) {
+                logger.error(
+                    "Failed to write the cleanup audit row for catalog=${config.catalog}, database=$database. No further folders will be deleted in this run.",
+                    th,
+                )
+                if (auditFailure == null) {
+                    auditFailure = th
+                }
+            }
+        }
+
         config.databases.forEach { database ->
             val databaseStartTime = Instant.now()
             var effectiveExcludedPathsForAudit = excludePathResolver.normalizedConfiguredExcludePaths()
+            var unscannedTableLocationsForAudit: List<String>? = null
             try {
                 val discoveredDatabase =
                     catalogDiscoveryService.discoverDatabase(
@@ -87,14 +108,16 @@ class CleanupUntrackedTableFoldersService {
                                 "catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, totalCatalogTables=${discoveredDatabase.tables.size}"
                     )
 
-                    cleanupAuditRecorder.recordNoActiveTables(
-                        runId = runId,
-                        databaseStartTime = databaseStartTime,
-                        catalogName = discoveredDatabase.catalog,
-                        databaseName = discoveredDatabase.database,
-                        discoveredDatabaseLocation = discoveredDatabase.location,
-                        excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
-                    )
+                    recordAudit(database) {
+                        cleanupAuditRecorder.recordNoActiveTables(
+                            runId = runId,
+                            databaseStartTime = databaseStartTime,
+                            catalogName = discoveredDatabase.catalog,
+                            databaseName = discoveredDatabase.database,
+                            discoveredDatabaseLocation = discoveredDatabase.location,
+                            excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
+                        )
+                    }
 
                     return@forEach
                 }
@@ -104,20 +127,22 @@ class CleanupUntrackedTableFoldersService {
                         "Skipping storage folder discovery because database location is missing for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
                     )
 
-                    cleanupAuditRecorder.recordDatabaseLocationMissing(
-                        runId = runId,
-                        databaseStartTime = databaseStartTime,
-                        catalogName = discoveredDatabase.catalog,
-                        databaseName = discoveredDatabase.database,
-                        discoveredDatabaseLocation = discoveredDatabase.location,
-                        errorMessage = "Database location is missing; storage folder discovery was skipped.",
-                        excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
-                        activeTableCount = discoveredDatabase.tables.size.toLong(),
-                        activeTableLocations =
-                            discoveredDatabase.tables
-                                .mapNotNull { it.location }
-                                .sorted(),
-                    )
+                    recordAudit(database) {
+                        cleanupAuditRecorder.recordDatabaseLocationMissing(
+                            runId = runId,
+                            databaseStartTime = databaseStartTime,
+                            catalogName = discoveredDatabase.catalog,
+                            databaseName = discoveredDatabase.database,
+                            discoveredDatabaseLocation = discoveredDatabase.location,
+                            errorMessage = "Database location is missing; storage folder discovery was skipped.",
+                            excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
+                            activeTableCount = discoveredDatabase.tables.size.toLong(),
+                            activeTableLocations =
+                                discoveredDatabase.tables
+                                    .mapNotNull { it.location }
+                                    .sorted(),
+                        )
+                    }
                 } else {
                     val storageScanLocation =
                         try {
@@ -133,21 +158,23 @@ class CleanupUntrackedTableFoldersService {
                                 "Refusing to scan storage for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: reason=${th.reason.code}. ${th.message}"
                             )
 
-                            cleanupAuditRecorder.recordUnsafeScanRoot(
-                                runId = runId,
-                                databaseStartTime = databaseStartTime,
-                                catalogName = discoveredDatabase.catalog,
-                                databaseName = discoveredDatabase.database,
-                                discoveredDatabaseLocation = discoveredDatabase.location,
-                                activeTableCount = discoveredDatabase.tables.size.toLong(),
-                                activeTableLocations =
-                                    discoveredDatabase.tables
-                                        .mapNotNull { it.location }
-                                        .sorted(),
-                                reason = th.reason.code,
-                                errorMessage = th.message ?: th.reason.code,
-                                excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
-                            )
+                            recordAudit(database) {
+                                cleanupAuditRecorder.recordUnsafeScanRoot(
+                                    runId = runId,
+                                    databaseStartTime = databaseStartTime,
+                                    catalogName = discoveredDatabase.catalog,
+                                    databaseName = discoveredDatabase.database,
+                                    discoveredDatabaseLocation = discoveredDatabase.location,
+                                    activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                    activeTableLocations =
+                                        discoveredDatabase.tables
+                                            .mapNotNull { it.location }
+                                            .sorted(),
+                                    reason = th.reason.code,
+                                    errorMessage = th.message ?: th.reason.code,
+                                    excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
+                                )
+                            }
 
                             return@forEach
                         }
@@ -184,6 +211,8 @@ class CleanupUntrackedTableFoldersService {
                         activeTableLocations.filterNot { tableLocation ->
                             StoragePathUtils.isSameOrChildLocation(tableLocation, storageScanLocation)
                         }
+
+                    unscannedTableLocationsForAudit = unscannedTableLocations
 
                     if (unscannedTableLocations.isNotEmpty()) {
                         logger.warn(
@@ -228,22 +257,24 @@ class CleanupUntrackedTableFoldersService {
                             )
                             val candidateFolderPaths = th.candidateFolderPaths.sorted()
 
-                            cleanupAuditRecorder.recordTooManyCandidateFolders(
-                                runId = runId,
-                                databaseStartTime = databaseStartTime,
-                                catalogName = discoveredDatabase.catalog,
-                                databaseName = discoveredDatabase.database,
-                                discoveredDatabaseLocation = discoveredDatabase.location,
-                                storageScanLocation = storageScanLocation,
-                                activeTableCount = discoveredDatabase.tables.size.toLong(),
-                                activeTableLocations = activeTableLocations,
-                                storageFolderPaths = storageFolderPaths,
-                                candidateFolderPaths = candidateFolderPaths,
-                                cutoffTime = cutoffTime,
-                                excludedPaths = effectiveExcludedPaths,
-                                errorMessage = th.message ?: th::class.java.name,
-                                unscannedTableLocations = unscannedTableLocations,
-                            )
+                            recordAudit(database) {
+                                cleanupAuditRecorder.recordTooManyCandidateFolders(
+                                    runId = runId,
+                                    databaseStartTime = databaseStartTime,
+                                    catalogName = discoveredDatabase.catalog,
+                                    databaseName = discoveredDatabase.database,
+                                    discoveredDatabaseLocation = discoveredDatabase.location,
+                                    storageScanLocation = storageScanLocation,
+                                    activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                    activeTableLocations = activeTableLocations,
+                                    storageFolderPaths = storageFolderPaths,
+                                    candidateFolderPaths = candidateFolderPaths,
+                                    cutoffTime = cutoffTime,
+                                    excludedPaths = effectiveExcludedPaths,
+                                    errorMessage = th.message ?: th::class.java.name,
+                                    unscannedTableLocations = unscannedTableLocations,
+                                )
+                            }
 
                             return@forEach
                         }
@@ -274,15 +305,59 @@ class CleanupUntrackedTableFoldersService {
                         logger.info("Storage folder with no verified catalog owner: path=${folder.path}")
                     }
 
+                    val deletionSuppressed = auditFailure != null
+
                     val deletedFolders =
                         when (reconciliation) {
                             is StorageFolderReconciliation.DeletionEligible ->
-                                candidateDeletionGate.deleteCandidates(
-                                    catalog = discoveredDatabase.catalog,
-                                    database = discoveredDatabase.database,
-                                    reconciliation = reconciliation,
-                                    excludedPaths = effectiveExcludedPaths,
-                                )
+                                if (deletionSuppressed) {
+                                    logger.warn(
+                                        "Not deleting any folder for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: an audit write failed earlier in this run."
+                                    )
+                                    emptyList()
+                                } else {
+                                    try {
+                                        candidateDeletionGate.deleteCandidates(
+                                            catalog = discoveredDatabase.catalog,
+                                            database = discoveredDatabase.database,
+                                            reconciliation = reconciliation,
+                                            excludedPaths = effectiveExcludedPaths,
+                                        )
+                                    } catch (th: PartialDeletionException) {
+                                        logger.error(
+                                            "Deletion stopped for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: ${th.deletedPaths.size} folder(s) were deleted before the failure, deletedPaths=${th.deletedPaths}, failedPath=${th.failedPath}",
+                                            th,
+                                        )
+
+                                        recordAudit(database) {
+                                            cleanupAuditRecorder.recordDeletionFailed(
+                                                runId = runId,
+                                                databaseStartTime = databaseStartTime,
+                                                catalogName = discoveredDatabase.catalog,
+                                                databaseName = discoveredDatabase.database,
+                                                discoveredDatabaseLocation = discoveredDatabase.location,
+                                                storageScanLocation = storageScanLocation,
+                                                activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                                activeTableLocations = activeTableLocations,
+                                                storageFolderPaths = storageFolderPaths,
+                                                candidateFolderPaths = unmatchedFolderPaths,
+                                                candidateSizeStats = candidateSizeStats,
+                                                deletedFolderPaths = th.deletedPaths,
+                                                deletedSizeStats =
+                                                    candidateSizeStatCollector.sum(
+                                                        th.deletedPaths.mapNotNull { candidateSizeStatsByFolder[it] }
+                                                    ),
+                                                failedFolderPath = th.failedPath,
+                                                cutoffTime = cutoffTime,
+                                                excludedPaths = effectiveExcludedPaths,
+                                                unscannedTableLocations = unscannedTableLocations,
+                                                error = th,
+                                            )
+                                        }
+
+                                        return@forEach
+                                    }
+                                }
 
                             is StorageFolderReconciliation.OwnershipUnverified -> emptyList()
                         }
@@ -321,42 +396,67 @@ class CleanupUntrackedTableFoldersService {
 
                     when (reconciliation) {
                         is StorageFolderReconciliation.DeletionEligible ->
-                            cleanupAuditRecorder.recordSuccess(
-                                runId = runId,
-                                databaseStartTime = databaseStartTime,
-                                catalogName = discoveredDatabase.catalog,
-                                databaseName = discoveredDatabase.database,
-                                discoveredDatabaseLocation = discoveredDatabase.location,
-                                storageScanLocation = storageScanLocation,
-                                activeTableCount = discoveredDatabase.tables.size.toLong(),
-                                activeTableLocations = activeTableLocations,
-                                storageFolderPaths = storageFolderPaths,
-                                candidateFolderPaths = unmatchedFolderPaths,
-                                candidateSizeStats = candidateSizeStats,
-                                deletedFolderPaths = deletedFolders,
-                                deletedSizeStats = deletedSizeStats,
-                                cutoffTime = cutoffTime,
-                                excludedPaths = effectiveExcludedPaths,
-                                unscannedTableLocations = unscannedTableLocations,
-                            )
+                            if (deletionSuppressed) {
+                                recordAudit(database) {
+                                    cleanupAuditRecorder.recordAuditIntegrityLost(
+                                        runId = runId,
+                                        databaseStartTime = databaseStartTime,
+                                        catalogName = discoveredDatabase.catalog,
+                                        databaseName = discoveredDatabase.database,
+                                        discoveredDatabaseLocation = discoveredDatabase.location,
+                                        storageScanLocation = storageScanLocation,
+                                        activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                        activeTableLocations = activeTableLocations,
+                                        storageFolderPaths = storageFolderPaths,
+                                        candidateFolderPaths = unmatchedFolderPaths,
+                                        candidateSizeStats = candidateSizeStats,
+                                        cutoffTime = cutoffTime,
+                                        excludedPaths = effectiveExcludedPaths,
+                                        unscannedTableLocations = unscannedTableLocations,
+                                    )
+                                }
+                            } else {
+                                recordAudit(database) {
+                                    cleanupAuditRecorder.recordSuccess(
+                                        runId = runId,
+                                        databaseStartTime = databaseStartTime,
+                                        catalogName = discoveredDatabase.catalog,
+                                        databaseName = discoveredDatabase.database,
+                                        discoveredDatabaseLocation = discoveredDatabase.location,
+                                        storageScanLocation = storageScanLocation,
+                                        activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                        activeTableLocations = activeTableLocations,
+                                        storageFolderPaths = storageFolderPaths,
+                                        candidateFolderPaths = unmatchedFolderPaths,
+                                        candidateSizeStats = candidateSizeStats,
+                                        deletedFolderPaths = deletedFolders,
+                                        deletedSizeStats = deletedSizeStats,
+                                        cutoffTime = cutoffTime,
+                                        excludedPaths = effectiveExcludedPaths,
+                                        unscannedTableLocations = unscannedTableLocations,
+                                    )
+                                }
+                            }
 
                         is StorageFolderReconciliation.OwnershipUnverified ->
-                            cleanupAuditRecorder.recordOwnershipUnverified(
-                                runId = runId,
-                                databaseStartTime = databaseStartTime,
-                                catalogName = discoveredDatabase.catalog,
-                                databaseName = discoveredDatabase.database,
-                                discoveredDatabaseLocation = discoveredDatabase.location,
-                                storageScanLocation = storageScanLocation,
-                                activeTableCount = discoveredDatabase.tables.size.toLong(),
-                                unresolvedTables = unresolvedTableNames,
-                                activeTableLocations = activeTableLocations,
-                                storageFolderPaths = storageFolderPaths,
-                                potentiallyUntrackedFolderPaths = unmatchedFolderPaths,
-                                cutoffTime = cutoffTime,
-                                excludedPaths = effectiveExcludedPaths,
-                                unscannedTableLocations = unscannedTableLocations,
-                            )
+                            recordAudit(database) {
+                                cleanupAuditRecorder.recordOwnershipUnverified(
+                                    runId = runId,
+                                    databaseStartTime = databaseStartTime,
+                                    catalogName = discoveredDatabase.catalog,
+                                    databaseName = discoveredDatabase.database,
+                                    discoveredDatabaseLocation = discoveredDatabase.location,
+                                    storageScanLocation = storageScanLocation,
+                                    activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                    unresolvedTables = unresolvedTableNames,
+                                    activeTableLocations = activeTableLocations,
+                                    storageFolderPaths = storageFolderPaths,
+                                    potentiallyUntrackedFolderPaths = unmatchedFolderPaths,
+                                    cutoffTime = cutoffTime,
+                                    excludedPaths = effectiveExcludedPaths,
+                                    unscannedTableLocations = unscannedTableLocations,
+                                )
+                            }
                     }
                 }
             } catch (th: DatabaseNotFoundException) {
@@ -368,24 +468,31 @@ class CleanupUntrackedTableFoldersService {
                     th,
                 )
 
-                cleanupAuditRecorder.recordDatabaseNotFound(
-                    runId = runId,
-                    database = database,
-                    databaseStartTime = databaseStartTime,
-                    error = th,
-                )
+                recordAudit(database) {
+                    cleanupAuditRecorder.recordDatabaseNotFound(
+                        runId = runId,
+                        database = database,
+                        databaseStartTime = databaseStartTime,
+                        error = th,
+                    )
+                }
             } catch (th: Throwable) {
                 logger.error("Cleanup failed for catalog=${config.catalog}, database=$database", th)
 
-                cleanupAuditRecorder.recordFailed(
-                    runId = runId,
-                    database = database,
-                    databaseStartTime = databaseStartTime,
-                    excludedPaths = effectiveExcludedPathsForAudit,
-                    error = th,
-                )
+                recordAudit(database) {
+                    cleanupAuditRecorder.recordFailed(
+                        runId = runId,
+                        database = database,
+                        databaseStartTime = databaseStartTime,
+                        excludedPaths = effectiveExcludedPathsForAudit,
+                        unscannedTableLocations = unscannedTableLocationsForAudit,
+                        error = th,
+                    )
+                }
             }
         }
+
+        auditFailure?.let { throw AuditIntegrityLostException(it) }
 
         if (config.dryRun) {
             logger.info(
@@ -399,3 +506,10 @@ class CleanupUntrackedTableFoldersService {
     }
 
 }
+
+class AuditIntegrityLostException(
+    cause: Throwable,
+) : IllegalStateException(
+    "An audit write failed during this run, so no folders were deleted in the databases processed after it.",
+    cause,
+)

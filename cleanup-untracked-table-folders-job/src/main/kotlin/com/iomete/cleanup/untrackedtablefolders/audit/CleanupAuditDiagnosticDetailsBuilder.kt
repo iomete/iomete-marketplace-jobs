@@ -13,6 +13,8 @@ class CleanupAuditDiagnosticDetailsBuilder {
         unresolvedTables: List<String> = emptyList(),
         potentiallyUntrackedFolderPaths: List<String> = emptyList(),
         unscannedTableLocations: List<String> = emptyList(),
+        reportCompleteScanCoverage: Boolean = false,
+        deletionFailedFolderPath: String? = null,
     ): Map<String, String> {
         val details = mutableMapOf(
             "active_table_locations_sample" to auditPathSample(activeTableLocations),
@@ -43,11 +45,10 @@ class CleanupAuditDiagnosticDetailsBuilder {
                 isAuditPathSampleTruncated(potentiallyUntrackedFolderPaths).toString()
         }
 
-        if (unscannedTableLocations.isNotEmpty()) {
-            details["unscanned_table_location_count"] = unscannedTableLocations.size.toString()
-            details["unscanned_table_locations_sample"] = auditPathSample(unscannedTableLocations)
-            details["unscanned_table_locations_truncated"] =
-                isAuditPathSampleTruncated(unscannedTableLocations).toString()
+        details.putAll(scanCoverageDetails(unscannedTableLocations, reportCompleteScanCoverage))
+
+        if (deletionFailedFolderPath != null) {
+            details["deletion_failed_folder_path"] = deletionFailedFolderPath
         }
 
         if (nonCandidateStorageFolderPaths.isNotEmpty()) {
@@ -59,6 +60,23 @@ class CleanupAuditDiagnosticDetailsBuilder {
 
         return details
     }
+
+    // Failure rows report a complete scan as a zero count, so a missing count means coverage was never evaluated.
+    fun scanCoverageDetails(
+        unscannedTableLocations: List<String>,
+        reportCompleteScanCoverage: Boolean = false,
+    ): Map<String, String> =
+        when {
+            unscannedTableLocations.isNotEmpty() ->
+                mapOf(
+                    "unscanned_table_location_count" to unscannedTableLocations.size.toString(),
+                    "unscanned_table_locations_sample" to auditPathSample(unscannedTableLocations),
+                    "unscanned_table_locations_truncated" to isAuditPathSampleTruncated(unscannedTableLocations).toString(),
+                )
+
+            reportCompleteScanCoverage -> mapOf("unscanned_table_location_count" to "0")
+            else -> emptyMap()
+        }
 
     private fun auditPathSample(paths: List<String>): String =
         paths.take(MAX_AUDIT_PATH_SAMPLE_SIZE).joinToString("\n")
