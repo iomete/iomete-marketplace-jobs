@@ -9,11 +9,13 @@ import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
 import com.iomete.cleanup.untrackedtablefolders.service.CleanupUntrackedTableFoldersService
+import com.iomete.cleanup.untrackedtablefolders.service.ReportOnlyRootScanner
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
 import com.iomete.cleanup.untrackedtablefolders.storage.CatalogStorageTestHarness
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.InMemoryS3FileSystem
+import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationPlanner
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationResolver
 import io.mockk.Runs
 import io.mockk.every
@@ -37,6 +39,8 @@ class CleanupFlowHarness(
 
     init {
         every { auditTableService.writeAuditRecord(capture(auditRecords)) } just Runs
+        every { catalogDiscoveryService.restNamespaceRoot(any(), any()) } returns null
+        every { catalogDiscoveryService.knownWarehouseRoots() } returns emptyList()
 
         val excludePathResolver = ExcludePathResolver().also { it.config = config }
         val discovery = storage.discoveryService()
@@ -68,6 +72,13 @@ class CleanupFlowHarness(
                         gate.config = config
                         gate.catalogDiscoveryService = catalogDiscoveryService
                         gate.objectStorageDeletionService = storage.deletionService()
+                    }
+                it.storageScanLocationPlanner = StorageScanLocationPlanner()
+                it.reportOnlyRootScanner =
+                    ReportOnlyRootScanner().also { scanner ->
+                        scanner.objectStorageDiscoveryService = discovery
+                        scanner.untrackedFolderCandidateDetector = UntrackedFolderCandidateDetector()
+                        scanner.excludePathResolver = excludePathResolver
                     }
             }
     }

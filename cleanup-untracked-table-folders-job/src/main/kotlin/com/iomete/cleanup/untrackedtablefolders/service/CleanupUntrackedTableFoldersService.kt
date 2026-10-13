@@ -7,6 +7,7 @@ import com.iomete.cleanup.untrackedtablefolders.candidate.TooManyCandidateFolder
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
 import com.iomete.cleanup.untrackedtablefolders.catalog.DatabaseNotFoundException
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
+import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
@@ -15,9 +16,12 @@ import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollect
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.storage.PartialDeletionException
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
+import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationPlanner
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.UnsafeScanRootException
+import com.iomete.cleanup.untrackedtablefolders.storage.UnsafeScanRootReason
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.time.Duration
@@ -40,6 +44,8 @@ class CleanupUntrackedTableFoldersService {
     @Inject lateinit var excludePathResolver: ExcludePathResolver
     @Inject lateinit var candidateSizeStatCollector: CandidateSizeStatCollector
     @Inject lateinit var candidateDeletionGate: CandidateDeletionGate
+    @Inject lateinit var storageScanLocationPlanner: StorageScanLocationPlanner
+    @Inject lateinit var reportOnlyRootScanner: ReportOnlyRootScanner
 
     fun run() {
 
@@ -72,6 +78,7 @@ class CleanupUntrackedTableFoldersService {
             val databaseStartTime = Instant.now()
             var effectiveExcludedPathsForAudit = excludePathResolver.normalizedConfiguredExcludePaths()
             var unscannedTableLocationsForAudit: List<String>? = null
+            var scanPlanForAudit: ScanPlanReport? = null
             try {
                 val discoveredDatabase =
                     catalogDiscoveryService.discoverDatabase(
@@ -144,19 +151,22 @@ class CleanupUntrackedTableFoldersService {
                         )
                     }
                 } else {
+                    val sharedWarehouseRoots = catalogDiscoveryService.sharedWarehouseRoots(discoveredDatabase.catalog)
                     val storageScanLocation =
                         try {
                             storageScanLocationResolver.resolve(
                                 databaseLocation = discoveredDatabase.location,
                                 activeTableLocations =
                                     discoveredDatabase.tables.mapNotNull { it.location },
-                                sharedWarehouseRoots =
-                                    catalogDiscoveryService.sharedWarehouseRoots(discoveredDatabase.catalog),
+                                sharedWarehouseRoots = sharedWarehouseRoots,
                             )
                         } catch (th: UnsafeScanRootException) {
                             logger.warn(
                                 "Refusing to scan storage for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: reason=${th.reason.code}. ${th.message}"
                             )
+
+                            val reportOnlyPlan =
+                                reportOnlyPlanForRefusedDatabase(discoveredDatabase, th.reason, sharedWarehouseRoots)
 
                             recordAudit(database) {
                                 cleanupAuditRecorder.recordUnsafeScanRoot(
@@ -173,6 +183,7 @@ class CleanupUntrackedTableFoldersService {
                                     reason = th.reason.code,
                                     errorMessage = th.message ?: th.reason.code,
                                     excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
+                                    scanPlan = reportOnlyPlan,
                                 )
                             }
 
@@ -219,6 +230,19 @@ class CleanupUntrackedTableFoldersService {
                             "Storage scan covers part of the database only: ${unscannedTableLocations.size} table location(s) are outside storage scan location=$storageScanLocation for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
                         )
                     }
+
+                    val scanPlan =
+                        planStorageRoots(
+                            discoveredDatabase = discoveredDatabase,
+                            cleanupRoot = storageScanLocation,
+                            databaseLocation = discoveredDatabase.location,
+                            sharedWarehouseRoots = sharedWarehouseRoots,
+                        )
+
+                    scanPlanForAudit = scanPlan
+
+                    // Without a visible table under it, the cleanup root gives nothing to check ownership against.
+                    val cleanupRootHasVisibleTable = unscannedTableLocations.size < activeTableLocations.size
 
                     val effectiveExcludedPaths =
                         excludePathResolver.effectiveExcludedPaths(
@@ -273,6 +297,7 @@ class CleanupUntrackedTableFoldersService {
                                     excludedPaths = effectiveExcludedPaths,
                                     errorMessage = th.message ?: th::class.java.name,
                                     unscannedTableLocations = unscannedTableLocations,
+                                    scanPlan = scanPlan,
                                 )
                             }
 
@@ -315,6 +340,11 @@ class CleanupUntrackedTableFoldersService {
                                         "Not deleting any folder for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: an audit write failed earlier in this run."
                                     )
                                     emptyList()
+                                } else if (!cleanupRootHasVisibleTable) {
+                                    logger.warn(
+                                        "Not deleting any folder for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: no visible table is stored under storage scan location=$storageScanLocation."
+                                    )
+                                    emptyList()
                                 } else {
                                     try {
                                         candidateDeletionGate.deleteCandidates(
@@ -351,6 +381,7 @@ class CleanupUntrackedTableFoldersService {
                                                 cutoffTime = cutoffTime,
                                                 excludedPaths = effectiveExcludedPaths,
                                                 unscannedTableLocations = unscannedTableLocations,
+                                                scanPlan = scanPlan,
                                                 error = th,
                                             )
                                         }
@@ -391,6 +422,7 @@ class CleanupUntrackedTableFoldersService {
                             deletedFolderPaths = deletedFolders,
                             deletedSizeStats = deletedSizeStats,
                             unscannedTableLocations = unscannedTableLocations,
+                            scanPlan = scanPlan,
                         )
                     )
 
@@ -413,6 +445,27 @@ class CleanupUntrackedTableFoldersService {
                                         cutoffTime = cutoffTime,
                                         excludedPaths = effectiveExcludedPaths,
                                         unscannedTableLocations = unscannedTableLocations,
+                                        scanPlan = scanPlan,
+                                    )
+                                }
+                            } else if (!cleanupRootHasVisibleTable) {
+                                recordAudit(database) {
+                                    cleanupAuditRecorder.recordCleanupRootHasNoVisibleTable(
+                                        runId = runId,
+                                        databaseStartTime = databaseStartTime,
+                                        catalogName = discoveredDatabase.catalog,
+                                        databaseName = discoveredDatabase.database,
+                                        discoveredDatabaseLocation = discoveredDatabase.location,
+                                        storageScanLocation = storageScanLocation,
+                                        activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                        activeTableLocations = activeTableLocations,
+                                        storageFolderPaths = storageFolderPaths,
+                                        candidateFolderPaths = unmatchedFolderPaths,
+                                        candidateSizeStats = candidateSizeStats,
+                                        cutoffTime = cutoffTime,
+                                        excludedPaths = effectiveExcludedPaths,
+                                        unscannedTableLocations = unscannedTableLocations,
+                                        scanPlan = scanPlan,
                                     )
                                 }
                             } else {
@@ -434,6 +487,7 @@ class CleanupUntrackedTableFoldersService {
                                         cutoffTime = cutoffTime,
                                         excludedPaths = effectiveExcludedPaths,
                                         unscannedTableLocations = unscannedTableLocations,
+                                        scanPlan = scanPlan,
                                     )
                                 }
                             }
@@ -455,6 +509,7 @@ class CleanupUntrackedTableFoldersService {
                                     cutoffTime = cutoffTime,
                                     excludedPaths = effectiveExcludedPaths,
                                     unscannedTableLocations = unscannedTableLocations,
+                                    scanPlan = scanPlan,
                                 )
                             }
                     }
@@ -486,6 +541,7 @@ class CleanupUntrackedTableFoldersService {
                         databaseStartTime = databaseStartTime,
                         excludedPaths = effectiveExcludedPathsForAudit,
                         unscannedTableLocations = unscannedTableLocationsForAudit,
+                        scanPlan = scanPlanForAudit,
                         error = th,
                     )
                 }
@@ -505,6 +561,71 @@ class CleanupUntrackedTableFoldersService {
         }
     }
 
+    // Report-only planning must never change deletion, so any failure here only drops the plan.
+    private fun planStorageRoots(
+        discoveredDatabase: DiscoveredDatabase,
+        cleanupRoot: String?,
+        databaseLocation: String?,
+        sharedWarehouseRoots: List<String>,
+    ): ScanPlanReport? {
+        val activeTableLocations = discoveredDatabase.tables.mapNotNull { it.location }.sorted()
+
+        val scanPlan =
+            try {
+                reportOnlyRootScanner.scan(
+                    catalog = discoveredDatabase.catalog,
+                    database = discoveredDatabase.database,
+                    roots =
+                        storageScanLocationPlanner.plan(
+                            cleanupRoot = cleanupRoot,
+                            databaseLocation = databaseLocation,
+                            restNamespaceRoot =
+                                catalogDiscoveryService
+                                    .restNamespaceRoot(discoveredDatabase.catalog, discoveredDatabase.database)
+                                    ?.takeIf { it.isNotBlank() },
+                            approvedRoots = config.reportOnlyStorageRoots[discoveredDatabase.database].orEmpty(),
+                            activeTableLocations = activeTableLocations,
+                            warehouseRoots = (sharedWarehouseRoots + catalogDiscoveryService.knownWarehouseRoots()).distinct(),
+                        ),
+                    activeTableLocations = activeTableLocations,
+                )
+            } catch (error: Exception) {
+                logger.warn(
+                    "Could not plan report-only storage roots for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}",
+                    error,
+                )
+                return null
+            }
+
+        scanPlan.roots.forEach { root ->
+            logger.info(
+                "Storage root for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: location=${root.root.location}, role=${root.role}, status=${root.status}, visibleTables=${root.visibleTableCount}, unmatchedFolders=${root.unmatchedFolderPaths.size}"
+            )
+        }
+
+        return scanPlan
+    }
+
+    // A refused database keeps its SKIPPED row; report-only roots are added only when their scope can still be checked.
+    private fun reportOnlyPlanForRefusedDatabase(
+        discoveredDatabase: DiscoveredDatabase,
+        reason: UnsafeScanRootReason,
+        sharedWarehouseRoots: List<String>,
+    ): ScanPlanReport? {
+        val databaseLocation =
+            when (reason) {
+                UnsafeScanRootReason.SCAN_ROOT_OUTSIDE_DATABASE_BOUNDARY -> discoveredDatabase.location
+                UnsafeScanRootReason.DATABASE_LOCATION_IS_BUCKET_ROOT,
+                UnsafeScanRootReason.DATABASE_LOCATION_CONTAINS_WAREHOUSE_ROOT,
+                -> null
+                UnsafeScanRootReason.CATALOG_WAREHOUSE_UNKNOWN,
+                UnsafeScanRootReason.INVALID_STORAGE_LOCATION,
+                -> return null
+            }
+
+        return planStorageRoots(discoveredDatabase, cleanupRoot = null, databaseLocation = databaseLocation, sharedWarehouseRoots = sharedWarehouseRoots)
+            ?.also { cleanupSummaryLogger.logScanPlan(discoveredDatabase.catalog, discoveredDatabase.database, it) }
+    }
 }
 
 class AuditIntegrityLostException(

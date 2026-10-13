@@ -37,6 +37,10 @@ data class ApplicationConfig(
 
     @field:JsonProperty("collect_size_statistics")
     val collectSizeStatistics: Boolean? = null,
+
+    // Listed for reporting only. Approval never makes a location eligible for deletion.
+    @field:JsonProperty("report_only_storage_roots")
+    val reportOnlyStorageRoots: Map<String, List<String>> = emptyMap(),
 ) {
     fun deprecationWarnings(): List<String> =
         if (collectSizeStatistics == false) {
@@ -73,6 +77,16 @@ data class ApplicationConfig(
 
             require('/' !in folder) {
                 "exclude_database_folders folder must be an immediate child folder name without '/': $excludedDatabaseFolder"
+            }
+        }
+
+        reportOnlyStorageRoots.forEach { (database, roots) ->
+            require(database in configuredDatabaseSet) {
+                "report_only_storage_roots database must be listed in databases: $database"
+            }
+
+            require(roots.none { it.isBlank() }) {
+                "report_only_storage_roots entries must not be blank: $database"
             }
         }
 

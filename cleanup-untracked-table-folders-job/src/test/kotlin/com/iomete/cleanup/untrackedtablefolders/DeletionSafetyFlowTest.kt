@@ -160,7 +160,9 @@ class DeletionSafetyFlowTest {
 
         flow.run()
 
-        assertEquals("SUCCESS", flow.auditRecords.single().status)
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("cleanup_root_has_no_visible_table", record.statusReason)
         assertTrue(flow.objectExists("s3a://bucket/lake/sales.db/orphan/part-0.parquet"))
     }
 

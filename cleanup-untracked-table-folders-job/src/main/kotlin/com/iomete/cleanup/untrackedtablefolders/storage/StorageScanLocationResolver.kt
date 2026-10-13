@@ -36,7 +36,7 @@ class StorageScanLocationResolver {
 
         val inferredScanLocations =
             activeTableLocations
-                .mapNotNull { location -> parsed(location) { parentLocation(location) } }
+                .mapNotNull { location -> parsed(location) { StoragePathUtils.parentLocation(location) } }
                 .distinct()
                 .sorted()
 
@@ -124,21 +124,6 @@ class StorageScanLocationResolver {
                 UnsafeScanRootReason.SCAN_ROOT_OUTSIDE_DATABASE_BOUNDARY,
                 "Resolved storage scan location escapes database boundary. databaseLocation=$databaseLocation, storageScanLocation=$storageScanLocation, allowedRoots=$databaseRoots",
             )
-        }
-    }
-
-    private fun parentLocation(location: String): String? {
-        if (StoragePathUtils.isStorageRoot(location)) {
-            return null
-        }
-
-        val normalizedLocation = location.trim().trimEnd('/')
-        val lastSlashIndex = normalizedLocation.lastIndexOf('/')
-
-        return if (lastSlashIndex <= 0) {
-            null
-        } else {
-            normalizedLocation.substring(0, lastSlashIndex)
         }
     }
 

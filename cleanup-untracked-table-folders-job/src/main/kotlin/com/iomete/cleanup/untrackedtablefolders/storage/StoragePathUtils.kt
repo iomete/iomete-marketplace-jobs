@@ -74,6 +74,21 @@ object StoragePathUtils {
     fun isStorageRoot(location: String): Boolean =
         normalizeUriPath(Path(location.trim().trimEnd('/').ifEmpty { "/" }).toUri().normalize()) == "/"
 
+    fun parentLocation(location: String): String? {
+        if (isStorageRoot(location)) {
+            return null
+        }
+
+        val normalizedLocation = location.trim().trimEnd('/')
+        val lastSlashIndex = normalizedLocation.lastIndexOf('/')
+
+        return if (lastSlashIndex <= 0) {
+            null
+        } else {
+            normalizedLocation.substring(0, lastSlashIndex)
+        }
+    }
+
     private fun canonicalizeScheme(scheme: String): String =
         when (scheme) {
             "s3", "s3a", "s3n" -> "s3a"

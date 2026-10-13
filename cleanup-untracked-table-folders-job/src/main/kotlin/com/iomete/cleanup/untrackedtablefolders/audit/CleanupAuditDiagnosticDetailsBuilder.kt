@@ -1,5 +1,6 @@
 package com.iomete.cleanup.untrackedtablefolders.audit
 
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import jakarta.enterprise.context.ApplicationScoped
 
 @ApplicationScoped
@@ -77,6 +78,41 @@ class CleanupAuditDiagnosticDetailsBuilder {
             reportCompleteScanCoverage -> mapOf("unscanned_table_location_count" to "0")
             else -> emptyMap()
         }
+
+    // Written only after storage roots were planned, so missing keys mean planning never ran.
+    fun scanPlanDetails(scanPlan: ScanPlanReport?): Map<String, String> {
+        if (scanPlan == null) {
+            return emptyMap()
+        }
+
+        val rootLines =
+            scanPlan.roots.map { "${it.root.location}=${it.role}:${it.status}:visible_tables=${it.visibleTableCount}" }
+        val reportOnlyFolders = scanPlan.reportOnlyFolderPaths
+        val uncovered = scanPlan.uncoveredTableLocations
+
+        val details =
+            mutableMapOf(
+                "ownership_basis" to "visible_catalog_tables",
+                "scan_root_count" to scanPlan.roots.size.toString(),
+                "scan_roots_sample" to auditPathSample(rootLines),
+                "scan_roots_truncated" to isAuditPathSampleTruncated(rootLines).toString(),
+                "scan_plan_coverage" to if (scanPlan.complete) "complete" else "partial",
+                "scan_plan_uncovered_table_location_count" to uncovered.size.toString(),
+                "report_only_folder_count" to reportOnlyFolders.size.toString(),
+            )
+
+        if (uncovered.isNotEmpty()) {
+            details["scan_plan_uncovered_table_locations_sample"] = auditPathSample(uncovered)
+            details["scan_plan_uncovered_table_locations_truncated"] = isAuditPathSampleTruncated(uncovered).toString()
+        }
+
+        if (reportOnlyFolders.isNotEmpty()) {
+            details["report_only_folders_sample"] = auditPathSample(reportOnlyFolders)
+            details["report_only_folders_truncated"] = isAuditPathSampleTruncated(reportOnlyFolders).toString()
+        }
+
+        return details
+    }
 
     private fun auditPathSample(paths: List<String>): String =
         paths.take(MAX_AUDIT_PATH_SAMPLE_SIZE).joinToString("\n")

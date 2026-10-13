@@ -43,6 +43,37 @@ class UntrackedFolderCandidateDetector {
             "maxCandidateFolders must be greater than or equal to 0"
         }
 
+        val candidateFolders =
+            unmatchedFolders(
+                storageFolders = storageFolders,
+                activeTableLocations = activeTableLocations,
+                excludedPaths = excludedPaths,
+                stage = "candidate detection",
+            )
+
+        if (candidateFolders.size > maxCandidateFolders) {
+            throw TooManyCandidateFoldersException(
+                candidateCount = candidateFolders.size,
+                maxCandidateFolders = maxCandidateFolders,
+                candidateFolderPaths = candidateFolders.map { it.path },
+            )
+        }
+
+        // Ownership certainty is a property of the whole database: one unresolved table makes
+        // every unmatched folder unverifiable, never a mix.
+        return if (unresolvedTableCount > 0) {
+            StorageFolderReconciliation.OwnershipUnverified(candidateFolders, unresolvedTableCount)
+        } else {
+            StorageFolderReconciliation.DeletionEligible(candidateFolders)
+        }
+    }
+
+    fun unmatchedFolders(
+        storageFolders: List<StorageFolder>,
+        activeTableLocations: List<String>,
+        excludedPaths: List<String>,
+        stage: String = "report-only root listing",
+    ): List<StorageFolder> {
         val normalizedActiveTableLocations = activeTableLocations
             .map { StoragePathUtils.normalizeLocation(it) }
 
@@ -52,7 +83,7 @@ class UntrackedFolderCandidateDetector {
 
         val skipReasonCounts = mutableMapOf<CandidateSkipReason, Int>()
 
-        val candidateFolders = storageFolders
+        val unmatchedFolders = storageFolders
             .filter { storageFolder ->
                 val skipReason =
                     skipReason(
@@ -74,27 +105,13 @@ class UntrackedFolderCandidateDetector {
             .sortedBy { it.path }
 
         logSkipReasonSummary(
-            stage = "candidate detection",
+            stage = stage,
             totalFolderCount = storageFolders.size,
             skipReasonCounts = skipReasonCounts,
             reasons = CandidateSkipReason.entries - AGE_SKIP_REASONS,
         )
 
-        if (candidateFolders.size > maxCandidateFolders) {
-            throw TooManyCandidateFoldersException(
-                candidateCount = candidateFolders.size,
-                maxCandidateFolders = maxCandidateFolders,
-                candidateFolderPaths = candidateFolders.map { it.path },
-            )
-        }
-
-        // Ownership certainty is a property of the whole database: one unresolved table makes
-        // every unmatched folder unverifiable, never a mix.
-        return if (unresolvedTableCount > 0) {
-            StorageFolderReconciliation.OwnershipUnverified(candidateFolders, unresolvedTableCount)
-        } else {
-            StorageFolderReconciliation.DeletionEligible(candidateFolders)
-        }
+        return unmatchedFolders
     }
 
     fun applyAgeCutoff(

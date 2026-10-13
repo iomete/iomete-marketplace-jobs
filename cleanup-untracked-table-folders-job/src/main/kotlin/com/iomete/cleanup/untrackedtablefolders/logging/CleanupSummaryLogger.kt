@@ -1,5 +1,6 @@
 package com.iomete.cleanup.untrackedtablefolders.logging
 
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import jakarta.enterprise.context.ApplicationScoped
 import org.jboss.logging.Logger
@@ -20,6 +21,7 @@ data class CleanupSummary(
     val deletedFolderPaths: List<String>,
     val deletedSizeStats: StorageSizeStats?,
     val unscannedTableLocations: List<String> = emptyList(),
+    val scanPlan: ScanPlanReport? = null,
 )
 
 @ApplicationScoped
@@ -30,6 +32,29 @@ class CleanupSummaryLogger {
     fun logCleanupSummary(summary: CleanupSummary) {
         buildReportLines(summary).forEach { logger.info(it) }
     }
+
+    fun logScanPlan(
+        catalog: String,
+        database: String,
+        scanPlan: ScanPlanReport,
+    ) {
+        buildScanPlanLines(catalog, database, scanPlan).forEach { logger.info(it) }
+    }
+
+    internal fun buildScanPlanLines(
+        catalog: String,
+        database: String,
+        scanPlan: ScanPlanReport,
+    ): List<String> =
+        buildList {
+            add(SEPARATOR)
+            add(" STORAGE ROOT REPORT - $catalog.$database")
+            add(SEPARATOR)
+            add("")
+            add("  Cleanup was skipped for this database. Nothing was deleted.")
+            addScanPlan(database, scanPlan)
+            add(SEPARATOR)
+        }
 
     internal fun buildReportLines(summary: CleanupSummary): List<String> = buildList {
         val unmatchedFolderSet = summary.unmatchedFolderPaths.toSet()
@@ -93,6 +118,8 @@ class CleanupSummaryLogger {
             addListOrNone(summary.unscannedTableLocations)
         }
 
+        summary.scanPlan?.let { addScanPlan(summary.database, it) }
+
         add("")
         if (summary.deletionEligible) {
             add("UNTRACKED STORAGE FOLDERS")
@@ -135,6 +162,50 @@ class CleanupSummaryLogger {
 
         add(SEPARATOR)
         repeat(BLANK_LINES_AROUND_REPORT) { add("") }
+    }
+
+    private fun MutableList<String>.addScanPlan(
+        database: String,
+        scanPlan: ScanPlanReport,
+    ) {
+        add("")
+        add("STORAGE ROOTS")
+        add("")
+        add("  Folders are deleted only under the cleanup root. Other roots are listed for review only.")
+        add("  Coverage is ${if (scanPlan.complete) "complete" else "partial"} for the tables visible to this job.")
+        add("")
+        scanPlan.roots.forEach { root ->
+            add("- ${root.root.location}  ${root.role}  ${root.status}  visible tables: ${root.visibleTableCount}")
+        }
+
+        if (scanPlan.uncoveredTableLocations.isNotEmpty()) {
+            add("")
+            add("TABLE LOCATIONS OUTSIDE EVERY LISTED ROOT")
+            add("")
+            addListOrNone(scanPlan.uncoveredTableLocations)
+        }
+
+        add("")
+        add("FOLDERS IN REPORT-ONLY ROOTS NOT MATCHED TO A VISIBLE TABLE")
+        add("")
+        add("  These folders are not deleted. A table this job cannot see may still own them.")
+        add("")
+        addListOrNone(scanPlan.reportOnlyFolderPaths)
+
+        if (scanPlan.unapprovedTableParents.isNotEmpty()) {
+            val roots = (scanPlan.acceptedApprovedRoots + scanPlan.unapprovedTableParents).distinct().sorted()
+            add("")
+            add("LOCATIONS THAT CAN BE APPROVED FOR REPORT-ONLY LISTING")
+            add("")
+            add("  Approve a location only if it belongs to this database. Approval lists it for review;")
+            add("  it never makes anything in it eligible for deletion. To approve, set this in the job config:")
+            add("")
+            add("  \"report_only_storage_roots\": {")
+            add("    \"$database\": [")
+            roots.forEachIndexed { index, root -> add("      \"$root\"" + if (index < roots.lastIndex) "," else "") }
+            add("    ]")
+            add("  }")
+        }
     }
 
     private fun MutableList<String>.addListOrNone(values: List<String>) {

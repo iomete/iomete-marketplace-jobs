@@ -50,6 +50,18 @@ private const val MISSING_METADATA_MESSAGE = "Location does not exist:"
 private const val WAREHOUSE_PROPERTY = "warehouse"
 private const val SESSION_CATALOG_NAME = "spark_catalog"
 private const val SESSION_WAREHOUSE_KEY = "spark.sql.warehouse.dir"
+private const val CATALOG_TYPE_PROPERTY = "type"
+private const val CATALOG_URI_PROPERTY = "uri"
+private val ICEBERG_CATALOG_CLASSES =
+    setOf("org.apache.iceberg.spark.SparkSessionCatalog", "org.apache.iceberg.spark.SparkCatalog")
+
+internal fun isManagedRestCatalogUri(
+    uri: String,
+    catalog: String,
+): Boolean {
+    val path = runCatching { java.net.URI(uri.trim()).path }.getOrNull() ?: return false
+    return path.trimEnd('/').endsWith("/internal/catalogs/$catalog")
+}
 
 internal fun isMetadataNotFoundError(error: Throwable): Boolean {
     var current: Throwable? = error
@@ -131,6 +143,42 @@ class CatalogDiscoveryService {
             }
 
         return listOf(catalogWarehouse, sessionWarehouse).filter { it.isNotEmpty() }.distinct()
+    }
+
+    fun knownWarehouseRoots(): List<String> {
+        val spark = sparkSessionProvider.getOrCreate()
+        val catalogWarehouses =
+            spark.sparkContext().getConf()
+                .getAllWithPrefix("spark.sql.catalog.")
+                .filter { it._1().endsWith(".$WAREHOUSE_PROPERTY") }
+                .map { it._2().trim() }
+
+        return (catalogWarehouses + spark.conf().get(SESSION_WAREHOUSE_KEY, "").trim())
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .sorted()
+    }
+
+    // The managed REST catalog places every table at <warehouse>/<namespace>/<table> and ignores any
+    // namespace location property, so this root holds its tables even when none of them is visible.
+    fun restNamespaceRoot(
+        catalog: String,
+        database: String,
+    ): String? {
+        val sparkConf = sparkSessionProvider.getOrCreate().sparkContext().getConf()
+        val prefix = CatalogStorageProperties.catalogPropertyPrefix(catalog)
+
+        val catalogClass = sparkConf.get(prefix.removeSuffix("."), "").trim()
+        val catalogType = sparkConf.get(prefix + CATALOG_TYPE_PROPERTY, "").trim()
+        val catalogUri = sparkConf.get(prefix + CATALOG_URI_PROPERTY, "").trim()
+        val warehouse = sparkConf.get(prefix + WAREHOUSE_PROPERTY, "").trim().trimEnd('/')
+
+        val managedRestCatalog =
+            catalogClass in ICEBERG_CATALOG_CLASSES &&
+                catalogType.equals("rest", ignoreCase = true) &&
+                isManagedRestCatalogUri(catalogUri, catalog)
+
+        return if (managedRestCatalog && warehouse.isNotEmpty()) "$warehouse/$database" else null
     }
 
     fun discoverTables(

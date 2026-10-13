@@ -1,5 +1,11 @@
 package com.iomete.cleanup.untrackedtablefolders.audit
 
+import com.iomete.cleanup.untrackedtablefolders.storage.PlannedScanRoot
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootRejection
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootResult
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootSource
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -151,4 +157,44 @@ class CleanupAuditDiagnosticDetailsBuilderTest {
         )
     }
 
+    @Test
+    fun `scan plan keys are written only when a plan exists`() {
+        assertEquals(emptyMap<String, String>(), builder.scanPlanDetails(null))
+
+        val plan =
+            ScanPlanReport(
+                roots =
+                    listOf(
+                        ScanRootResult(PlannedScanRoot("s3a://b/lake/sales.db", setOf(ScanRootSource.DATABASE_LOCATION), cleanupRoot = true), ScanRootOutcome.SCANNED, 1),
+                        ScanRootResult(
+                            PlannedScanRoot("s3a://b/lake/sales", setOf(ScanRootSource.REST_NAMESPACE), cleanupRoot = false),
+                            ScanRootOutcome.SCANNED,
+                            0,
+                            listOf("s3a://b/lake/sales/x"),
+                        ),
+                        ScanRootResult(
+                            PlannedScanRoot("s3a://o/t", setOf(ScanRootSource.TABLE_PARENT), cleanupRoot = false, rejection = ScanRootRejection.OUTSIDE_DATABASE_BOUNDARY),
+                            ScanRootOutcome.NOT_SCANNED,
+                            1,
+                        ),
+                    ),
+                uncoveredTableLocations = listOf("s3a://o/t/t2"),
+            )
+
+        val details = builder.scanPlanDetails(plan)
+
+        assertEquals("visible_catalog_tables", details["ownership_basis"])
+        assertEquals("3", details["scan_root_count"])
+        assertEquals(
+            "s3a://b/lake/sales.db=cleanup:scanned:visible_tables=1\n" +
+                "s3a://b/lake/sales=report_only:scanned:visible_tables=0\n" +
+                "s3a://o/t=not_scanned:outside_database_boundary:visible_tables=1",
+            details["scan_roots_sample"],
+        )
+        assertEquals("partial", details["scan_plan_coverage"])
+        assertEquals("1", details["scan_plan_uncovered_table_location_count"])
+        assertEquals("s3a://o/t/t2", details["scan_plan_uncovered_table_locations_sample"])
+        assertEquals("1", details["report_only_folder_count"])
+        assertEquals("s3a://b/lake/sales/x", details["report_only_folders_sample"])
+    }
 }
