@@ -57,6 +57,23 @@ object StoragePathUtils {
             )
         }
 
+    fun overlaps(
+        firstLocation: String,
+        secondLocation: String,
+    ): Boolean =
+        isSameOrChildLocation(candidateLocation = firstLocation, rootLocation = secondLocation) ||
+            isSameOrChildLocation(candidateLocation = secondLocation, rootLocation = firstLocation)
+
+    // A location without a scheme, or an S3 location without a bucket, cannot be compared with qualified paths.
+    fun isQualifiedLocation(location: String): Boolean {
+        val uri = Path(location.trim()).toUri()
+        val scheme = uri.scheme?.lowercase()?.let(::canonicalizeScheme) ?: return false
+        return scheme != "s3a" || !uri.authority.isNullOrBlank()
+    }
+
+    fun isStorageRoot(location: String): Boolean =
+        normalizeUriPath(Path(location.trim().trimEnd('/').ifEmpty { "/" }).toUri().normalize()) == "/"
+
     private fun canonicalizeScheme(scheme: String): String =
         when (scheme) {
             "s3", "s3a", "s3n" -> "s3a"

@@ -16,6 +16,7 @@ import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationResolver
+import com.iomete.cleanup.untrackedtablefolders.storage.UnsafeScanRootException
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.time.Duration
@@ -119,11 +120,37 @@ class CleanupUntrackedTableFoldersService {
                     )
                 } else {
                     val storageScanLocation =
-                        storageScanLocationResolver.resolve(
-                            databaseLocation = discoveredDatabase.location,
-                            activeTableLocations =
-                                discoveredDatabase.tables.mapNotNull { it.location },
-                        )
+                        try {
+                            storageScanLocationResolver.resolve(
+                                databaseLocation = discoveredDatabase.location,
+                                activeTableLocations =
+                                    discoveredDatabase.tables.mapNotNull { it.location },
+                                sharedWarehouseRoots =
+                                    catalogDiscoveryService.sharedWarehouseRoots(discoveredDatabase.catalog),
+                            )
+                        } catch (th: UnsafeScanRootException) {
+                            logger.warn(
+                                "Refusing to scan storage for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: reason=${th.reason.code}. ${th.message}"
+                            )
+
+                            cleanupAuditRecorder.recordUnsafeScanRoot(
+                                runId = runId,
+                                databaseStartTime = databaseStartTime,
+                                catalogName = discoveredDatabase.catalog,
+                                databaseName = discoveredDatabase.database,
+                                discoveredDatabaseLocation = discoveredDatabase.location,
+                                activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                activeTableLocations =
+                                    discoveredDatabase.tables
+                                        .mapNotNull { it.location }
+                                        .sorted(),
+                                reason = th.reason.code,
+                                errorMessage = th.message ?: th.reason.code,
+                                excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
+                            )
+
+                            return@forEach
+                        }
                     logger.info(
                         "Using storage scan location=$storageScanLocation for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, discoveredDatabaseLocation=${discoveredDatabase.location}"
                     )
@@ -254,6 +281,7 @@ class CleanupUntrackedTableFoldersService {
                                     catalog = discoveredDatabase.catalog,
                                     database = discoveredDatabase.database,
                                     reconciliation = reconciliation,
+                                    excludedPaths = effectiveExcludedPaths,
                                 )
 
                             is StorageFolderReconciliation.OwnershipUnverified -> emptyList()

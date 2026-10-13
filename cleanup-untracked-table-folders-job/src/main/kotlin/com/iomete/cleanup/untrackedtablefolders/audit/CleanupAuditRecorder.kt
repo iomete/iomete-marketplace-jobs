@@ -42,6 +42,34 @@ class CleanupAuditRecorder {
         )
     }
 
+    fun recordUnsafeScanRoot(
+        runId: String,
+        databaseStartTime: Instant,
+        catalogName: String,
+        databaseName: String,
+        discoveredDatabaseLocation: String?,
+        activeTableCount: Long,
+        activeTableLocations: List<String>,
+        reason: String,
+        errorMessage: String,
+        excludedPaths: List<String>,
+    ) {
+        writeAuditRecord(
+            runId = runId,
+            databaseStartTime = databaseStartTime,
+            catalogName = catalogName,
+            databaseName = databaseName,
+            status = STATUS_SKIPPED,
+            statusReason = reason,
+            errorMessage = errorMessage,
+            discoveredDatabaseLocation = discoveredDatabaseLocation,
+            activeTableCount = activeTableCount,
+            excludedPaths = excludedPaths,
+            diagnosticDetails =
+                auditDiagnosticDetailsBuilder.build(activeTableLocations = activeTableLocations),
+        )
+    }
+
     fun recordNoActiveTables(
         runId: String,
         databaseStartTime: Instant,

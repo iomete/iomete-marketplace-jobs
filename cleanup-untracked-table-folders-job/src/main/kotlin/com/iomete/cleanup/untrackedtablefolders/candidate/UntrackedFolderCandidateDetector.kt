@@ -190,8 +190,44 @@ class UntrackedFolderCandidateDetector {
             return CandidateSkipReason.CONTAINS_ACTIVE_TABLE
         }
 
+        val insideActiveTable =
+            normalizedActiveTableLocations.any { activeLocation ->
+                StoragePathUtils.isSameOrChildLocation(
+                    candidateLocation = normalizedFolder,
+                    rootLocation = activeLocation,
+                )
+            }
+
+        if (insideActiveTable) {
+            return CandidateSkipReason.INSIDE_ACTIVE_TABLE
+        }
+
         if (normalizedFolder in excludedPathSet) {
             return CandidateSkipReason.EXCLUDED_PATH
+        }
+
+        val containsExcludedPath =
+            excludedPathSet.any { excludedPath ->
+                StoragePathUtils.isSameOrChildLocation(
+                    candidateLocation = excludedPath,
+                    rootLocation = normalizedFolder,
+                )
+            }
+
+        if (containsExcludedPath) {
+            return CandidateSkipReason.CONTAINS_EXCLUDED_PATH
+        }
+
+        val insideExcludedPath =
+            excludedPathSet.any { excludedPath ->
+                StoragePathUtils.isSameOrChildLocation(
+                    candidateLocation = normalizedFolder,
+                    rootLocation = excludedPath,
+                )
+            }
+
+        if (insideExcludedPath) {
+            return CandidateSkipReason.INSIDE_EXCLUDED_PATH
         }
 
         return null
@@ -238,7 +274,10 @@ class UntrackedFolderCandidateDetector {
         SENTINEL_FOLDER("sentinel_folder"),
         ACTIVE_TABLE("active_table"),
         CONTAINS_ACTIVE_TABLE("contains_active_table"),
+        INSIDE_ACTIVE_TABLE("inside_active_table"),
         EXCLUDED_PATH("excluded_path"),
+        CONTAINS_EXCLUDED_PATH("contains_excluded_path"),
+        INSIDE_EXCLUDED_PATH("inside_excluded_path"),
         TOO_NEW("too_new"),
         UNKNOWN_AGE("unknown_age"),
     }

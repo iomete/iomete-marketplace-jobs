@@ -19,6 +19,7 @@ import java.time.Duration
 private const val CATALOG = "example_catalog"
 private const val ENDPOINT = CleanupFlowHarness.ENDPOINT
 private const val DATABASE_LOCATION = "s3a://bucket/lake/sales.db"
+private const val WAREHOUSE = "s3a://bucket/lake"
 
 class CandidateAgeFlowTest {
 
@@ -205,6 +206,7 @@ class CandidateAgeFlowTest {
                 )
         every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "sales") } returns
             DiscoveredDatabase(CATALOG, "sales", DATABASE_LOCATION, tables)
+        every { flow.catalogDiscoveryService.sharedWarehouseRoots(CATALOG) } returns listOf(WAREHOUSE)
         return flow
     }
 }

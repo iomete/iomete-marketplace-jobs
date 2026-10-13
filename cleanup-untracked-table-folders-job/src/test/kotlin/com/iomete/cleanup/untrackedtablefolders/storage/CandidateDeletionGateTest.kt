@@ -28,6 +28,7 @@ class CandidateDeletionGateTest {
             catalog = "spark_catalog",
             database = "analytics",
             reconciliation = deletionEligible("s3a://bucket/db/orphan_a", "s3a://bucket/db/orphan_b"),
+            excludedPaths = emptyList(),
         )
 
         assertEquals(emptyList<String>(), result)
@@ -46,6 +47,7 @@ class CandidateDeletionGateTest {
                 catalog = "spark_catalog",
                 database = "analytics",
                 reconciliation = deletionEligible("s3a://bucket/db/orphan_a"),
+                excludedPaths = emptyList(),
             )
         }
 
@@ -67,6 +69,7 @@ class CandidateDeletionGateTest {
             catalog = "spark_catalog",
             database = "analytics",
             reconciliation = deletionEligible(),
+            excludedPaths = emptyList(),
         )
 
         assertEquals(emptyList<String>(), result)
@@ -90,6 +93,7 @@ class CandidateDeletionGateTest {
             catalog = "spark_catalog",
             database = "analytics",
             reconciliation = deletionEligible("s3a://bucket/db/orphan_b", "s3a://bucket/db/orphan_a"),
+            excludedPaths = emptyList(),
         )
 
         assertEquals(
@@ -125,6 +129,7 @@ class CandidateDeletionGateTest {
             catalog = "spark_catalog",
             database = "analytics",
             reconciliation = deletionEligible("s3a://bucket/db/now_active", "s3a://bucket/db/still_orphan"),
+            excludedPaths = emptyList(),
         )
 
         assertEquals(listOf("s3a://bucket/db/still_orphan"), result)
@@ -151,6 +156,7 @@ class CandidateDeletionGateTest {
             catalog = "spark_catalog",
             database = "analytics",
             reconciliation = deletionEligible("s3a://bucket/db/team_a", "s3a://bucket/db/abandoned"),
+            excludedPaths = emptyList(),
         )
 
         assertEquals(listOf("s3a://bucket/db/abandoned"), result)
@@ -177,6 +183,7 @@ class CandidateDeletionGateTest {
             catalog = "spark_catalog",
             database = "analytics",
             reconciliation = deletionEligible("s3a://bucket/db/missing", "s3a://bucket/db/present"),
+            excludedPaths = emptyList(),
         )
 
         assertEquals(listOf("s3a://bucket/db/present"), result)
@@ -198,6 +205,7 @@ class CandidateDeletionGateTest {
                 catalog = "spark_catalog",
                 database = "analytics",
                 reconciliation = deletionEligible("s3a://bucket/db/orphan_a", "s3a://bucket/db/orphan_b", "s3a://bucket/db/orphan_c"),
+                excludedPaths = emptyList(),
             )
         }
 
@@ -206,6 +214,67 @@ class CandidateDeletionGateTest {
                 "spark_catalog",
                 listOf("s3a://bucket/db/orphan_a", "s3a://bucket/db/orphan_b", "s3a://bucket/db/orphan_c"),
             )
+        }
+    }
+
+    @Test
+    fun `skips candidate inside a current active table location`() {
+        every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
+            discoveredDatabase(activeTableLocations = listOf("s3a://bucket/db/sales"))
+        every { objectStorageDeletionService.deleteFoldersRecursively(any(), any()) } answers {
+            secondArg<List<String>>().map { DeletedStorageFolder(path = it, deleted = true) }
+        }
+
+        val gate = gateFor(
+            config = applicationConfig(dryRun = false, deleteEnabled = true),
+        )
+
+        val result = gate.deleteCandidates(
+            catalog = "spark_catalog",
+            database = "analytics",
+            reconciliation = deletionEligible("s3a://bucket/db/sales/data", "s3a://bucket/db/orphan"),
+            excludedPaths = emptyList(),
+        )
+
+        assertEquals(listOf("s3a://bucket/db/orphan"), result)
+        verify(exactly = 1) {
+            objectStorageDeletionService.deleteFoldersRecursively("spark_catalog", listOf("s3a://bucket/db/orphan"))
+        }
+    }
+
+    @Test
+    fun `skips candidates that overlap an excluded path in either direction`() {
+        every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
+            discoveredDatabase(activeTableLocations = emptyList())
+        every { objectStorageDeletionService.deleteFoldersRecursively(any(), any()) } answers {
+            secondArg<List<String>>().map { DeletedStorageFolder(path = it, deleted = true) }
+        }
+
+        val gate = gateFor(
+            config = applicationConfig(dryRun = false, deleteEnabled = true),
+        )
+
+        val result = gate.deleteCandidates(
+            catalog = "spark_catalog",
+            database = "analytics",
+            reconciliation =
+                deletionEligible(
+                    "s3a://bucket/db/legacy",
+                    "s3a://bucket/archive/old",
+                    "s3a://bucket/db/kept",
+                    "s3a://bucket/db/orphan",
+                ),
+            excludedPaths =
+                listOf(
+                    "s3a://bucket/db/legacy/keep_me",
+                    "s3://bucket/archive/",
+                    "s3a://bucket/db/kept/",
+                ),
+        )
+
+        assertEquals(listOf("s3a://bucket/db/orphan"), result)
+        verify(exactly = 1) {
+            objectStorageDeletionService.deleteFoldersRecursively("spark_catalog", listOf("s3a://bucket/db/orphan"))
         }
     }
 
@@ -251,6 +320,7 @@ class CandidateDeletionGateTest {
                     catalog = "spark_catalog",
                     database = "analytics",
                     reconciliation = deletionEligible("s3a://bucket/db/orphan_a"),
+                    excludedPaths = emptyList(),
                 )
             }
 

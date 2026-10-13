@@ -258,6 +258,72 @@ class UntrackedFolderCandidateDetectorTest {
     }
 
     @Test
+    fun `folder inside an active table location is never a candidate`() {
+        val candidates = detector.detectCandidates(
+            storageFolders = listOf(
+                storageFolder("s3a://bucket/db/data"),
+                storageFolder("s3a://bucket/db/metadata"),
+            ),
+            activeTableLocations = listOf("s3a://bucket/db"),
+            excludedPaths = emptyList(),
+            unresolvedTableCount = 0,
+            maxCandidateFolders = 10,
+        )
+
+        assertEquals(emptyList<String>(), candidates.folders.map { it.path })
+    }
+
+    @Test
+    fun `folder containing an excluded path is never a candidate`() {
+        val candidates = detector.detectCandidates(
+            storageFolders = listOf(
+                storageFolder("s3a://bucket/db/legacy"),
+                storageFolder("s3a://bucket/db/orphan"),
+            ),
+            activeTableLocations = emptyList(),
+            excludedPaths = listOf("s3a://bucket/db/legacy/keep_me"),
+            unresolvedTableCount = 0,
+            maxCandidateFolders = 10,
+        )
+
+        assertEquals(listOf("s3a://bucket/db/orphan"), candidates.folders.map { it.path })
+    }
+
+    @Test
+    fun `folder inside an excluded path is never a candidate`() {
+        val candidates = detector.detectCandidates(
+            storageFolders = listOf(
+                storageFolder("s3a://bucket/db/orphan"),
+            ),
+            activeTableLocations = emptyList(),
+            excludedPaths = listOf("s3a://bucket/db"),
+            unresolvedTableCount = 0,
+            maxCandidateFolders = 10,
+        )
+
+        assertEquals(emptyList<String>(), candidates.folders.map { it.path })
+    }
+
+    @Test
+    fun `overlap checks match whole path segments only`() {
+        val candidates = detector.detectCandidates(
+            storageFolders = listOf(
+                storageFolder("s3a://bucket/db/table10"),
+                storageFolder("s3a://bucket/db/keep_me2"),
+            ),
+            activeTableLocations = listOf("s3a://bucket/db/table1"),
+            excludedPaths = listOf("s3a://bucket/db/keep_me"),
+            unresolvedTableCount = 0,
+            maxCandidateFolders = 10,
+        )
+
+        assertEquals(
+            listOf("s3a://bucket/db/keep_me2", "s3a://bucket/db/table10"),
+            candidates.folders.map { it.path },
+        )
+    }
+
+    @Test
     fun `age check keeps folders whose newest object is at or before the cutoff`() {
         val result =
             detector.applyAgeCutoff(

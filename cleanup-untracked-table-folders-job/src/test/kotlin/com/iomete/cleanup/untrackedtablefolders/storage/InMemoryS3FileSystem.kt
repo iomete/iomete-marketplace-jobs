@@ -42,6 +42,9 @@ class InMemoryS3FileSystem : FileSystem() {
         var failDeleteFor: String? = null
 
         @Volatile
+        var refuseDeleteFor: String? = null
+
+        @Volatile
         var failListFor: String? = null
 
         val listStatusCalls = ConcurrentHashMap<String, Int>()
@@ -51,6 +54,7 @@ class InMemoryS3FileSystem : FileSystem() {
             opened.clear()
             closedEndpoints.clear()
             failDeleteFor = null
+            refuseDeleteFor = null
             failListFor = null
             listStatusCalls.clear()
         }
@@ -150,6 +154,7 @@ class InMemoryS3FileSystem : FileSystem() {
         if (target == failDeleteFor) {
             throw java.io.IOException("simulated delete failure: $target")
         }
+        if (target == refuseDeleteFor) return false
         val victims = entries().keys.filter { it == target || it.startsWith("$target/") }
         if (victims.isEmpty()) return false
         if (!recursive && victims.size > 1) return false
