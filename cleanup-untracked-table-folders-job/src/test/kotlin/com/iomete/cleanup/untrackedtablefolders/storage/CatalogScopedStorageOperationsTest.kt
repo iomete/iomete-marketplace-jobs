@@ -314,4 +314,89 @@ class CatalogScopedStorageOperationsTest {
         assertTrue(batch.statsByFolder.isEmpty())
         assertEquals(setOf("s3a://example-bucket/db/unreadable"), batch.failures.keys)
     }
+    @Test
+    fun `a failed folder delete reports the confirmed deletions and the failed folder`() {
+        listOf("orphan_a", "orphan_b", "orphan_c").forEach {
+            InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/$it")
+        }
+        InMemoryS3FileSystem.failDeleteFor = "s3a://example-bucket/db/orphan_b"
+
+        val error =
+            assertThrows(PartialDeletionException::class.java) {
+                harness.deletionService().deleteFoldersRecursively(
+                    "example_catalog",
+                    listOf("s3a://example-bucket/db/orphan_a", "s3a://example-bucket/db/orphan_b", "s3a://example-bucket/db/orphan_c"),
+                )
+            }
+
+        assertEquals(listOf("s3a://example-bucket/db/orphan_a"), error.deletedPaths)
+        assertEquals("s3a://example-bucket/db/orphan_b", error.failedPath)
+        assertTrue(InMemoryS3FileSystem.paths(COMPAT).contains("s3a://example-bucket/db/orphan_c"))
+    }
+
+    @Test
+    fun `an already absent folder is not counted as deleted`() {
+        InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/orphan_a")
+        InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/orphan_b")
+        InMemoryS3FileSystem.failDeleteFor = "s3a://example-bucket/db/orphan_b"
+
+        val error =
+            assertThrows(PartialDeletionException::class.java) {
+                harness.deletionService().deleteFoldersRecursively(
+                    "example_catalog",
+                    listOf("s3a://example-bucket/db/vanished", "s3a://example-bucket/db/orphan_a", "s3a://example-bucket/db/orphan_b"),
+                )
+            }
+
+        assertEquals(listOf("s3a://example-bucket/db/orphan_a"), error.deletedPaths)
+    }
+
+    @Test
+    fun `a refused delete of an existing folder stops deletion with that folder's state unknown`() {
+        listOf("orphan_a", "orphan_b", "orphan_c").forEach {
+            InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/$it")
+        }
+        InMemoryS3FileSystem.refuseDeleteFor = "s3a://example-bucket/db/orphan_b"
+
+        val error =
+            assertThrows(PartialDeletionException::class.java) {
+                harness.deletionService().deleteFoldersRecursively(
+                    "example_catalog",
+                    listOf("s3a://example-bucket/db/orphan_a", "s3a://example-bucket/db/orphan_b", "s3a://example-bucket/db/orphan_c"),
+                )
+            }
+
+        assertEquals(listOf("s3a://example-bucket/db/orphan_a"), error.deletedPaths)
+        assertEquals("s3a://example-bucket/db/orphan_b", error.failedPath)
+        assertTrue(InMemoryS3FileSystem.paths(COMPAT).contains("s3a://example-bucket/db/orphan_c"))
+    }
+
+    @Test
+    fun `a first folder that fails is still reported, with no confirmed deletions`() {
+        InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/orphan_a")
+        InMemoryS3FileSystem.failDeleteFor = "s3a://example-bucket/db/orphan_a"
+
+        val error =
+            assertThrows(PartialDeletionException::class.java) {
+                harness.deletionService().deleteFoldersRecursively("example_catalog", listOf("s3a://example-bucket/db/orphan_a"))
+            }
+
+        assertEquals(emptyList<String>(), error.deletedPaths)
+        assertEquals("s3a://example-bucket/db/orphan_a", error.failedPath)
+    }
+
+    @Test
+    fun `a close failure after confirmed deletions keeps them and names no failed folder`() {
+        InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/orphan_a")
+        InMemoryS3FileSystem.failCloseFor = COMPAT
+
+        val error =
+            assertThrows(PartialDeletionException::class.java) {
+                harness.deletionService().deleteFoldersRecursively("example_catalog", listOf("s3a://example-bucket/db/orphan_a"))
+            }
+
+        assertEquals(listOf("s3a://example-bucket/db/orphan_a"), error.deletedPaths)
+        assertEquals(null, error.failedPath)
+    }
+
 }

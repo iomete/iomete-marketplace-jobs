@@ -127,4 +127,28 @@ class CleanupAuditDiagnosticDetailsBuilderTest {
         assertEquals("false", withUnscanned["unscanned_table_locations_truncated"])
         assertFalse(builder.build(activeTableLocations = emptyList()).containsKey("unscanned_table_location_count"))
     }
+
+    @Test
+    fun `adds the failed deletion path only when present`() {
+        assertEquals(
+            "s3a://bucket/db/b",
+            builder.build(activeTableLocations = emptyList(), deletionFailedFolderPath = "s3a://bucket/db/b")["deletion_failed_folder_path"],
+        )
+        assertFalse(builder.build(activeTableLocations = emptyList()).containsKey("deletion_failed_folder_path"))
+    }
+
+    @Test
+    fun `scan coverage reports a zero count only when asked to report complete coverage`() {
+        assertEquals(emptyMap<String, String>(), builder.scanCoverageDetails(emptyList()))
+        assertEquals(mapOf("unscanned_table_location_count" to "0"), builder.scanCoverageDetails(emptyList(), reportCompleteScanCoverage = true))
+        assertEquals(
+            mapOf(
+                "unscanned_table_location_count" to "1",
+                "unscanned_table_locations_sample" to "s3a://bucket/other/events",
+                "unscanned_table_locations_truncated" to "false",
+            ),
+            builder.scanCoverageDetails(listOf("s3a://bucket/other/events"), reportCompleteScanCoverage = true),
+        )
+    }
+
 }

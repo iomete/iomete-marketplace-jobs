@@ -25,6 +25,69 @@ class CleanupAuditRecorderTest {
         excludePathResolver = this@CleanupAuditRecorderTest.excludePathResolver
     }
 
+    @Test
+    fun `deletion failure writes a FAILED record with the confirmed deletions`() {
+        recorder.recordDeletionFailed(
+            runId = "run-4",
+            databaseStartTime = Instant.EPOCH,
+            catalogName = "example_catalog",
+            databaseName = "analytics",
+            discoveredDatabaseLocation = "s3a://example-bucket/db",
+            storageScanLocation = "s3a://example-bucket/db",
+            activeTableCount = 1,
+            activeTableLocations = listOf("s3a://example-bucket/db/orders"),
+            storageFolderPaths = listOf("s3a://example-bucket/db/orders", "s3a://example-bucket/db/a", "s3a://example-bucket/db/b"),
+            candidateFolderPaths = listOf("s3a://example-bucket/db/a", "s3a://example-bucket/db/b"),
+            candidateSizeStats = StorageSizeStats(objectCount = 2, totalSizeBytes = 20),
+            deletedFolderPaths = listOf("s3a://example-bucket/db/a"),
+            deletedSizeStats = StorageSizeStats(objectCount = 1, totalSizeBytes = 10),
+            failedFolderPath = "s3a://example-bucket/db/b",
+            cutoffTime = Instant.EPOCH,
+            excludedPaths = emptyList(),
+            unscannedTableLocations = listOf("s3a://example-bucket/other/events"),
+            error = IllegalStateException("simulated delete failure"),
+        )
+
+        val record = capturedRecord()
+
+        assertEquals("FAILED", record.status)
+        assertEquals("deletion_failed", record.statusReason)
+        assertEquals(1, record.deletedFolderCount)
+        assertEquals(listOf("s3a://example-bucket/db/a"), record.deletedFolders)
+        assertEquals(1L, record.deletedObjectCount)
+        assertEquals("s3a://example-bucket/db/b", record.diagnosticDetails["deletion_failed_folder_path"])
+        assertEquals("1", record.diagnosticDetails["unscanned_table_location_count"])
+    }
+
+    @Test
+    fun `audit integrity loss writes a BLOCKED record that keeps the candidates and deletes nothing`() {
+        recorder.recordAuditIntegrityLost(
+            runId = "run-5",
+            databaseStartTime = Instant.EPOCH,
+            catalogName = "example_catalog",
+            databaseName = "analytics",
+            discoveredDatabaseLocation = "s3a://example-bucket/db",
+            storageScanLocation = "s3a://example-bucket/db",
+            activeTableCount = 1,
+            activeTableLocations = listOf("s3a://example-bucket/db/orders"),
+            storageFolderPaths = listOf("s3a://example-bucket/db/orders", "s3a://example-bucket/db/a"),
+            candidateFolderPaths = listOf("s3a://example-bucket/db/a"),
+            candidateSizeStats = null,
+            cutoffTime = Instant.EPOCH,
+            excludedPaths = emptyList(),
+            unscannedTableLocations = listOf("s3a://example-bucket/other/events"),
+        )
+
+        val record = capturedRecord()
+
+        assertEquals("BLOCKED", record.status)
+        assertEquals("audit_integrity_lost", record.statusReason)
+        assertNull(record.errorMessage)
+        assertEquals(1, record.candidateFolderCount)
+        assertEquals(0, record.deletedFolderCount)
+        assertEquals("1", record.diagnosticDetails["unscanned_table_location_count"])
+    }
+
     private fun capturedRecord(): CleanupAuditRecord {
         val record = slot<CleanupAuditRecord>()
         verify { cleanupAuditTableService.writeAuditRecord(capture(record)) }
@@ -121,6 +184,61 @@ class CleanupAuditRecorderTest {
 
         assertEquals("FAILED", record.status)
         assertNotNull(record.errorMessage)
+    }
+
+    @Test
+    fun `unexpected failure before scan coverage was evaluated records no coverage`() {
+        recorder.recordFailed(
+            runId = "run-3",
+            database = "analytics",
+            databaseStartTime = Instant.EPOCH,
+            excludedPaths = emptyList(),
+            error = IllegalStateException("catalog lookup failed"),
+        )
+
+        assertEquals(emptyMap<String, String>(), capturedRecord().diagnosticDetails)
+    }
+
+    @Test
+    fun `unexpected failure after a complete scan records zero unscanned table locations`() {
+        recorder.recordFailed(
+            runId = "run-3",
+            database = "analytics",
+            databaseStartTime = Instant.EPOCH,
+            excludedPaths = emptyList(),
+            unscannedTableLocations = emptyList(),
+            error = IllegalStateException("storage listing failed"),
+        )
+
+        assertEquals(mapOf("unscanned_table_location_count" to "0"), capturedRecord().diagnosticDetails)
+    }
+
+    @Test
+    fun `deletion failure after a complete scan records zero unscanned table locations`() {
+        recorder.recordDeletionFailed(
+            runId = "run-4",
+            databaseStartTime = Instant.EPOCH,
+            catalogName = "example_catalog",
+            databaseName = "analytics",
+            discoveredDatabaseLocation = "s3a://example-bucket/db",
+            storageScanLocation = "s3a://example-bucket/db",
+            activeTableCount = 1,
+            activeTableLocations = listOf("s3a://example-bucket/db/orders"),
+            storageFolderPaths = listOf("s3a://example-bucket/db/orders", "s3a://example-bucket/db/a"),
+            candidateFolderPaths = listOf("s3a://example-bucket/db/a"),
+            candidateSizeStats = null,
+            deletedFolderPaths = emptyList(),
+            deletedSizeStats = StorageSizeStats.ZERO,
+            failedFolderPath = "s3a://example-bucket/db/a",
+            cutoffTime = Instant.EPOCH,
+            excludedPaths = emptyList(),
+            unscannedTableLocations = emptyList(),
+            error = IllegalStateException("simulated delete failure"),
+        )
+
+        val details = capturedRecord().diagnosticDetails
+        assertEquals("0", details["unscanned_table_location_count"])
+        assertNull(details["unscanned_table_locations_sample"])
     }
 
     @Test

@@ -432,7 +432,9 @@ Outcome meanings:
 - `SKIPPED` means a guardrail intentionally stopped cleanup for that database.
 - `BLOCKED` means reconciliation completed far enough to inspect catalog and storage state, but a
   safety condition prevented cleanup. The reconciliation result is still reported.
-- `FAILED` means an unexpected error occurred and should be investigated.
+- `FAILED` means an unexpected error occurred and should be investigated. When deletion itself
+  fails partway, some folders may already be gone, so a `FAILED` row can have
+  `deleted_folder_count` greater than `0`.
 
 This distinction matters when a single job scans multiple databases. Each configured database gets its own audit row, and the shared run ID groups those rows together.
 
@@ -556,6 +558,9 @@ When tables sit under more than one parent location, the job keeps the conservat
 - A `SUCCESS` audit row gets `status_reason=partial_scan_coverage`.
 - A row with a stronger outcome, such as `BLOCKED`, keeps its own reason.
 - `diagnostic_details` holds `unscanned_table_location_count` and a bounded sample.
+- A `FAILED` row always has `unscanned_table_location_count` once coverage was checked. A value of
+  `0` means the scan covered every table location. No count means the job failed before it got
+  that far.
 
 ---
 
@@ -618,7 +623,7 @@ Audit rows include:
 | `runtime_domain` | Runtime IOMETE domain exposed through `IOMETE_DOMAIN`, for example `fde`. |
 | `runtime_user` | Runtime Spark user exposed through `SPARK_USER`. This is useful for comparing the audit row with the run-as user shown in the platform UI. Read from the env var rather than `SparkContext.sparkUser()` so the value remains the run-as identity even when Spark is configured with proxy-user impersonation. |
 | `status` | High-level outcome: `SUCCESS`, `SKIPPED`, `BLOCKED`, or `FAILED`. |
-| `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, `unresolved_catalog_ownership`, `database_location_contains_warehouse_root`, `partial_scan_coverage`, or `unexpected_error`. See [Object-storage scan root](#object-storage-scan-root) for the scan-root reasons. |
+| `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, `unresolved_catalog_ownership`, `database_location_contains_warehouse_root`, `partial_scan_coverage`, `deletion_failed`, `audit_integrity_lost`, or `unexpected_error`. See [Object-storage scan root](#object-storage-scan-root) for the scan-root reasons. |
 | `older_than_hours` | Configured age threshold used for candidate detection. |
 | `cutoff_time` | Calculated timestamp used to decide whether a folder is old enough to be considered. |
 | `max_candidate_folders_per_database` | Configured per-database candidate-folder safety limit. |
@@ -655,6 +660,9 @@ unscanned_table_locations_sample
 
 Path lists are sampled to avoid writing very large audit rows.
 
+When deletion stops partway, `deletion_failed_folder_path` names the folder whose delete failed.
+Its state is unknown: it may be fully present, partly deleted, or gone.
+
 ---
 
 ## Status outcomes
@@ -669,6 +677,47 @@ Path lists are sampled to avoid writing very large audit rows.
 | Database location or scan root is unsafe | `SKIPPED` | Storage is never listed; see [Object-storage scan root](#object-storage-scan-root) for the reasons |
 | One or more table storage locations could not be resolved | `BLOCKED` | Reconciliation is still reported, nothing is deleted, `status_reason=unresolved_catalog_ownership` |
 | Unexpected catalog, storage, or deletion failure | `FAILED` | Real failure path remains an error |
+| Deletion failed partway through the candidates | `FAILED` | `status_reason=deletion_failed`; see [Partial deletion](#partial-deletion) |
+| An earlier audit write in the same run failed | `BLOCKED` | `status_reason=audit_integrity_lost`; see [Audit write failures](#audit-write-failures) |
+
+---
+
+## Partial deletion
+
+Candidates are deleted one at a time. The job stops at the first folder it cannot delete and does
+not try the remaining candidates in that database.
+
+- The audit row is written with `status=FAILED` and `status_reason=deletion_failed`.
+- `deleted_folder_count` and `deleted_folders` list only the folders confirmed deleted before the
+  failure, so they can be greater than zero on a `FAILED` row.
+- `diagnostic_details.deletion_failed_folder_path` names the folder that failed. Check it in
+  object storage before the next run. It is absent when the failure came after the last confirmed
+  deletion, for example while closing the storage connection.
+- A folder that was already gone when the job reached it is not counted as deleted.
+- A delete that reports no change for a folder that still exists is treated as a failure, because
+  the job cannot tell what happened to it.
+
+Later databases in the same run continue, as long as this audit row was written.
+
+---
+
+## Audit write failures
+
+The audit table must be available before any database is processed. If it cannot be created or
+prepared, the job fails before scanning or deleting anything.
+
+If an audit row cannot be written during the run, the job no longer has a reliable record of what
+it did. From that point on:
+
+- No more folders are deleted in this run.
+- Later databases are still discovered and reconciled, and their report is logged.
+- A database that would otherwise have been eligible for deletion is recorded as `BLOCKED` with
+  `status_reason=audit_integrity_lost`. This also applies in dry-run. Other outcomes, such as
+  `SKIPPED` or `FAILED`, keep their own status and reason.
+- The job fails at the end of the run, and the log contains the original audit error.
+
+Each later row is written once on a best-effort basis. A database whose own audit row failed has
+no row in the audit table, so use the job log for that database.
 
 ---
 
@@ -816,6 +865,8 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T16 | `collect_size_statistics=false` with candidate folders | One startup warning; statistics are still collected |
 | T17 | Database location is a bucket root or the catalog warehouse root | `SKIPPED`, storage is not listed |
 | T18 | A candidate folder holds a recently written object | The folder is skipped as too new |
+| T19 | Deletion fails partway through the candidates | `FAILED`, `status_reason=deletion_failed`, `deleted_folders` lists only folders deleted before the failure |
+| T20 | Audit write fails for one database in a multi-database run | Later databases are not deleted, eligible ones are `BLOCKED` with `status_reason=audit_integrity_lost`, the job fails |
 
 ---
 

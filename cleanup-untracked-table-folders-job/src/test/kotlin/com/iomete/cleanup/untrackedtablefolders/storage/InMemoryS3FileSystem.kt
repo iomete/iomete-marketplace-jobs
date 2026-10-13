@@ -12,6 +12,7 @@ import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.fs.permission.FsPermission
 import org.apache.hadoop.util.Progressable
+import java.io.IOException
 
 /** Test filesystem registered under `fs.s3a.impl`; content is keyed by `fs.s3a.endpoint`. */
 class InMemoryS3FileSystem : FileSystem() {
@@ -49,6 +50,9 @@ class InMemoryS3FileSystem : FileSystem() {
 
         val listStatusCalls = ConcurrentHashMap<String, Int>()
 
+        @Volatile
+        var failCloseFor: String? = null
+
         fun reset() {
             stores.clear()
             opened.clear()
@@ -57,6 +61,7 @@ class InMemoryS3FileSystem : FileSystem() {
             refuseDeleteFor = null
             failListFor = null
             listStatusCalls.clear()
+            failCloseFor = null
         }
 
         fun store(endpoint: String): MutableMap<String, Entry> =
@@ -109,6 +114,9 @@ class InMemoryS3FileSystem : FileSystem() {
     override fun close() {
         closedEndpoints += endpoint
         super.close()
+        if (endpoint == failCloseFor) {
+            throw IOException("simulated close failure for $endpoint")
+        }
     }
 
     override fun getScheme(): String = "s3a"
