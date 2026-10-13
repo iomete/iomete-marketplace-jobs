@@ -8,12 +8,12 @@ import org.jboss.logging.Logger
 
 data class StorageFolder(
     val path: String,
-    val modificationTimeMillis: Long,
 )
 
 data class StorageSizeStats(
     val objectCount: Long,
     val totalSizeBytes: Long,
+    val newestObjectModificationTimeMillis: Long? = null,
 ) {
     companion object {
         val ZERO = StorageSizeStats(objectCount = 0, totalSizeBytes = 0)
@@ -47,10 +47,7 @@ class ObjectStorageDiscoveryService {
                 .listStatus(Path(location))
                 .filter { it.isDirectory }
                 .map {
-                    StorageFolder(
-                        path = it.path.toString(),
-                        modificationTimeMillis = it.modificationTime,
-                    )
+                    StorageFolder(path = it.path.toString())
                 }
                 .sortedBy { it.path }
         }
@@ -120,13 +117,25 @@ class ObjectStorageDiscoveryService {
 
         var objectCount = 0L
         var totalSizeBytes = 0L
+        var newestModificationTimeMillis = Long.MIN_VALUE
+        var hasInvalidModificationTime = false
 
         while (files.hasNext()) {
             val fileStatus = files.next()
             objectCount += 1
             totalSizeBytes += fileStatus.len
+            newestModificationTimeMillis = maxOf(newestModificationTimeMillis, fileStatus.modificationTime)
+            if (fileStatus.modificationTime <= 0) {
+                hasInvalidModificationTime = true
+            }
         }
 
-        return StorageSizeStats(objectCount = objectCount, totalSizeBytes = totalSizeBytes)
+        return StorageSizeStats(
+            objectCount = objectCount,
+            totalSizeBytes = totalSizeBytes,
+            // One object of unknown age makes the folder's age unknown, whatever the other objects report.
+            newestObjectModificationTimeMillis =
+                newestModificationTimeMillis.takeIf { objectCount > 0 && !hasInvalidModificationTime },
+        )
     }
 }

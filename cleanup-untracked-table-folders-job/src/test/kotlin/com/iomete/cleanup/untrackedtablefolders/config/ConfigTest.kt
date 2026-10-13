@@ -1,7 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.config
 
 import org.junit.jupiter.api.Assertions.assertDoesNotThrow
-import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
@@ -63,25 +63,30 @@ class ConfigTest {
     }
 
     @Test
-    fun `collect size statistics defaults to true`() {
+    fun `collect_size_statistics is still accepted by the strict config parser`() {
         val config =
-            ApplicationConfig(
-                catalog = "spark_catalog",
-                databases = listOf("analytics"),
+            applicationConfigObjectMapper().readValue(
+                """{"catalog": "spark_catalog", "databases": ["analytics"], "collect_size_statistics": false}""",
+                ApplicationConfig::class.java,
             )
 
-        assertTrue(config.collectSizeStatistics)
+        assertEquals(false, config.collectSizeStatistics)
     }
 
     @Test
-    fun `collect size statistics can be disabled`() {
-        val config =
-            ApplicationConfig(
-                catalog = "spark_catalog",
-                databases = listOf("analytics"),
-                collectSizeStatistics = false,
-            )
+    fun `explicit false produces one deprecation warning`() {
+        val config = ApplicationConfig(catalog = "spark_catalog", databases = listOf("analytics"), collectSizeStatistics = false)
 
-        assertFalse(config.collectSizeStatistics)
+        assertEquals(1, config.deprecationWarnings().size)
+        assertTrue(config.deprecationWarnings().single().contains("collect_size_statistics=false is deprecated and ignored"))
+    }
+
+    @Test
+    fun `absent or true produces no deprecation warning`() {
+        assertEquals(emptyList<String>(), ApplicationConfig(catalog = "spark_catalog", databases = listOf("analytics")).deprecationWarnings())
+        assertEquals(
+            emptyList<String>(),
+            ApplicationConfig(catalog = "spark_catalog", databases = listOf("analytics"), collectSizeStatistics = true).deprecationWarnings(),
+        )
     }
 }

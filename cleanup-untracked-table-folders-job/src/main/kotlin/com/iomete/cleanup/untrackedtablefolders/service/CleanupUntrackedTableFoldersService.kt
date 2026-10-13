@@ -14,8 +14,8 @@ import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
+import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationResolver
-import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import com.iomete.cleanup.untrackedtablefolders.storage.UnsafeScanRootException
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
@@ -165,7 +165,7 @@ class CleanupUntrackedTableFoldersService {
                     )
                     storageFolders.forEach { folder ->
                         logger.info(
-                            "Storage folder discovered: path=${folder.path}, modifiedAt=${Instant.ofEpochMilli(folder.modificationTimeMillis)}"
+                            "Storage folder discovered: path=${folder.path}"
                         )
                     }
 
@@ -174,11 +174,22 @@ class CleanupUntrackedTableFoldersService {
                     val cutoffTimeMillis = cutoffTime.toEpochMilli()
 
                     logger.info(
-                        "Applying older_than_hours=${config.olderThanHours}; candidate folders must have modification time at or before $cutoffTime"
+                        "Applying older_than_hours=${config.olderThanHours}; the newest object in a candidate folder must be at or before $cutoffTime"
                     )
 
                     val activeTableLocations =
                         discoveredDatabase.tables.mapNotNull { it.location }.sorted()
+
+                    val unscannedTableLocations =
+                        activeTableLocations.filterNot { tableLocation ->
+                            StoragePathUtils.isSameOrChildLocation(tableLocation, storageScanLocation)
+                        }
+
+                    if (unscannedTableLocations.isNotEmpty()) {
+                        logger.warn(
+                            "Storage scan covers part of the database only: ${unscannedTableLocations.size} table location(s) are outside storage scan location=$storageScanLocation for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
+                        )
+                    }
 
                     val effectiveExcludedPaths =
                         excludePathResolver.effectiveExcludedPaths(
@@ -199,14 +210,13 @@ class CleanupUntrackedTableFoldersService {
 
                     val storageFolderPaths = storageFolders.map { it.path }.sorted()
 
-                    val reconciliation =
+                    val detectedReconciliation =
                         try {
                             untrackedFolderCandidateDetector.detectCandidates(
                                 storageFolders = storageFolders,
                                 activeTableLocations =
                                     discoveredDatabase.tables.mapNotNull { it.location },
                                 excludedPaths = effectiveExcludedPaths,
-                                cutoffTimeMillis = cutoffTimeMillis,
                                 maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
                                 unresolvedTableCount = unresolvedTableNames.size,
                             )
@@ -232,10 +242,24 @@ class CleanupUntrackedTableFoldersService {
                                 cutoffTime = cutoffTime,
                                 excludedPaths = effectiveExcludedPaths,
                                 errorMessage = th.message ?: th::class.java.name,
+                                unscannedTableLocations = unscannedTableLocations,
                             )
 
                             return@forEach
                         }
+
+                    val candidateSizeStatsByFolder =
+                        candidateSizeStatCollector.collectPerFolder(
+                            catalog = discoveredDatabase.catalog,
+                            candidateFolderPaths = detectedReconciliation.folders.map { it.path }.sorted(),
+                        )
+
+                    val reconciliation =
+                        untrackedFolderCandidateDetector.applyAgeCutoff(
+                            reconciliation = detectedReconciliation,
+                            folderStats = candidateSizeStatsByFolder,
+                            cutoffTimeMillis = cutoffTimeMillis,
+                        )
 
                     val unmatchedFolders = reconciliation.folders
                     logger.info(
@@ -243,23 +267,11 @@ class CleanupUntrackedTableFoldersService {
                     )
 
                     val unmatchedFolderPaths = unmatchedFolders.map { it.path }.sorted()
-                    val candidateSizeStatsByFolder =
-                        candidateSizeStatCollector.collectPerFolder(
-                            catalog = discoveredDatabase.catalog,
-                            candidateFolderPaths = unmatchedFolderPaths,
-                        )
-                    val candidateSizeStats: StorageSizeStats? =
-                        if (config.collectSizeStatistics) {
-                            candidateSizeStatCollector.sum(candidateSizeStatsByFolder.values)
-                        } else {
-                            null
-                        }
+                    val candidateSizeStats =
+                        candidateSizeStatCollector.sum(unmatchedFolderPaths.mapNotNull { candidateSizeStatsByFolder[it] })
 
                     unmatchedFolders.forEach { folder ->
-                        val modifiedAt = Instant.ofEpochMilli(folder.modificationTimeMillis)
-                        logger.info(
-                            "Storage folder with no verified catalog owner: path=${folder.path}, modifiedAt=$modifiedAt"
-                        )
+                        logger.info("Storage folder with no verified catalog owner: path=${folder.path}")
                     }
 
                     val deletedFolders =
@@ -275,14 +287,8 @@ class CleanupUntrackedTableFoldersService {
                             is StorageFolderReconciliation.OwnershipUnverified -> emptyList()
                         }
 
-                    val deletedSizeStats: StorageSizeStats? =
-                        if (config.collectSizeStatistics) {
-                            candidateSizeStatCollector.sum(
-                                deletedFolders.mapNotNull { candidateSizeStatsByFolder[it] }
-                            )
-                        } else {
-                            null
-                        }
+                    val deletedSizeStats =
+                        candidateSizeStatCollector.sum(deletedFolders.mapNotNull { candidateSizeStatsByFolder[it] })
 
                     if (deletedFolders.isNotEmpty()) {
                         logger.warn(
@@ -309,6 +315,7 @@ class CleanupUntrackedTableFoldersService {
                             deletionEligible = reconciliation is StorageFolderReconciliation.DeletionEligible,
                             deletedFolderPaths = deletedFolders,
                             deletedSizeStats = deletedSizeStats,
+                            unscannedTableLocations = unscannedTableLocations,
                         )
                     )
 
@@ -330,6 +337,7 @@ class CleanupUntrackedTableFoldersService {
                                 deletedSizeStats = deletedSizeStats,
                                 cutoffTime = cutoffTime,
                                 excludedPaths = effectiveExcludedPaths,
+                                unscannedTableLocations = unscannedTableLocations,
                             )
 
                         is StorageFolderReconciliation.OwnershipUnverified ->
@@ -347,6 +355,7 @@ class CleanupUntrackedTableFoldersService {
                                 potentiallyUntrackedFolderPaths = unmatchedFolderPaths,
                                 cutoffTime = cutoffTime,
                                 excludedPaths = effectiveExcludedPaths,
+                                unscannedTableLocations = unscannedTableLocations,
                             )
                     }
                 }

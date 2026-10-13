@@ -21,15 +21,8 @@ class CandidateSizeStatCollector {
             return emptyMap()
         }
 
-        if (!config.collectSizeStatistics) {
-            logger.info(
-                "Skipping size statistics because collect_size_statistics=false. Candidate and deleted size audit fields will be NULL."
-            )
-            return emptyMap()
-        }
-
         logger.info(
-            "Collecting size statistics for ${candidateFolderPaths.size} candidate folder(s). This may take time for folders with many objects. To skip this step, set collect_size_statistics=false."
+            "Collecting size and age statistics for ${candidateFolderPaths.size} candidate folder(s). This may take time for folders with many objects."
         )
 
         val batch = objectStorageDiscoveryService.collectSizeStatsPerFolder(catalog, candidateFolderPaths)

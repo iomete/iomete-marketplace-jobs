@@ -52,7 +52,11 @@ class CleanupUntrackedTableFoldersServiceTest {
             candidateSizeStatCollector,
             candidateDeletionGate,
         )
-        every { candidateSizeStatCollector.collectPerFolder(any(), any()) } returns emptyMap()
+        every { candidateSizeStatCollector.collectPerFolder(any(), any()) } answers {
+            secondArg<List<String>>().associateWith {
+                StorageSizeStats(objectCount = 1, totalSizeBytes = 1, newestObjectModificationTimeMillis = 1)
+            }
+        }
         every { candidateSizeStatCollector.sum(any()) } returns StorageSizeStats.ZERO
         every { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) } returns emptyList()
         every { catalogDiscoveryService.sharedWarehouseRoots(any()) } returns listOf("s3a://warehouse-bucket/warehouse")
@@ -582,12 +586,7 @@ class CleanupUntrackedTableFoldersServiceTest {
             olderThanHours = 0,
         )
 
-    private fun storageFolder(path: String): StorageFolder =
-        StorageFolder(
-            path = path,
-            // mod time deep in the past so the detector never filters on age
-            modificationTimeMillis = 0,
-        )
+    private fun storageFolder(path: String): StorageFolder = StorageFolder(path = path)
 
     private fun discoveredDatabase(
         database: String = "analytics",

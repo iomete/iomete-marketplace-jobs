@@ -2,6 +2,7 @@ package com.iomete.cleanup.untrackedtablefolders.candidate
 
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageFolder
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
+import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import jakarta.enterprise.context.ApplicationScoped
 import org.jboss.logging.Logger
 import java.time.Instant
@@ -35,7 +36,6 @@ class UntrackedFolderCandidateDetector {
         storageFolders: List<StorageFolder>,
         activeTableLocations: List<String>,
         excludedPaths: List<String>,
-        cutoffTimeMillis: Long,
         maxCandidateFolders: Int,
         unresolvedTableCount: Int,
     ): StorageFolderReconciliation {
@@ -59,7 +59,6 @@ class UntrackedFolderCandidateDetector {
                         storageFolder = storageFolder,
                         normalizedActiveTableLocations = normalizedActiveTableLocations,
                         excludedPathSet = excludedPathSet,
-                        cutoffTimeMillis = cutoffTimeMillis,
                     )
 
                 if (skipReason != null) {
@@ -67,7 +66,6 @@ class UntrackedFolderCandidateDetector {
                     logSkippedFolder(
                         storageFolder = storageFolder,
                         skipReason = skipReason,
-                        cutoffTimeMillis = cutoffTimeMillis,
                     )
                 }
 
@@ -76,8 +74,10 @@ class UntrackedFolderCandidateDetector {
             .sortedBy { it.path }
 
         logSkipReasonSummary(
+            stage = "candidate detection",
             totalFolderCount = storageFolders.size,
             skipReasonCounts = skipReasonCounts,
+            reasons = CandidateSkipReason.entries - AGE_SKIP_REASONS,
         )
 
         if (candidateFolders.size > maxCandidateFolders) {
@@ -97,11 +97,66 @@ class UntrackedFolderCandidateDetector {
         }
     }
 
+    fun applyAgeCutoff(
+        reconciliation: StorageFolderReconciliation,
+        folderStats: Map<String, StorageSizeStats>,
+        cutoffTimeMillis: Long,
+    ): StorageFolderReconciliation {
+        val skipReasonCounts = mutableMapOf<CandidateSkipReason, Int>()
+
+        val oldEnoughFolders =
+            reconciliation.folders.filter { storageFolder ->
+                val newestObjectModificationTimeMillis = folderStats[storageFolder.path]?.newestObjectModificationTimeMillis
+                val skipReason = ageSkipReason(newestObjectModificationTimeMillis, cutoffTimeMillis)
+
+                if (skipReason != null) {
+                    skipReasonCounts.merge(skipReason, 1, Int::plus)
+                    logSkippedFolder(
+                        storageFolder = storageFolder,
+                        skipReason = skipReason,
+                        detail =
+                            newestObjectModificationTimeMillis?.let {
+                                "newestObjectModifiedAt=${Instant.ofEpochMilli(it)}, cutoffTime=${Instant.ofEpochMilli(cutoffTimeMillis)}"
+                            },
+                    )
+                }
+
+                skipReason == null
+            }
+
+        logSkipReasonSummary(
+            stage = "the age check",
+            totalFolderCount = reconciliation.folders.size,
+            skipReasonCounts = skipReasonCounts,
+            reasons = AGE_SKIP_REASONS,
+        )
+
+        return when (reconciliation) {
+            is StorageFolderReconciliation.DeletionEligible ->
+                StorageFolderReconciliation.DeletionEligible(oldEnoughFolders)
+
+            is StorageFolderReconciliation.OwnershipUnverified ->
+                reconciliation.copy(folders = oldEnoughFolders)
+        }
+    }
+
+    private fun ageSkipReason(
+        newestObjectModificationTimeMillis: Long?,
+        cutoffTimeMillis: Long,
+    ): CandidateSkipReason? =
+        when {
+            // S3A directory mtimes are synthetic, so only a readable object can prove a folder is old.
+            newestObjectModificationTimeMillis == null || newestObjectModificationTimeMillis <= 0 ->
+                CandidateSkipReason.UNKNOWN_AGE
+
+            newestObjectModificationTimeMillis > cutoffTimeMillis -> CandidateSkipReason.TOO_NEW
+            else -> null
+        }
+
     private fun skipReason(
         storageFolder: StorageFolder,
         normalizedActiveTableLocations: List<String>,
         excludedPathSet: Set<String>,
-        cutoffTimeMillis: Long,
     ): CandidateSkipReason? {
         val normalizedFolder = StoragePathUtils.normalizeLocation(storageFolder.path)
         val finalSegment = normalizedFolder.substringAfterLast('/')
@@ -175,35 +230,30 @@ class UntrackedFolderCandidateDetector {
             return CandidateSkipReason.INSIDE_EXCLUDED_PATH
         }
 
-        if (storageFolder.modificationTimeMillis > cutoffTimeMillis) {
-            return CandidateSkipReason.TOO_NEW
-        }
-
         return null
     }
 
     private fun logSkippedFolder(
         storageFolder: StorageFolder,
         skipReason: CandidateSkipReason,
-        cutoffTimeMillis: Long,
+        detail: String? = null,
     ) {
         if (!logger.isDebugEnabled) {
             return
         }
 
-        val message = when (skipReason) {
-            CandidateSkipReason.TOO_NEW ->
-                "Storage folder was not selected as cleanup candidate: path=${storageFolder.path}, reason=${skipReason.logValue}, modifiedAt=${Instant.ofEpochMilli(storageFolder.modificationTimeMillis)}, cutoffTime=${Instant.ofEpochMilli(cutoffTimeMillis)}"
-            else ->
-                "Storage folder was not selected as cleanup candidate: path=${storageFolder.path}, reason=${skipReason.logValue}"
-        }
+        val message =
+            "Storage folder was not selected as cleanup candidate: path=${storageFolder.path}, reason=${skipReason.logValue}" +
+                (detail?.let { ", $it" } ?: "")
 
         logger.debug(message)
     }
 
     private fun logSkipReasonSummary(
+        stage: String,
         totalFolderCount: Int,
         skipReasonCounts: Map<CandidateSkipReason, Int>,
+        reasons: Collection<CandidateSkipReason>,
     ) {
         if (skipReasonCounts.isEmpty()) {
             return
@@ -211,12 +261,12 @@ class UntrackedFolderCandidateDetector {
 
         val totalSkipped = skipReasonCounts.values.sum()
         val perReasonSummary =
-            CandidateSkipReason.entries.joinToString(", ") { reason ->
+            reasons.joinToString(", ") { reason ->
                 "${reason.logValue}=${skipReasonCounts[reason] ?: 0}"
             }
 
         logger.info(
-            "Skipped $totalSkipped of $totalFolderCount storage folder(s) during candidate detection: $perReasonSummary. Enable DEBUG logging on ${UntrackedFolderCandidateDetector::class.java.name} for per-folder skip reasons."
+            "Skipped $totalSkipped of $totalFolderCount storage folder(s) during $stage: $perReasonSummary. Enable DEBUG logging on ${UntrackedFolderCandidateDetector::class.java.name} for per-folder skip reasons."
         )
     }
 
@@ -229,9 +279,12 @@ class UntrackedFolderCandidateDetector {
         CONTAINS_EXCLUDED_PATH("contains_excluded_path"),
         INSIDE_EXCLUDED_PATH("inside_excluded_path"),
         TOO_NEW("too_new"),
+        UNKNOWN_AGE("unknown_age"),
     }
 
     private companion object {
+        val AGE_SKIP_REASONS = listOf(CandidateSkipReason.TOO_NEW, CandidateSkipReason.UNKNOWN_AGE)
+
         val SENTINEL_FOLDER_PREFIXES = setOf(
             "_temporary",
             "_committed_",

@@ -297,7 +297,7 @@ class CandidateDeletionGateTest {
         )
 
     private fun storageFolder(path: String): StorageFolder =
-        StorageFolder(path = path, modificationTimeMillis = 0)
+        StorageFolder(path = path)
 
     @Test
     fun `refuses to delete when the pre-delete recheck finds an unresolved table`() {

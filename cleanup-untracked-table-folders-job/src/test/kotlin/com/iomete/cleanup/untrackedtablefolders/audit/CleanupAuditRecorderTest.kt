@@ -2,6 +2,7 @@ package com.iomete.cleanup.untrackedtablefolders.audit
 
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
+import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
@@ -120,5 +121,60 @@ class CleanupAuditRecorderTest {
 
         assertEquals("FAILED", record.status)
         assertNotNull(record.errorMessage)
+    }
+
+    @Test
+    fun `success with unscanned table locations is qualified as partial coverage`() {
+        recorder.recordSuccess(
+            runId = "run-4",
+            databaseStartTime = Instant.EPOCH,
+            catalogName = "example_catalog",
+            databaseName = "analytics",
+            discoveredDatabaseLocation = "s3a://example-bucket/db",
+            storageScanLocation = "s3a://example-bucket/db",
+            activeTableCount = 2,
+            activeTableLocations = listOf("s3a://example-bucket/db/orders", "s3a://example-bucket/other/events"),
+            storageFolderPaths = listOf("s3a://example-bucket/db/orders"),
+            candidateFolderPaths = emptyList(),
+            candidateSizeStats = StorageSizeStats.ZERO,
+            deletedFolderPaths = emptyList(),
+            deletedSizeStats = StorageSizeStats.ZERO,
+            cutoffTime = Instant.EPOCH,
+            excludedPaths = emptyList(),
+            unscannedTableLocations = listOf("s3a://example-bucket/other/events"),
+        )
+
+        val record = capturedRecord()
+
+        assertEquals("SUCCESS", record.status)
+        assertEquals("partial_scan_coverage", record.statusReason)
+        assertEquals("1", record.diagnosticDetails["unscanned_table_location_count"])
+        assertEquals("s3a://example-bucket/other/events", record.diagnosticDetails["unscanned_table_locations_sample"])
+    }
+
+    @Test
+    fun `success with full coverage keeps no status reason`() {
+        recorder.recordSuccess(
+            runId = "run-5",
+            databaseStartTime = Instant.EPOCH,
+            catalogName = "example_catalog",
+            databaseName = "analytics",
+            discoveredDatabaseLocation = "s3a://example-bucket/db",
+            storageScanLocation = "s3a://example-bucket/db",
+            activeTableCount = 1,
+            activeTableLocations = listOf("s3a://example-bucket/db/orders"),
+            storageFolderPaths = listOf("s3a://example-bucket/db/orders"),
+            candidateFolderPaths = emptyList(),
+            candidateSizeStats = StorageSizeStats.ZERO,
+            deletedFolderPaths = emptyList(),
+            deletedSizeStats = StorageSizeStats.ZERO,
+            cutoffTime = Instant.EPOCH,
+            excludedPaths = emptyList(),
+        )
+
+        val record = capturedRecord()
+
+        assertNull(record.statusReason)
+        assertNull(record.diagnosticDetails["unscanned_table_location_count"])
     }
 }
