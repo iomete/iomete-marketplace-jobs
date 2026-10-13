@@ -20,6 +20,7 @@ class CandidateDeletionGate {
         catalog: String,
         database: String,
         reconciliation: StorageFolderReconciliation.DeletionEligible,
+        excludedPaths: List<String>,
     ): List<String> {
         if (config.dryRun) {
             return emptyList()
@@ -34,10 +35,12 @@ class CandidateDeletionGate {
         }
 
         val currentActiveTableLocations = currentActiveTableLocations(catalog, database)
+        val normalizedExcludedPaths = excludedPaths.map { StoragePathUtils.normalizeLocation(it) }
 
         val deletableFolders =
             reconciliation.folders.filterNot { candidateFolder ->
-                claimedByActiveTable(candidateFolder, currentActiveTableLocations)
+                claimedByActiveTable(candidateFolder, currentActiveTableLocations) ||
+                    overlapsExcludedPath(candidateFolder, normalizedExcludedPaths)
             }
 
         return objectStorageDeletionService
@@ -71,18 +74,33 @@ class CandidateDeletionGate {
 
         val claimed =
             currentActiveTableLocations.any { activeLocation ->
-                StoragePathUtils.isSameOrChildLocation(
-                    candidateLocation = activeLocation,
-                    rootLocation = normalizedCandidatePath,
-                )
+                StoragePathUtils.overlaps(normalizedCandidatePath, activeLocation)
             }
 
         if (claimed) {
             logger.warn(
-                "Skipping deletion because candidate folder is or contains an active table location: path=${candidateFolder.path}"
+                "Skipping deletion because candidate folder overlaps an active table location: path=${candidateFolder.path}"
             )
         }
 
         return claimed
+    }
+
+    private fun overlapsExcludedPath(
+        candidateFolder: StorageFolder,
+        normalizedExcludedPaths: List<String>,
+    ): Boolean {
+        val normalizedCandidatePath = StoragePathUtils.normalizeLocation(candidateFolder.path)
+
+        val excludedPath =
+            normalizedExcludedPaths.firstOrNull { excludedPath ->
+                StoragePathUtils.overlaps(normalizedCandidatePath, excludedPath)
+            } ?: return false
+
+        logger.warn(
+            "Skipping deletion because candidate folder overlaps an excluded path: path=${candidateFolder.path}, excludedPath=$excludedPath"
+        )
+
+        return true
     }
 }

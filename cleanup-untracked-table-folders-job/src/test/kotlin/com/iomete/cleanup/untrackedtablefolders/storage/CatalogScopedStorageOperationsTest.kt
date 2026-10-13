@@ -209,6 +209,30 @@ class CatalogScopedStorageOperationsTest {
     }
 
     @Test
+    fun `deletion stops when an existing folder is not deleted`() {
+        listOf("orphan_a", "orphan_b", "orphan_c").forEach {
+            InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/$it")
+        }
+        InMemoryS3FileSystem.refuseDeleteFor = "s3a://example-bucket/db/orphan_b"
+
+        val error =
+            assertThrows(IllegalStateException::class.java) {
+                harness.deletionService().deleteFoldersRecursively(
+                    "example_catalog",
+                    listOf(
+                        "s3a://example-bucket/db/orphan_a",
+                        "s3a://example-bucket/db/orphan_b",
+                        "s3a://example-bucket/db/orphan_c",
+                    ),
+                )
+            }
+
+        assertTrue(error.message!!.contains("s3a://example-bucket/db/orphan_b"))
+        assertFalse(InMemoryS3FileSystem.paths(COMPAT).contains("s3a://example-bucket/db/orphan_a"))
+        assertTrue(InMemoryS3FileSystem.paths(COMPAT).contains("s3a://example-bucket/db/orphan_c"))
+    }
+
+    @Test
     fun `a failing folder keeps its own path in the error context`() {
         InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/orphan_a")
         InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/orphan_b")
