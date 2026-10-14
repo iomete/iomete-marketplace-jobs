@@ -45,7 +45,11 @@ class ReportOnlyRootScanner {
                 .toSet()
 
         return ScanPlanReport(
-            roots = results,
+            // Cleanup and listed roots first, so a long tail of unlisted parents never hides them in a bounded sample.
+            roots =
+                results.sortedWith(
+                    compareBy({ !it.root.cleanupRoot }, { !it.root.reportOnly }, { -it.visibleTableCount }, { it.root.location }),
+                ),
             uncoveredTableLocations =
                 activeTableLocations.filterNot { StoragePathUtils.isInsideAnyRoot(it, coveringRoots) }.sorted(),
         )

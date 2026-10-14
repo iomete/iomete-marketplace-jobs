@@ -2,6 +2,7 @@ package com.iomete.cleanup.untrackedtablefolders.service
 
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecorder
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditTableService
+import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
 import com.iomete.cleanup.untrackedtablefolders.candidate.StorageFolderReconciliation
 import com.iomete.cleanup.untrackedtablefolders.candidate.TooManyCandidateFoldersException
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
@@ -15,6 +16,7 @@ import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
+import com.iomete.cleanup.untrackedtablefolders.storage.OtherDatabaseBoundaries
 import com.iomete.cleanup.untrackedtablefolders.storage.PartialDeletionException
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
@@ -56,6 +58,8 @@ class CleanupUntrackedTableFoldersService {
         cleanupAuditTableService.ensureAuditTableExists()
 
         var auditFailure: Throwable? = null
+        // Configured database locations seen in this run, so each database is looked up at most once.
+        val databaseLocations = mutableMapOf<String, String?>()
 
         fun recordAudit(
             database: String,
@@ -85,6 +89,7 @@ class CleanupUntrackedTableFoldersService {
                         catalog = config.catalog,
                         database = database,
                     )
+                databaseLocations[database] = discoveredDatabase.location
                 logger.info(
                     "Discovered database: catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, location=${discoveredDatabase.location}"
                 )
@@ -166,7 +171,7 @@ class CleanupUntrackedTableFoldersService {
                             )
 
                             val reportOnlyPlan =
-                                reportOnlyPlanForRefusedDatabase(discoveredDatabase, th.reason, sharedWarehouseRoots)
+                                reportOnlyPlanForRefusedDatabase(discoveredDatabase, th.reason, sharedWarehouseRoots, databaseLocations)
 
                             recordAudit(database) {
                                 cleanupAuditRecorder.recordUnsafeScanRoot(
@@ -237,6 +242,7 @@ class CleanupUntrackedTableFoldersService {
                             cleanupRoot = storageScanLocation,
                             databaseLocation = discoveredDatabase.location,
                             sharedWarehouseRoots = sharedWarehouseRoots,
+                            databaseLocations = databaseLocations,
                         )
 
                     scanPlanForAudit = scanPlan
@@ -330,19 +336,26 @@ class CleanupUntrackedTableFoldersService {
                         logger.info("Storage folder with no verified catalog owner: path=${folder.path}")
                     }
 
-                    val deletionSuppressed = auditFailure != null
+                    val deletionBlockReason =
+                        when {
+                            reconciliation !is StorageFolderReconciliation.DeletionEligible -> null
+                            auditFailure != null -> DeletionBlockReason.AUDIT_INTEGRITY_LOST
+                            !cleanupRootHasVisibleTable -> DeletionBlockReason.CLEANUP_ROOT_HAS_NO_VISIBLE_TABLE
+                            else -> null
+                        }
 
                     val deletedFolders =
                         when (reconciliation) {
                             is StorageFolderReconciliation.DeletionEligible ->
-                                if (deletionSuppressed) {
+                                if (deletionBlockReason != null) {
+                                    val detail =
+                                        when (deletionBlockReason) {
+                                            DeletionBlockReason.AUDIT_INTEGRITY_LOST -> "an audit write failed earlier in this run."
+                                            DeletionBlockReason.CLEANUP_ROOT_HAS_NO_VISIBLE_TABLE ->
+                                                "no visible table is stored under storage scan location=$storageScanLocation."
+                                        }
                                     logger.warn(
-                                        "Not deleting any folder for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: an audit write failed earlier in this run."
-                                    )
-                                    emptyList()
-                                } else if (!cleanupRootHasVisibleTable) {
-                                    logger.warn(
-                                        "Not deleting any folder for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: no visible table is stored under storage scan location=$storageScanLocation."
+                                        "Not deleting any folder for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: $detail"
                                     )
                                     emptyList()
                                 } else {
@@ -419,6 +432,7 @@ class CleanupUntrackedTableFoldersService {
                             unmatchedFolderPaths = unmatchedFolderPaths,
                             unmatchedSizeStats = candidateSizeStats,
                             deletionEligible = reconciliation is StorageFolderReconciliation.DeletionEligible,
+                            deletionBlockReason = deletionBlockReason,
                             deletedFolderPaths = deletedFolders,
                             deletedSizeStats = deletedSizeStats,
                             unscannedTableLocations = unscannedTableLocations,
@@ -428,29 +442,10 @@ class CleanupUntrackedTableFoldersService {
 
                     when (reconciliation) {
                         is StorageFolderReconciliation.DeletionEligible ->
-                            if (deletionSuppressed) {
+                            if (deletionBlockReason != null) {
                                 recordAudit(database) {
-                                    cleanupAuditRecorder.recordAuditIntegrityLost(
-                                        runId = runId,
-                                        databaseStartTime = databaseStartTime,
-                                        catalogName = discoveredDatabase.catalog,
-                                        databaseName = discoveredDatabase.database,
-                                        discoveredDatabaseLocation = discoveredDatabase.location,
-                                        storageScanLocation = storageScanLocation,
-                                        activeTableCount = discoveredDatabase.tables.size.toLong(),
-                                        activeTableLocations = activeTableLocations,
-                                        storageFolderPaths = storageFolderPaths,
-                                        candidateFolderPaths = unmatchedFolderPaths,
-                                        candidateSizeStats = candidateSizeStats,
-                                        cutoffTime = cutoffTime,
-                                        excludedPaths = effectiveExcludedPaths,
-                                        unscannedTableLocations = unscannedTableLocations,
-                                        scanPlan = scanPlan,
-                                    )
-                                }
-                            } else if (!cleanupRootHasVisibleTable) {
-                                recordAudit(database) {
-                                    cleanupAuditRecorder.recordCleanupRootHasNoVisibleTable(
+                                    cleanupAuditRecorder.recordDeletionBlocked(
+                                        reason = deletionBlockReason,
                                         runId = runId,
                                         databaseStartTime = databaseStartTime,
                                         catalogName = discoveredDatabase.catalog,
@@ -561,56 +556,117 @@ class CleanupUntrackedTableFoldersService {
         }
     }
 
-    // Report-only planning must never change deletion, so any failure here only drops the plan.
+    // Report-only planning must never change deletion, so a failure here is only reported.
     private fun planStorageRoots(
         discoveredDatabase: DiscoveredDatabase,
         cleanupRoot: String?,
         databaseLocation: String?,
         sharedWarehouseRoots: List<String>,
-    ): ScanPlanReport? {
+        databaseLocations: MutableMap<String, String?>,
+    ): ScanPlanReport {
+        val catalog = discoveredDatabase.catalog
+        val database = discoveredDatabase.database
         val activeTableLocations = discoveredDatabase.tables.mapNotNull { it.location }.sorted()
+        var otherDatabases: OtherDatabaseBoundaries? = null
 
-        val scanPlan =
-            try {
-                reportOnlyRootScanner.scan(
-                    catalog = discoveredDatabase.catalog,
-                    database = discoveredDatabase.database,
-                    roots =
-                        storageScanLocationPlanner.plan(
-                            cleanupRoot = cleanupRoot,
-                            databaseLocation = databaseLocation,
-                            restNamespaceRoot =
-                                catalogDiscoveryService
-                                    .restNamespaceRoot(discoveredDatabase.catalog, discoveredDatabase.database)
-                                    ?.takeIf { it.isNotBlank() },
-                            approvedRoots = config.reportOnlyStorageRoots[discoveredDatabase.database].orEmpty(),
-                            activeTableLocations = activeTableLocations,
-                            warehouseRoots = (sharedWarehouseRoots + catalogDiscoveryService.knownWarehouseRoots()).distinct(),
-                        ),
-                    activeTableLocations = activeTableLocations,
-                )
-            } catch (error: Exception) {
+        return try {
+            val restRoot = catalogDiscoveryService.restNamespaceRoot(catalog, database)
+            if (restRoot != null && restRoot.location == null) {
                 logger.warn(
-                    "Could not plan report-only storage roots for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}",
-                    error,
+                    "REST namespace root was not derived for catalog=$catalog, database=$database: ${restRoot.status}. Only visible table locations cover that catalog's storage."
                 )
-                return null
             }
 
-        scanPlan.roots.forEach { root ->
-            logger.info(
-                "Storage root for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: location=${root.root.location}, role=${root.role}, status=${root.status}, visibleTables=${root.visibleTableCount}, unmatchedFolders=${root.unmatchedFolderPaths.size}"
-            )
+            val roots =
+                storageScanLocationPlanner.plan(
+                    cleanupRoot = cleanupRoot,
+                    databaseLocation = databaseLocation,
+                    restNamespaceRoot = restRoot?.location?.takeIf { it.isNotBlank() },
+                    approvedRoots = config.reportOnlyStorageRoots[database].orEmpty(),
+                    activeTableLocations = activeTableLocations,
+                    warehouseRoots = (sharedWarehouseRoots + catalogDiscoveryService.knownWarehouseRoots()).distinct(),
+                    otherDatabaseBoundaries = {
+                        otherDatabaseBoundaries(catalog, database, databaseLocations).also { otherDatabases = it }
+                    },
+                )
+
+            reportOnlyRootScanner
+                .scan(catalog = catalog, database = database, roots = roots, activeTableLocations = activeTableLocations)
+                .copy(
+                    restNamespaceRootStatus = restRoot?.status,
+                    unresolvedOtherDatabases = otherDatabases?.unresolvedDatabases.orEmpty(),
+                )
+        } catch (error: Exception) {
+            logger.warn("Could not plan report-only storage roots for catalog=$catalog, database=$database", error)
+            ScanPlanReport(roots = emptyList(), uncoveredTableLocations = emptyList(), planningError = error.toString())
+        }
+    }
+
+    // Anything short of a usable location leaves a database unresolved, which refuses approvals instead of
+    // treating its boundary as clear.
+    private fun otherDatabaseBoundaries(
+        catalog: String,
+        database: String,
+        databaseLocations: MutableMap<String, String?>,
+    ): OtherDatabaseBoundaries {
+        val roots = mutableMapOf<String, String>()
+        val unresolved = mutableListOf<String>()
+
+        config.databases.distinct().filter { it != database }.forEach { other ->
+            if (other !in databaseLocations) {
+                databaseLocations[other] = lookUpDatabaseLocation(catalog, other)
+            }
+
+            val boundary = databaseLocations[other]?.let { boundaryRoots(catalog, other, it) }
+            if (boundary == null) {
+                unresolved += other
+            } else {
+                boundary.forEach { roots[it] = other }
+            }
         }
 
-        return scanPlan
+        return OtherDatabaseBoundaries(roots, unresolved.sorted())
     }
+
+    private fun lookUpDatabaseLocation(
+        catalog: String,
+        database: String,
+    ): String? =
+        try {
+            catalogDiscoveryService.discoverDatabaseLocation(catalog, database)
+        } catch (error: Exception) {
+            // Not found is not proof either: an authorization filter may hide a database the same way.
+            logger.warn(
+                "Could not read the location of configured database=$database in catalog=$catalog; its storage boundary is unresolved for this run",
+                error,
+            )
+            null
+        }
+
+    private fun boundaryRoots(
+        catalog: String,
+        database: String,
+        location: String,
+    ): Set<String>? =
+        try {
+            if (StoragePathUtils.isQualifiedLocation(location)) {
+                StoragePathUtils.allowedDatabaseRoots(location) +
+                    listOfNotNull(
+                        catalogDiscoveryService.restNamespaceRoot(catalog, database)?.location?.let(StoragePathUtils::normalizeLocation),
+                    )
+            } else {
+                null
+            }
+        } catch (error: IllegalArgumentException) {
+            null
+        }
 
     // A refused database keeps its SKIPPED row; report-only roots are added only when their scope can still be checked.
     private fun reportOnlyPlanForRefusedDatabase(
         discoveredDatabase: DiscoveredDatabase,
         reason: UnsafeScanRootReason,
         sharedWarehouseRoots: List<String>,
+        databaseLocations: MutableMap<String, String?>,
     ): ScanPlanReport? {
         val databaseLocation =
             when (reason) {
@@ -623,8 +679,13 @@ class CleanupUntrackedTableFoldersService {
                 -> return null
             }
 
-        return planStorageRoots(discoveredDatabase, cleanupRoot = null, databaseLocation = databaseLocation, sharedWarehouseRoots = sharedWarehouseRoots)
-            ?.also { cleanupSummaryLogger.logScanPlan(discoveredDatabase.catalog, discoveredDatabase.database, it) }
+        return planStorageRoots(
+            discoveredDatabase = discoveredDatabase,
+            cleanupRoot = null,
+            databaseLocation = databaseLocation,
+            sharedWarehouseRoots = sharedWarehouseRoots,
+            databaseLocations = databaseLocations,
+        ).also { cleanupSummaryLogger.logScanPlan(discoveredDatabase.catalog, discoveredDatabase.database, it) }
     }
 }
 

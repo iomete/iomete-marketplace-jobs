@@ -2,12 +2,14 @@ package com.iomete.cleanup.untrackedtablefolders.service
 
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecorder
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditTableService
+import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.catalog.DatabaseNotFoundException
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredTable
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
+import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
@@ -20,8 +22,10 @@ import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.spyk
 import io.mockk.verify
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -565,13 +569,23 @@ class CleanupUntrackedTableFoldersServiceTest {
         }
         every {
             cleanupAuditRecorder.recordSuccess(any(), any(), any(), "first", any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())} throws IllegalStateException("audit table unavailable")
+        val summaries = mutableListOf<CleanupSummary>()
+        service.cleanupSummaryLogger =
+            spyk(CleanupSummaryLogger()).also { logger ->
+                every { logger.logCleanupSummary(capture(summaries)) } answers { callOriginal() }
+            }
 
         assertThrows(AuditIntegrityLostException::class.java) { service.run() }
+
+        val secondSummary = CleanupSummaryLogger().buildReportLines(summaries.single { it.database == "second" })
+        assertTrue(secondSummary.none { "eligible for cleanup" in it })
+        assertTrue("  Reason: audit_integrity_lost" in secondSummary)
 
         verify(exactly = 1) { candidateDeletionGate.deleteCandidates(any(), "first", any(), any()) }
         verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), "second", any(), any()) }
         verify(exactly = 1) {
-            cleanupAuditRecorder.recordAuditIntegrityLost(
+            cleanupAuditRecorder.recordDeletionBlocked(
+                reason = DeletionBlockReason.AUDIT_INTEGRITY_LOST,
                 runId = any(), databaseStartTime = any(), catalogName = any(), databaseName = "second",
                 discoveredDatabaseLocation = any(), storageScanLocation = any(), activeTableCount = any(),
                 activeTableLocations = any(), storageFolderPaths = any(),
@@ -629,14 +643,9 @@ class CleanupUntrackedTableFoldersServiceTest {
                 cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
             }
         }
-        if (except != "recordCleanupRootHasNoVisibleTable") {
+        if (except != "recordDeletionBlocked") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordCleanupRootHasNoVisibleTable(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
-            }
-        }
-        if (except != "recordAuditIntegrityLost") {
-            verify(exactly = 0) {
-                cleanupAuditRecorder.recordAuditIntegrityLost(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+                cleanupAuditRecorder.recordDeletionBlocked(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
             }
         }
     }

@@ -84,7 +84,7 @@ class StorageScanLocationPlannerTest {
                 tables = listOf("s3a://bucket2/dbs/sales.db/t1", "$REST_ROOT/t2"),
             )
 
-        assertEquals(ScanRootRejection.OUTSIDE_DATABASE_BOUNDARY, plan.roots.single { it.location == REST_ROOT }.rejection)
+        assertEquals(ScanRootRejection.LOOKS_LIKE_DATABASE_STORAGE, plan.roots.single { it.location == REST_ROOT }.rejection)
     }
 
     @Test
@@ -137,7 +137,7 @@ class StorageScanLocationPlannerTest {
         val plan = plan(cleanupRoot = DATABASE_LOCATION, tables = listOf("$DATABASE_LOCATION/t1", "s3a://bucket/lake/sales_v2/t2"))
 
         assertEquals(
-            ScanRootRejection.OUTSIDE_DATABASE_BOUNDARY,
+            ScanRootRejection.LOOKS_LIKE_DATABASE_STORAGE,
             plan.roots.single { it.location == "s3a://bucket/lake/sales_v2" }.rejection,
         )
     }
@@ -260,6 +260,86 @@ class StorageScanLocationPlannerTest {
         )
     }
 
+    @Test
+    fun `an approval overlapping another database in either direction is refused, a sibling name is not`() {
+        val plan =
+            plan(
+                cleanupRoot = DATABASE_LOCATION,
+                tables = listOf("$DATABASE_LOCATION/t1", "s3a://b2/x/inner/t2", "s3a://b2/y/t3", "s3a://b2/analytics_v2/t4"),
+                approvedRoots = listOf("s3a://b2/x/inner", "s3a://b2/y", "s3a://b2/analytics_v2"),
+                otherDatabases = OtherDatabaseBoundaries(mapOf("s3a://b2/x" to "analytics", "s3a://b2/y/z" to "marketing", "s3a://b2/analytics" to "other"), emptyList()),
+            )
+
+        val rejections = plan.roots.associate { it.location to it.rejection }
+        assertEquals(ScanRootRejection.OTHER_DATABASE_LOCATION, rejections["s3a://b2/x/inner"])
+        assertEquals(ScanRootRejection.OTHER_DATABASE_LOCATION, rejections["s3a://b2/y"])
+        assertNull(rejections["s3a://b2/analytics_v2"])
+    }
+
+    @Test
+    fun `a warehouse-wide database location does not refuse approvals under the warehouse`() {
+        val plan =
+            plan(
+                cleanupRoot = DATABASE_LOCATION,
+                tables = listOf("$DATABASE_LOCATION/t1", "$WAREHOUSE/custom_area/t2"),
+                approvedRoots = listOf("$WAREHOUSE/custom_area"),
+                otherDatabases = OtherDatabaseBoundaries(mapOf(WAREHOUSE to "default"), emptyList()),
+            )
+
+        val approved = plan.roots.single { it.location == "$WAREHOUSE/custom_area" }
+        assertTrue(approved.reportOnly)
+        assertTrue(approved.approved)
+    }
+
+    @Test
+    fun `an unresolved other database refuses approvals and suggestions outside the database's storage`() {
+        val plan =
+            plan(
+                cleanupRoot = DATABASE_LOCATION,
+                tables = listOf("$DATABASE_LOCATION/t1", "$REST_ROOT/t2", "s3a://b2/ext/a/t3", "s3a://b2/ext/b/t4"),
+                approvedRoots = listOf("s3a://b2/ext/a"),
+                otherDatabases = OtherDatabaseBoundaries(emptyMap(), listOf("ghost")),
+            )
+
+        val rejections = plan.roots.associate { it.location to it.rejection }
+        assertNull(rejections[REST_ROOT])
+        assertEquals(ScanRootRejection.OTHER_DATABASE_BOUNDARY_UNKNOWN, rejections["s3a://b2/ext/a"])
+        assertEquals(ScanRootRejection.OTHER_DATABASE_BOUNDARY_UNKNOWN, rejections["s3a://b2/ext/b"])
+    }
+
+    @Test
+    fun `other databases are looked up only for an approval or a suggestion outside the database's storage`() {
+        var lookups = 0
+        val lookup = { OtherDatabaseBoundaries(emptyMap(), emptyList()).also { lookups += 1 } }
+
+        planner.plan(DATABASE_LOCATION, DATABASE_LOCATION, REST_ROOT, emptyList(), listOf("$DATABASE_LOCATION/t1", "$REST_ROOT/t2"), listOf(WAREHOUSE), lookup)
+        planner.plan(DATABASE_LOCATION, DATABASE_LOCATION, null, emptyList(), listOf("$DATABASE_LOCATION/t1", "$WAREHOUSE/other.db/t2"), listOf(WAREHOUSE), lookup)
+        assertEquals(0, lookups)
+
+        planner.plan(
+            DATABASE_LOCATION,
+            DATABASE_LOCATION,
+            null,
+            listOf("s3a://b2/ext/a"),
+            listOf("$DATABASE_LOCATION/t1", "s3a://b2/ext/a/t2", "s3a://b2/ext/b/t3"),
+            listOf(WAREHOUSE),
+            lookup,
+        )
+        assertEquals(1, lookups)
+    }
+
+    @Test
+    fun `an explicit approval is not refused by the path-shape rule`() {
+        val plan =
+            plan(
+                cleanupRoot = DATABASE_LOCATION,
+                tables = listOf("$DATABASE_LOCATION/t1", "$WAREHOUSE/legacy.db/t2"),
+                approvedRoots = listOf("$WAREHOUSE/legacy.db"),
+            )
+
+        assertTrue(plan.roots.single { it.location == "$WAREHOUSE/legacy.db" }.approved)
+    }
+
     private fun plan(
         cleanupRoot: String?,
         tables: List<String>,
@@ -267,6 +347,7 @@ class StorageScanLocationPlannerTest {
         restNamespaceRoot: String? = null,
         approvedRoots: List<String> = emptyList(),
         warehouseRoots: List<String> = listOf(WAREHOUSE),
+        otherDatabases: OtherDatabaseBoundaries = OtherDatabaseBoundaries(emptyMap(), emptyList()),
     ): List<PlannedScanRoot> =
         planner.plan(
             cleanupRoot = cleanupRoot,
@@ -275,6 +356,7 @@ class StorageScanLocationPlannerTest {
             approvedRoots = approvedRoots,
             activeTableLocations = tables,
             warehouseRoots = warehouseRoots,
+            otherDatabaseBoundaries = { otherDatabases },
         )
 }
 

@@ -293,82 +293,8 @@ class CleanupAuditRecorder {
         )
     }
 
-    fun recordAuditIntegrityLost(
-        runId: String,
-        databaseStartTime: Instant,
-        catalogName: String,
-        databaseName: String,
-        discoveredDatabaseLocation: String?,
-        storageScanLocation: String,
-        activeTableCount: Long,
-        activeTableLocations: List<String>,
-        storageFolderPaths: List<String>,
-        candidateFolderPaths: List<String>,
-        candidateSizeStats: StorageSizeStats?,
-        cutoffTime: Instant,
-        excludedPaths: List<String>,
-        unscannedTableLocations: List<String>,
-        scanPlan: ScanPlanReport? = null,
-    ) {
-        recordDeletionBlocked(
-            statusReason = "audit_integrity_lost",
-            runId = runId,
-            databaseStartTime = databaseStartTime,
-            catalogName = catalogName,
-            databaseName = databaseName,
-            discoveredDatabaseLocation = discoveredDatabaseLocation,
-            storageScanLocation = storageScanLocation,
-            activeTableCount = activeTableCount,
-            activeTableLocations = activeTableLocations,
-            storageFolderPaths = storageFolderPaths,
-            candidateFolderPaths = candidateFolderPaths,
-            candidateSizeStats = candidateSizeStats,
-            cutoffTime = cutoffTime,
-            excludedPaths = excludedPaths,
-            unscannedTableLocations = unscannedTableLocations,
-            scanPlan = scanPlan,
-        )
-    }
-
-    fun recordCleanupRootHasNoVisibleTable(
-        runId: String,
-        databaseStartTime: Instant,
-        catalogName: String,
-        databaseName: String,
-        discoveredDatabaseLocation: String?,
-        storageScanLocation: String,
-        activeTableCount: Long,
-        activeTableLocations: List<String>,
-        storageFolderPaths: List<String>,
-        candidateFolderPaths: List<String>,
-        candidateSizeStats: StorageSizeStats?,
-        cutoffTime: Instant,
-        excludedPaths: List<String>,
-        unscannedTableLocations: List<String>,
-        scanPlan: ScanPlanReport? = null,
-    ) {
-        recordDeletionBlocked(
-            statusReason = "cleanup_root_has_no_visible_table",
-            runId = runId,
-            databaseStartTime = databaseStartTime,
-            catalogName = catalogName,
-            databaseName = databaseName,
-            discoveredDatabaseLocation = discoveredDatabaseLocation,
-            storageScanLocation = storageScanLocation,
-            activeTableCount = activeTableCount,
-            activeTableLocations = activeTableLocations,
-            storageFolderPaths = storageFolderPaths,
-            candidateFolderPaths = candidateFolderPaths,
-            candidateSizeStats = candidateSizeStats,
-            cutoffTime = cutoffTime,
-            excludedPaths = excludedPaths,
-            unscannedTableLocations = unscannedTableLocations,
-            scanPlan = scanPlan,
-        )
-    }
-
-    private fun recordDeletionBlocked(
-        statusReason: String,
+    fun recordDeletionBlocked(
+        reason: DeletionBlockReason,
         runId: String,
         databaseStartTime: Instant,
         catalogName: String,
@@ -391,7 +317,7 @@ class CleanupAuditRecorder {
             catalogName = catalogName,
             databaseName = databaseName,
             status = STATUS_BLOCKED,
-            statusReason = statusReason,
+            statusReason = reason.code,
             errorMessage = null,
             discoveredDatabaseLocation = discoveredDatabaseLocation,
             storageScanLocation = storageScanLocation,

@@ -7,6 +7,7 @@ import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditTableService
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
+import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
 import com.iomete.cleanup.untrackedtablefolders.service.CleanupUntrackedTableFoldersService
 import com.iomete.cleanup.untrackedtablefolders.service.ReportOnlyRootScanner
@@ -21,6 +22,7 @@ import io.mockk.Runs
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
+import io.mockk.spyk
 
 /** Real cleanup flow over [InMemoryS3FileSystem]; only catalog discovery and the audit table are faked. */
 class CleanupFlowHarness(
@@ -28,6 +30,7 @@ class CleanupFlowHarness(
 ) {
     val catalogDiscoveryService: CatalogDiscoveryService = mockk()
     val auditRecords = mutableListOf<CleanupAuditRecord>()
+    val summaries = mutableListOf<CleanupSummary>()
 
     private val auditTableService: CleanupAuditTableService = mockk(relaxed = true)
     private val storage =
@@ -59,7 +62,10 @@ class CleanupFlowHarness(
                         recorder.auditDiagnosticDetailsBuilder = CleanupAuditDiagnosticDetailsBuilder()
                         recorder.excludePathResolver = excludePathResolver
                     }
-                it.cleanupSummaryLogger = CleanupSummaryLogger()
+                it.cleanupSummaryLogger =
+                    spyk(CleanupSummaryLogger()).also { logger ->
+                        every { logger.logCleanupSummary(capture(summaries)) } answers { callOriginal() }
+                    }
                 it.storageScanLocationResolver = StorageScanLocationResolver()
                 it.excludePathResolver = excludePathResolver
                 it.candidateSizeStatCollector =
@@ -84,6 +90,8 @@ class CleanupFlowHarness(
     }
 
     fun run() = service.run()
+
+    fun summaryLines(): List<String> = CleanupSummaryLogger().buildReportLines(summaries.single())
 
     fun objectExists(path: String): Boolean = path in InMemoryS3FileSystem.paths(ENDPOINT)
 

@@ -390,6 +390,10 @@ relevant, not proof that the database owns everything in it.
 - A location is listed only if at least one table of that database that the job can see is stored under
   it, and it passes the same checks as every other root. See
   [Additional storage roots](#additional-storage-roots-report-only).
+- A location that equals, contains or sits inside the storage of another database in `databases` is
+  refused. If the job cannot read that other database's location, every location outside this
+  database's own storage is refused for the run. See
+  [Approval checks against other databases](#approval-checks-against-other-databases).
 - When the job finds table locations outside the database's storage, its log prints a ready-to-copy value
   for this setting.
 
@@ -592,9 +596,8 @@ When tables sit under more than one parent location, the job keeps the conservat
   that far.
 
 The scan root above is the **cleanup root**. It is the only place where folders can be deleted. Deletion
-is also blocked, with `BLOCKED` and `status_reason=cleanup_root_has_no_visible_table`, when no table the
-job can see is stored under the cleanup root. Without one, nothing in that root can be checked against a
-known table.
+is also blocked when no table the job can see is stored under the cleanup root. See
+[Cleanup root with no visible table](#cleanup-root-with-no-visible-table).
 
 ### Additional storage roots (report only)
 
@@ -605,7 +608,10 @@ A root is listed only when it sits inside the database's own storage:
 
 - the database location, or the same path without the `.db` suffix;
 - for `spark_catalog` and other IOMETE-managed REST catalogs, `<catalog warehouse>/<database>`, where the
-  catalog stores the database's Iceberg tables;
+  catalog stores the database's Iceberg tables. A catalog counts as IOMETE-managed when its `uri` ends with
+  `/internal/catalogs/<catalog>`, or with `/catalogs/<catalog>` on the in-cluster `iom-rest-catalog`
+  service. For any other Iceberg REST catalog, the audit row has `rest_namespace_root=unrecognized_uri`
+  and the log explains it;
 - a location approved for the database in `report_only_storage_roots`, as long as at least one visible
   table of the database is stored under it.
 
@@ -622,6 +628,9 @@ uncovered:
 | `no_visible_table` | An approved location holds no table of the database that the job can see |
 | `invalid_location` | The location cannot be parsed |
 | `root_limit_reached` | More than 25 additional roots were found; the rest are not listed |
+| `looks_like_database_storage` | The parent is, or is inside, a `.db` folder or a direct child of a warehouse root, so it probably belongs to another database |
+| `other_database_location` | The location overlaps the storage of another database in `databases` |
+| `other_database_boundary_unknown` | Another database's location could not be read, so the overlap cannot be ruled out |
 
 A listed root is `scanned`, `absent` (it does not exist yet) or `listing_failed`. A failed listing never
 changes what is deleted. Folders in these roots that do not belong to a table the job can see are listed
@@ -631,7 +640,25 @@ still own them, so treat them as items to review, not as orphans.
 Approval never overrides these checks, and a root listed because of approval is shown with the role
 `report_only_approved`. For table parents outside the database's storage, the log section
 `LOCATIONS THAT CAN BE APPROVED FOR REPORT-ONLY LISTING` prints a `report_only_storage_roots` value to
-review and copy.
+review and copy. A parent with any reason other than `outside_database_boundary` is never in that value.
+The log prints at most 25 not-scanned roots and 25 suggestions. The audit counts are always complete.
+
+#### Approval checks against other databases
+
+An approved location, or a parent the log would suggest, is compared with the storage of every other
+database in `databases`: its location, the same path without `.db`, and its REST namespace root. The job
+reuses locations it already discovered in this run, and reads any other one at most once with
+`DESCRIBE DATABASE`. It never lists the catalog.
+
+If a location cannot be read for any reason, including "not found", that database is unresolved. An
+authorization filter can hide a database the same way, so "not found" is not proof. While a database
+is unresolved, approvals outside this database's own storage are refused with
+`other_database_boundary_unknown`. Nothing is suggested, and the audit row names the database in
+`unresolved_other_database_boundaries`. This affects only report-only listing. The cleanup root,
+deletion, and the database's own status are unchanged.
+
+A database stored at a bucket root, or at or above a warehouse root, is not used for this comparison.
+Its location says nothing about which database owns a path under it.
 
 ---
 
@@ -727,20 +754,31 @@ non_candidate_storage_folder_paths_sample
 unscanned_table_location_count
 unscanned_table_locations_sample
 ownership_basis
+scan_plan_status
+scan_plan_error
 scan_root_count
+scan_root_not_scanned_count
 scan_roots_sample
 scan_plan_coverage
 scan_plan_uncovered_table_location_count
 scan_plan_uncovered_table_locations_sample
 report_only_folder_count
 report_only_folders_sample
+rest_namespace_root
+unresolved_other_database_boundaries
 *_truncated
 ```
 
-Storage root keys are written once the roots were planned:
+Storage root keys follow `scan_plan_status`:
 
+- No `scan_plan_status` means planning was not attempted, for example a database skipped before its
+  storage was checked.
+- `scan_plan_status=failed` means planning threw. `scan_plan_error` holds the error, and no other storage
+  root key is written. The row keeps the status it would have had anyway.
+- `scan_plan_status=planned` comes with the keys below.
 - `scan_roots_sample` has one line per root: `<location>=<role>:<status>:visible_tables=<n>`, where
-  role is `cleanup`, `report_only` or `not_scanned`.
+  role is `cleanup`, `report_only`, `report_only_approved` or `not_scanned`. The cleanup root comes first,
+  then listed roots, then not-scanned roots with the most visible tables first.
 - `scan_plan_coverage` is `complete` when every table the job can see sits under a listed root and every
   listing worked. It says nothing about tables the job cannot see.
 - `ownership_basis=visible_catalog_tables` records that ownership was checked only against the tables the
@@ -807,6 +845,20 @@ it did. From that point on:
 
 Each later row is written once on a best-effort basis. A database whose own audit row failed has
 no row in the audit table, so use the job log for that database.
+
+---
+
+## Cleanup root with no visible table
+
+When tables sit under more than one parent location, the cleanup root falls back to the database
+location. If no table the job can see is stored under that location, nothing in it can be checked
+against a known table. The database is then recorded as `BLOCKED` with
+`status_reason=cleanup_root_has_no_visible_table`, and nothing is deleted. This also applies in dry-run
+and when there are no candidates. The candidates are still listed in the audit row and the log, and the
+log's `DELETION` section gives the reason.
+
+**Changed in this version:** earlier versions recorded such a database as `SUCCESS` and could delete
+every unmatched folder in its location.
 
 ---
 

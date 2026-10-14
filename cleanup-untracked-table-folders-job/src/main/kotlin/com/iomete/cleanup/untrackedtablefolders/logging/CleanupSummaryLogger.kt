@@ -1,6 +1,8 @@
 package com.iomete.cleanup.untrackedtablefolders.logging
 
+import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import jakarta.enterprise.context.ApplicationScoped
 import org.jboss.logging.Logger
@@ -18,6 +20,7 @@ data class CleanupSummary(
     val unmatchedFolderPaths: List<String>,
     val unmatchedSizeStats: StorageSizeStats?,
     val deletionEligible: Boolean,
+    val deletionBlockReason: DeletionBlockReason? = null,
     val deletedFolderPaths: List<String>,
     val deletedSizeStats: StorageSizeStats?,
     val unscannedTableLocations: List<String> = emptyList(),
@@ -121,7 +124,12 @@ class CleanupSummaryLogger {
         summary.scanPlan?.let { addScanPlan(summary.database, it) }
 
         add("")
-        if (summary.deletionEligible) {
+        if (summary.deletionBlockReason != null) {
+            add("UNTRACKED STORAGE FOLDERS (DELETION BLOCKED)")
+            add("")
+            add("  These folders are not referenced by the discovered catalog tables, but deletion")
+            add("  was blocked for this database. See DELETION below.")
+        } else if (summary.deletionEligible) {
             add("UNTRACKED STORAGE FOLDERS")
             add("")
             add("  These folders are not referenced by the discovered catalog tables and are")
@@ -141,7 +149,13 @@ class CleanupSummaryLogger {
         add("")
         add("DELETION")
         add("")
-        if (summary.deletionEligible) {
+        if (summary.deletionBlockReason != null) {
+            add("  BLOCKED")
+            add("")
+            add("  Reason: ${summary.deletionBlockReason.code}")
+            deletionBlockExplanation(summary.deletionBlockReason).forEach { add("  $it") }
+            add("  No folder in this database was deleted.")
+        } else if (summary.deletionEligible) {
             add("  Folders deleted                                  ${summary.deletedFolderPaths.size}")
             add(
                 if (summary.deletedSizeStats != null) {
@@ -171,11 +185,30 @@ class CleanupSummaryLogger {
         add("")
         add("STORAGE ROOTS")
         add("")
+
+        if (scanPlan.planningError != null) {
+            add("  Storage roots could not be planned, so no other root was listed. Deletion is not affected.")
+            add("  Error: ${scanPlan.planningError}")
+            return
+        }
+
         add("  Folders are deleted only under the cleanup root. Other roots are listed for review only.")
         add("  Coverage is ${if (scanPlan.complete) "complete" else "partial"} for the tables visible to this job.")
+        if (scanPlan.restNamespaceRootStatus != null && scanPlan.restNamespaceRootStatus != "derived") {
+            add("  The REST namespace root was not derived: ${scanPlan.restNamespaceRootStatus}.")
+        }
+        if (scanPlan.unresolvedOtherDatabases.isNotEmpty()) {
+            add("  The storage of these configured databases could not be read, so custom approvals outside")
+            add("  this database's storage were refused and nothing is suggested for approval:")
+            add("  ${scanPlan.unresolvedOtherDatabases.joinToString(", ")}")
+        }
         add("")
-        scanPlan.roots.forEach { root ->
+        val (notScanned, listed) = scanPlan.roots.partition { it.outcome == ScanRootOutcome.NOT_SCANNED }
+        (listed + notScanned.take(MAX_LOGGED_NOT_SCANNED_ROOTS)).forEach { root ->
             add("- ${root.root.location}  ${root.role}  ${root.status}  visible tables: ${root.visibleTableCount}")
+        }
+        if (notScanned.size > MAX_LOGGED_NOT_SCANNED_ROOTS) {
+            add("- ... ${notScanned.size - MAX_LOGGED_NOT_SCANNED_ROOTS} more root(s) not scanned")
         }
 
         if (scanPlan.uncoveredTableLocations.isNotEmpty()) {
@@ -192,8 +225,9 @@ class CleanupSummaryLogger {
         add("")
         addListOrNone(scanPlan.reportOnlyFolderPaths)
 
-        if (scanPlan.unapprovedTableParents.isNotEmpty()) {
-            val roots = (scanPlan.acceptedApprovedRoots + scanPlan.unapprovedTableParents).distinct().sorted()
+        val suggestions = scanPlan.unapprovedTableParents
+        if (suggestions.isNotEmpty()) {
+            val roots = (scanPlan.acceptedApprovedRoots + suggestions.take(MAX_LOGGED_NOT_SCANNED_ROOTS)).distinct().sorted()
             add("")
             add("LOCATIONS THAT CAN BE APPROVED FOR REPORT-ONLY LISTING")
             add("")
@@ -205,8 +239,23 @@ class CleanupSummaryLogger {
             roots.forEachIndexed { index, root -> add("      \"$root\"" + if (index < roots.lastIndex) "," else "") }
             add("    ]")
             add("  }")
+            if (suggestions.size > MAX_LOGGED_NOT_SCANNED_ROOTS) {
+                add("")
+                add("  ${suggestions.size - MAX_LOGGED_NOT_SCANNED_ROOTS} more location(s) are not shown.")
+            }
         }
     }
+
+    private fun deletionBlockExplanation(reason: DeletionBlockReason): List<String> =
+        when (reason) {
+            DeletionBlockReason.AUDIT_INTEGRITY_LOST ->
+                listOf("An audit write failed earlier in this run, so no further folders are deleted in it.")
+            DeletionBlockReason.CLEANUP_ROOT_HAS_NO_VISIBLE_TABLE ->
+                listOf(
+                    "No table this job can see is stored under the cleanup root, so nothing in it can be",
+                    "checked against a known table.",
+                )
+        }
 
     private fun MutableList<String>.addListOrNone(values: List<String>) {
         if (values.isEmpty()) {
@@ -240,6 +289,7 @@ class CleanupSummaryLogger {
 
     private companion object {
         const val MAX_LOG_PATH_SAMPLE_SIZE = 100
+        const val MAX_LOGGED_NOT_SCANNED_ROOTS = 25
         const val BLANK_LINES_AROUND_REPORT = 3
         const val SEPARATOR = "================================================================"
     }

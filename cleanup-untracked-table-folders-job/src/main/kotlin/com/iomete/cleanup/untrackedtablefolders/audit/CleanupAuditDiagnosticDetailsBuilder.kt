@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.audit
 
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
 import jakarta.enterprise.context.ApplicationScoped
 
 @ApplicationScoped
@@ -79,10 +80,17 @@ class CleanupAuditDiagnosticDetailsBuilder {
             else -> emptyMap()
         }
 
-    // Written only after storage roots were planned, so missing keys mean planning never ran.
+    // No scan_plan_status means planning was not attempted. A failed plan never changes the row's status.
     fun scanPlanDetails(scanPlan: ScanPlanReport?): Map<String, String> {
         if (scanPlan == null) {
             return emptyMap()
+        }
+
+        if (scanPlan.planningError != null) {
+            return mapOf(
+                "scan_plan_status" to "failed",
+                "scan_plan_error" to scanPlan.planningError.take(MAX_SCAN_PLAN_ERROR_LENGTH),
+            )
         }
 
         val rootLines =
@@ -92,8 +100,10 @@ class CleanupAuditDiagnosticDetailsBuilder {
 
         val details =
             mutableMapOf(
+                "scan_plan_status" to "planned",
                 "ownership_basis" to "visible_catalog_tables",
                 "scan_root_count" to scanPlan.roots.size.toString(),
+                "scan_root_not_scanned_count" to scanPlan.roots.count { it.outcome == ScanRootOutcome.NOT_SCANNED }.toString(),
                 "scan_roots_sample" to auditPathSample(rootLines),
                 "scan_roots_truncated" to isAuditPathSampleTruncated(rootLines).toString(),
                 "scan_plan_coverage" to if (scanPlan.complete) "complete" else "partial",
@@ -111,6 +121,12 @@ class CleanupAuditDiagnosticDetailsBuilder {
             details["report_only_folders_truncated"] = isAuditPathSampleTruncated(reportOnlyFolders).toString()
         }
 
+        scanPlan.restNamespaceRootStatus?.let { details["rest_namespace_root"] = it }
+
+        if (scanPlan.unresolvedOtherDatabases.isNotEmpty()) {
+            details["unresolved_other_database_boundaries"] = auditPathSample(scanPlan.unresolvedOtherDatabases)
+        }
+
         return details
     }
 
@@ -119,4 +135,8 @@ class CleanupAuditDiagnosticDetailsBuilder {
 
     private fun isAuditPathSampleTruncated(paths: List<String>): Boolean =
         paths.size > MAX_AUDIT_PATH_SAMPLE_SIZE
+
+    private companion object {
+        const val MAX_SCAN_PLAN_ERROR_LENGTH = 500
+    }
 }

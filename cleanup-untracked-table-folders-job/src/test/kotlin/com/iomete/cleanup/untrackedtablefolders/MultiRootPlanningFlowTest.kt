@@ -2,11 +2,15 @@ package com.iomete.cleanup.untrackedtablefolders
 
 import com.iomete.cleanup.untrackedtablefolders.CleanupFlowHarness.Companion.putFolder
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecord
+import com.iomete.cleanup.untrackedtablefolders.catalog.DatabaseNotFoundException
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredTable
+import com.iomete.cleanup.untrackedtablefolders.catalog.RestNamespaceRoot
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
+import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
 import com.iomete.cleanup.untrackedtablefolders.storage.InMemoryS3FileSystem
 import io.mockk.every
+import io.mockk.verify
 import org.apache.hadoop.fs.FileSystem
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -140,24 +144,6 @@ class MultiRootPlanningFlowTest {
     }
 
     @Test
-    fun `a fallback cleanup root with no visible table blocks deletion`() {
-        folders(DATABASE_LOCATION, "hidden_hive_table")
-        folders(REST_ROOT, "t_rest")
-        folders("s3a://bucket/custom/x", "t_custom")
-        val flow = flow(tables = listOf("$REST_ROOT/t_rest", "s3a://bucket/custom/x/t_custom"), restNamespaceRoot = REST_ROOT)
-
-        flow.run()
-
-        val record = flow.auditRecords.single()
-        assertEquals(DATABASE_LOCATION, record.storageScanLocation)
-        assertEquals("BLOCKED", record.status)
-        assertEquals("cleanup_root_has_no_visible_table", record.statusReason)
-        assertEquals(listOf("$DATABASE_LOCATION/hidden_hive_table"), record.candidateFolders)
-        assertTrue(record.deletedFolders.isEmpty())
-        assertTrue(flow.objectExists("$DATABASE_LOCATION/hidden_hive_table/part-0.parquet"))
-    }
-
-    @Test
     fun `a REST root in another bucket is scanned for reporting only`() {
         val databaseLocation = "s3a://bucket2/dbs/sales.db"
         folders(databaseLocation, "t_hive", "orphan_hive")
@@ -188,6 +174,7 @@ class MultiRootPlanningFlowTest {
         val record = flow.auditRecords.single()
         assertEquals("SUCCESS", record.status)
         assertTrue("$REST_ROOT=report_only:absent:visible_tables=0" in rootLines(record))
+        assertEquals("derived", record.diagnosticDetails["rest_namespace_root"])
         assertEquals("complete", record.diagnosticDetails["scan_plan_coverage"])
     }
 
@@ -258,6 +245,7 @@ class MultiRootPlanningFlowTest {
         assertEquals("complete", record.diagnosticDetails["scan_plan_coverage"])
         assertEquals("0", record.diagnosticDetails["report_only_folder_count"])
         assertEquals("visible_catalog_tables", record.diagnosticDetails["ownership_basis"])
+        assertEquals("planned", record.diagnosticDetails["scan_plan_status"])
     }
 
     @Test
@@ -383,6 +371,7 @@ class MultiRootPlanningFlowTest {
         val record = flow.auditRecords.single()
         assertEquals("catalog_warehouse_unknown", record.statusReason)
         assertNull(record.diagnosticDetails["scan_root_count"])
+        assertNull(record.diagnosticDetails["scan_plan_status"])
     }
 
     @Test
@@ -397,6 +386,181 @@ class MultiRootPlanningFlowTest {
         assertEquals("SKIPPED", record.status)
         assertEquals("scan_root_outside_database_boundary", record.statusReason)
         assertNull(record.diagnosticDetails["scan_root_count"])
+        assertEquals("failed", record.diagnosticDetails["scan_plan_status"])
+    }
+
+    @Test
+    fun `a planning failure is recorded without changing the status or the deletion`() {
+        folders(DATABASE_LOCATION, "t1", "orphan")
+        val flow = flow(tables = listOf("$DATABASE_LOCATION/t1"))
+        every { flow.catalogDiscoveryService.knownWarehouseRoots() } throws IllegalStateException("conf unavailable")
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("SUCCESS", record.status)
+        assertNull(record.statusReason)
+        assertEquals(listOf("$DATABASE_LOCATION/orphan"), record.deletedFolders)
+        assertEquals("failed", record.diagnosticDetails["scan_plan_status"])
+        assertEquals("java.lang.IllegalStateException: conf unavailable", record.diagnosticDetails["scan_plan_error"])
+        assertNull(record.diagnosticDetails["scan_plan_coverage"])
+    }
+
+    @Test
+    fun `many unlisted parents never push the cleanup root out of the audit sample or flood the summary`() {
+        val databaseLocation = "s3a://zz/lake/sales.db"
+        folders(databaseLocation, "t0")
+        val outside = (1..150).map { "s3a://aa/ext/p${"%03d".format(it)}" }
+        val flow =
+            flow(
+                tables = listOf("$databaseLocation/t0") + outside.map { "$it/t" },
+                databaseLocation = databaseLocation,
+                warehouseRoots = listOf("s3a://zz/lake"),
+            )
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("$databaseLocation=cleanup:scanned:visible_tables=1", rootLines(record).first())
+        assertEquals("151", record.diagnosticDetails["scan_root_count"])
+        assertEquals("150", record.diagnosticDetails["scan_root_not_scanned_count"])
+        assertEquals("150", record.diagnosticDetails["scan_plan_uncovered_table_location_count"])
+        val summary = flow.summaryLines()
+        assertEquals(25, summary.count { "  not_scanned  " in it })
+        assertTrue("- ... 125 more root(s) not scanned" in summary)
+        assertEquals(25, suggestedRoots(summary).size)
+        assertTrue("  125 more location(s) are not shown." in summary)
+    }
+
+    @Test
+    fun `a parent that looks like another database's folder is never suggested for approval`() {
+        folders(DATABASE_LOCATION, "t1")
+        val flow =
+            flow(
+                tables =
+                    listOf("$DATABASE_LOCATION/t1", "$WAREHOUSE/analytics.db/moved", "$WAREHOUSE/marketing/t3", "s3a://bucket2/ext/a/t4"),
+            )
+
+        flow.run()
+
+        val lines = rootLines(flow.auditRecords.single())
+        assertTrue("$WAREHOUSE/analytics.db=not_scanned:looks_like_database_storage:visible_tables=1" in lines)
+        assertTrue("$WAREHOUSE/marketing=not_scanned:looks_like_database_storage:visible_tables=1" in lines)
+        assertTrue("s3a://bucket2/ext/a=not_scanned:outside_database_boundary:visible_tables=1" in lines)
+        assertEquals(listOf("s3a://bucket2/ext/a"), suggestedRoots(flow.summaryLines()))
+    }
+
+    @Test
+    fun `an approval that overlaps an already discovered configured database is refused`() {
+        val analyticsLocation = "s3a://bucket2/teams/analytics_data"
+        folders(analyticsLocation, "a1", "moved")
+        folders(DATABASE_LOCATION, "t1")
+        val flow =
+            CleanupFlowHarness(
+                ApplicationConfig(
+                    catalog = CATALOG,
+                    databases = listOf("analytics", "sales"),
+                    reportOnlyStorageRoots = mapOf("sales" to listOf(analyticsLocation)),
+                ),
+            )
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "analytics") } returns
+            discovered("analytics", analyticsLocation, "$analyticsLocation/a1")
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "sales") } returns
+            discovered("sales", DATABASE_LOCATION, "$DATABASE_LOCATION/t1", "$analyticsLocation/moved")
+        every { flow.catalogDiscoveryService.sharedWarehouseRoots(CATALOG) } returns listOf(WAREHOUSE)
+
+        flow.run()
+
+        val sales = flow.auditRecords.single { it.databaseName == "sales" }
+        assertTrue("$analyticsLocation=not_scanned:other_database_location:visible_tables=1" in rootLines(sales))
+        assertNull(sales.diagnosticDetails["report_only_folders_sample"])
+    }
+
+    @Test
+    fun `each other configured database is looked up at most once and reused from the main loop`() {
+        val marketingLocation = "s3a://bucket2/teams/mkt"
+        val financeLocation = "$WAREHOUSE/finance.db"
+        folders(DATABASE_LOCATION, "t1")
+        folders(financeLocation, "f1")
+        folders("s3a://bucket3/fin_ext", "f2")
+        folders(marketingLocation, "m1")
+        val flow =
+            CleanupFlowHarness(
+                ApplicationConfig(
+                    catalog = CATALOG,
+                    databases = listOf("sales", "finance", "marketing"),
+                    reportOnlyStorageRoots =
+                        mapOf("sales" to listOf("$marketingLocation/shared"), "finance" to listOf("s3a://bucket3/fin_ext")),
+                ),
+            )
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "sales") } returns
+            discovered("sales", DATABASE_LOCATION, "$DATABASE_LOCATION/t1", "$marketingLocation/shared/s2")
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "finance") } returns
+            discovered("finance", financeLocation, "$financeLocation/f1", "s3a://bucket3/fin_ext/f2")
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "marketing") } returns
+            discovered("marketing", marketingLocation, "$marketingLocation/m1")
+        every { flow.catalogDiscoveryService.discoverDatabaseLocation(CATALOG, "finance") } returns financeLocation
+        every { flow.catalogDiscoveryService.discoverDatabaseLocation(CATALOG, "marketing") } returns marketingLocation
+        every { flow.catalogDiscoveryService.sharedWarehouseRoots(CATALOG) } returns listOf(WAREHOUSE)
+
+        flow.run()
+
+        val sales = flow.auditRecords.single { it.databaseName == "sales" }
+        val finance = flow.auditRecords.single { it.databaseName == "finance" }
+        assertTrue("$marketingLocation/shared=not_scanned:other_database_location:visible_tables=1" in rootLines(sales))
+        assertTrue("s3a://bucket3/fin_ext=report_only_approved:scanned:visible_tables=1" in rootLines(finance))
+        verify(exactly = 1) { flow.catalogDiscoveryService.discoverDatabaseLocation(CATALOG, "finance") }
+        verify(exactly = 1) { flow.catalogDiscoveryService.discoverDatabaseLocation(CATALOG, "marketing") }
+        verify(exactly = 0) { flow.catalogDiscoveryService.discoverDatabaseLocation(CATALOG, "sales") }
+    }
+
+    @Test
+    fun `an unreadable other database refuses custom approvals and leaves deletion unchanged`() {
+        folders(DATABASE_LOCATION, "t1", "orphan")
+        folders("s3a://bucket2/ext/a", "t2", "orphan_ext")
+        val flow =
+            CleanupFlowHarness(
+                ApplicationConfig(
+                    catalog = CATALOG,
+                    databases = listOf("sales", "ghost"),
+                    dryRun = false,
+                    deleteEnabled = true,
+                    reportOnlyStorageRoots = mapOf("sales" to listOf("s3a://bucket2/ext/a")),
+                ),
+            )
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "sales") } returns
+            discovered("sales", DATABASE_LOCATION, "$DATABASE_LOCATION/t1", "s3a://bucket2/ext/a/t2")
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "ghost") } throws DatabaseNotFoundException(CATALOG, "ghost", RuntimeException("SCHEMA_NOT_FOUND"))
+        every { flow.catalogDiscoveryService.discoverDatabaseLocation(CATALOG, "ghost") } throws
+            DatabaseNotFoundException(CATALOG, "ghost", RuntimeException("SCHEMA_NOT_FOUND"))
+        every { flow.catalogDiscoveryService.sharedWarehouseRoots(CATALOG) } returns listOf(WAREHOUSE)
+
+        flow.run()
+
+        val sales = flow.auditRecords.single { it.databaseName == "sales" }
+        assertEquals("SUCCESS", sales.status)
+        assertEquals(listOf("$DATABASE_LOCATION/orphan"), sales.deletedFolders)
+        assertTrue("s3a://bucket2/ext/a=not_scanned:other_database_boundary_unknown:visible_tables=1" in rootLines(sales))
+        assertEquals("ghost", sales.diagnosticDetails["unresolved_other_database_boundaries"])
+        assertNull(InMemoryS3FileSystem.listStatusCalls["s3a://bucket2/ext/a"])
+        assertTrue(flow.objectExists("s3a://bucket2/ext/a/orphan_ext/part-0.parquet"))
+        assertEquals("database_not_found", flow.auditRecords.single { it.databaseName == "ghost" }.statusReason)
+        val summary = CleanupSummaryLogger().buildReportLines(flow.summaries.single { it.database == "sales" })
+        assertTrue("  ghost" in summary)
+        assertTrue(suggestedRoots(summary).isEmpty())
+    }
+
+    @Test
+    fun `an unrecognized REST catalog URI is reported instead of silently dropping the root`() {
+        folders(DATABASE_LOCATION, "t1")
+        val flow = flow(tables = listOf("$DATABASE_LOCATION/t1"))
+        every { flow.catalogDiscoveryService.restNamespaceRoot(CATALOG, "sales") } returns
+            RestNamespaceRoot(location = null, status = "unrecognized_uri")
+
+        flow.run()
+
+        assertEquals("unrecognized_uri", flow.auditRecords.single().diagnosticDetails["rest_namespace_root"])
+        assertTrue("  The REST namespace root was not derived: unrecognized_uri." in flow.summaryLines())
     }
 
     private fun folders(
@@ -412,6 +576,25 @@ class MultiRootPlanningFlowTest {
 
     private fun reportOnlyFolders(record: CleanupAuditRecord): List<String> =
         record.diagnosticDetails["report_only_folders_sample"]?.lines().orEmpty()
+
+    private fun suggestedRoots(summary: List<String>): List<String> =
+        summary
+            .dropWhile { it != "  \"report_only_storage_roots\": {" }
+            .drop(2)
+            .takeWhile { it != "    ]" }
+            .map { it.trim().removeSuffix(",").removeSurrounding("\"") }
+
+    private fun discovered(
+        name: String,
+        location: String,
+        vararg tables: String,
+    ): DiscoveredDatabase =
+        DiscoveredDatabase(
+            catalog = CATALOG,
+            database = name,
+            location = location,
+            tables = tables.mapIndexed { index, table -> DiscoveredTable(CATALOG, name, "table_$index", isTemporary = false, location = table) },
+        )
 
     private fun flow(
         tables: List<String>,
@@ -443,7 +626,8 @@ class MultiRootPlanningFlowTest {
                     },
             )
         every { flow.catalogDiscoveryService.sharedWarehouseRoots(CATALOG) } returns warehouseRoots
-        every { flow.catalogDiscoveryService.restNamespaceRoot(CATALOG, "sales") } returns restNamespaceRoot
+        every { flow.catalogDiscoveryService.restNamespaceRoot(CATALOG, "sales") } returns
+            restNamespaceRoot?.let { RestNamespaceRoot(location = it, status = "derived") }
         return flow
     }
 }

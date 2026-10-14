@@ -61,7 +61,8 @@ class CleanupAuditRecorderTest {
 
     @Test
     fun `audit integrity loss writes a BLOCKED record that keeps the candidates and deletes nothing`() {
-        recorder.recordAuditIntegrityLost(
+        recorder.recordDeletionBlocked(
+            reason = DeletionBlockReason.AUDIT_INTEGRITY_LOST,
             runId = "run-5",
             databaseStartTime = Instant.EPOCH,
             catalogName = "example_catalog",
@@ -76,6 +77,7 @@ class CleanupAuditRecorderTest {
             cutoffTime = Instant.EPOCH,
             excludedPaths = emptyList(),
             unscannedTableLocations = listOf("s3a://example-bucket/other/events"),
+            scanPlan = null,
         )
 
         val record = capturedRecord()
@@ -90,7 +92,8 @@ class CleanupAuditRecorderTest {
 
     @Test
     fun `a cleanup root with no visible table writes a BLOCKED record that deletes nothing`() {
-        recorder.recordCleanupRootHasNoVisibleTable(
+        recorder.recordDeletionBlocked(
+            reason = DeletionBlockReason.CLEANUP_ROOT_HAS_NO_VISIBLE_TABLE,
             runId = "run-6",
             databaseStartTime = Instant.EPOCH,
             catalogName = "example_catalog",
@@ -105,6 +108,7 @@ class CleanupAuditRecorderTest {
             cutoffTime = Instant.EPOCH,
             excludedPaths = emptyList(),
             unscannedTableLocations = listOf("s3a://example-bucket/other/orders"),
+            scanPlan = null,
         )
 
         val record = capturedRecord()
