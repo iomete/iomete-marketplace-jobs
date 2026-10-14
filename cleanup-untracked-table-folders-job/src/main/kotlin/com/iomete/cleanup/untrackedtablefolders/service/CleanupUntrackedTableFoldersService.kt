@@ -16,7 +16,6 @@ import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
-import com.iomete.cleanup.untrackedtablefolders.storage.OtherDatabaseBoundaries
 import com.iomete.cleanup.untrackedtablefolders.storage.PartialDeletionException
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
@@ -58,9 +57,6 @@ class CleanupUntrackedTableFoldersService {
         cleanupAuditTableService.ensureAuditTableExists()
 
         var auditFailure: Throwable? = null
-        // Locations of configured databases, so boundary checks look each one up at most once. The main loop
-        // still discovers its own database fresh, because its location feeds the cleanup root.
-        val databaseLocations = mutableMapOf<String, String?>()
 
         fun recordAudit(
             database: String,
@@ -90,7 +86,6 @@ class CleanupUntrackedTableFoldersService {
                         catalog = config.catalog,
                         database = database,
                     )
-                databaseLocations[database] = discoveredDatabase.location
                 logger.info(
                     "Discovered database: catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, location=${discoveredDatabase.location}"
                 )
@@ -172,7 +167,7 @@ class CleanupUntrackedTableFoldersService {
                             )
 
                             val reportOnlyPlan =
-                                reportOnlyPlanForRefusedDatabase(discoveredDatabase, th.reason, sharedWarehouseRoots, databaseLocations)
+                                reportOnlyPlanForRefusedDatabase(discoveredDatabase, th.reason, sharedWarehouseRoots)
 
                             recordAudit(database) {
                                 cleanupAuditRecorder.recordUnsafeScanRoot(
@@ -243,7 +238,6 @@ class CleanupUntrackedTableFoldersService {
                             cleanupRoot = storageScanLocation,
                             databaseLocation = discoveredDatabase.location,
                             sharedWarehouseRoots = sharedWarehouseRoots,
-                            databaseLocations = databaseLocations,
                         )
 
                     scanPlanForAudit = scanPlan
@@ -563,12 +557,10 @@ class CleanupUntrackedTableFoldersService {
         cleanupRoot: String?,
         databaseLocation: String?,
         sharedWarehouseRoots: List<String>,
-        databaseLocations: MutableMap<String, String?>,
     ): ScanPlanReport {
         val catalog = discoveredDatabase.catalog
         val database = discoveredDatabase.database
         val activeTableLocations = discoveredDatabase.tables.mapNotNull { it.location }.sorted()
-        var otherDatabases: OtherDatabaseBoundaries? = null
 
         return try {
             val restRoot = catalogDiscoveryService.restNamespaceRoot(catalog, database)
@@ -586,88 +578,22 @@ class CleanupUntrackedTableFoldersService {
                     approvedRoots = config.reportOnlyStorageRoots[database].orEmpty(),
                     activeTableLocations = activeTableLocations,
                     warehouseRoots = (sharedWarehouseRoots + catalogDiscoveryService.knownWarehouseRoots()).distinct(),
-                    otherDatabaseBoundaries = {
-                        otherDatabaseBoundaries(catalog, database, databaseLocations).also { otherDatabases = it }
-                    },
                 )
 
             reportOnlyRootScanner
                 .scan(catalog = catalog, database = database, roots = roots, activeTableLocations = activeTableLocations)
-                .copy(
-                    restNamespaceRootStatus = restRoot?.status,
-                    unresolvedOtherDatabases = otherDatabases?.unresolvedDatabases.orEmpty(),
-                )
+                .copy(restNamespaceRootStatus = restRoot?.status)
         } catch (error: Exception) {
             logger.warn("Could not plan report-only storage roots for catalog=$catalog, database=$database", error)
             ScanPlanReport(roots = emptyList(), uncoveredTableLocations = emptyList(), planningError = error.toString())
         }
     }
 
-    // Anything short of a usable location leaves a database unresolved, which refuses approvals instead of
-    // treating its boundary as clear.
-    private fun otherDatabaseBoundaries(
-        catalog: String,
-        database: String,
-        databaseLocations: MutableMap<String, String?>,
-    ): OtherDatabaseBoundaries {
-        val roots = mutableMapOf<String, String>()
-        val unresolved = mutableListOf<String>()
-
-        config.databases.distinct().filter { it != database }.forEach { other ->
-            if (other !in databaseLocations) {
-                databaseLocations[other] = lookUpDatabaseLocation(catalog, other)
-            }
-
-            val boundary = databaseLocations[other]?.let { boundaryRoots(catalog, other, it) }
-            if (boundary == null) {
-                unresolved += other
-            } else {
-                boundary.forEach { roots[it] = other }
-            }
-        }
-
-        return OtherDatabaseBoundaries(roots, unresolved.sorted())
-    }
-
-    private fun lookUpDatabaseLocation(
-        catalog: String,
-        database: String,
-    ): String? =
-        try {
-            catalogDiscoveryService.discoverDatabaseLocation(catalog, database)
-        } catch (error: Exception) {
-            // Not found is not proof either: an authorization filter may hide a database the same way.
-            logger.warn(
-                "Could not read the location of configured database=$database in catalog=$catalog; its storage boundary is unresolved for this run",
-                error,
-            )
-            null
-        }
-
-    private fun boundaryRoots(
-        catalog: String,
-        database: String,
-        location: String,
-    ): Set<String>? =
-        try {
-            if (StoragePathUtils.isQualifiedLocation(location)) {
-                StoragePathUtils.allowedDatabaseRoots(location) +
-                    listOfNotNull(
-                        catalogDiscoveryService.restNamespaceRoot(catalog, database)?.location?.let(StoragePathUtils::normalizeLocation),
-                    )
-            } else {
-                null
-            }
-        } catch (error: IllegalArgumentException) {
-            null
-        }
-
     // A refused database keeps its SKIPPED row; report-only roots are added only when their scope can still be checked.
     private fun reportOnlyPlanForRefusedDatabase(
         discoveredDatabase: DiscoveredDatabase,
         reason: UnsafeScanRootReason,
         sharedWarehouseRoots: List<String>,
-        databaseLocations: MutableMap<String, String?>,
     ): ScanPlanReport? {
         val databaseLocation =
             when (reason) {
@@ -685,7 +611,6 @@ class CleanupUntrackedTableFoldersService {
             cleanupRoot = null,
             databaseLocation = databaseLocation,
             sharedWarehouseRoots = sharedWarehouseRoots,
-            databaseLocations = databaseLocations,
         ).also { cleanupSummaryLogger.logScanPlan(discoveredDatabase.catalog, discoveredDatabase.database, it) }
     }
 }

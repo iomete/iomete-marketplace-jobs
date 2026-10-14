@@ -383,19 +383,18 @@ them is ever deleted.
 ```
 
 Use it for table locations outside the database's own storage, which the job does not list on its own.
-Approve a location only when it belongs to that database. Approval is evidence that the location is
-relevant, not proof that the database owns everything in it.
+Approval is evidence that the location is relevant, not proof that the database owns everything in it.
+
+**Approve only locations that belong to the database they are listed under.** The job does not compare
+approved locations with the storage of other databases. If an approved location holds another
+database's tables, the report lists their folders as not matched to a visible table.
 
 - Each key must be listed in `databases`.
 - A location is listed only if at least one table of that database that the job can see is stored under
-  it, and it passes the same checks as every other root. See
-  [Additional storage roots](#additional-storage-roots-report-only).
-- A location that equals, contains or sits inside the storage of another database in `databases` is
-  refused. If the job cannot read that other database's location, every location outside this
-  database's own storage is refused for the run. See
-  [Approval checks against other databases](#approval-checks-against-other-databases).
-- When the job finds table locations outside the database's storage, its log prints a ready-to-copy value
-  for this setting.
+  it, including a location inside the database's own storage, and it passes the same checks as every
+  other root. See [Additional storage roots](#additional-storage-roots-report-only).
+- Table parents outside the database's storage are reported as `not_scanned` with
+  `outside_database_boundary`. Review them before adding any of them here.
 
 ## Safety model
 
@@ -628,9 +627,6 @@ uncovered:
 | `no_visible_table` | An approved location holds no table of the database that the job can see |
 | `invalid_location` | The location cannot be parsed |
 | `root_limit_reached` | More than 25 additional roots were found; the rest are not listed |
-| `looks_like_database_storage` | The parent is, or is inside, a `.db` folder or a direct child of a warehouse root, so it probably belongs to another database |
-| `other_database_location` | The location overlaps the storage of another database in `databases` |
-| `other_database_boundary_unknown` | Another database's location could not be read, so the overlap cannot be ruled out |
 
 A listed root is `scanned`, `absent` (it does not exist yet) or `listing_failed`. A failed listing never
 changes what is deleted. Folders in these roots that do not belong to a table the job can see are listed
@@ -638,27 +634,7 @@ under `FOLDERS IN REPORT-ONLY ROOTS NOT MATCHED TO A VISIBLE TABLE`. A table the
 still own them, so treat them as items to review, not as orphans.
 
 Approval never overrides these checks, and a root listed because of approval is shown with the role
-`report_only_approved`. For table parents outside the database's storage, the log section
-`LOCATIONS THAT CAN BE APPROVED FOR REPORT-ONLY LISTING` prints a `report_only_storage_roots` value to
-review and copy. A parent with any reason other than `outside_database_boundary` is never in that value.
-The log prints at most 25 not-scanned roots and 25 suggestions. The audit counts are always complete.
-
-#### Approval checks against other databases
-
-An approved location, or a parent the log would suggest, is compared with the storage of every other
-database in `databases`: its location, the same path without `.db`, and its REST namespace root. The job
-reuses locations it already discovered in this run, and reads any other one at most once with
-`DESCRIBE DATABASE`. It never lists the catalog.
-
-If a location cannot be read for any reason, including "not found", that database is unresolved. An
-authorization filter can hide a database the same way, so "not found" is not proof. While a database
-is unresolved, approvals outside this database's own storage are refused with
-`other_database_boundary_unknown`. Nothing is suggested, and the audit row names the database in
-`unresolved_other_database_boundaries`. This affects only report-only listing. The cleanup root,
-deletion, and the database's own status are unchanged.
-
-A database stored at a bucket root, or at or above a warehouse root, is not used for this comparison.
-Its location says nothing about which database owns a path under it.
+`report_only_approved`. The log prints at most 25 not-scanned roots. The audit counts are always complete.
 
 ---
 
@@ -765,7 +741,6 @@ scan_plan_uncovered_table_locations_sample
 report_only_folder_count
 report_only_folders_sample
 rest_namespace_root
-unresolved_other_database_boundaries
 *_truncated
 ```
 
@@ -856,9 +831,6 @@ against a known table. The database is then recorded as `BLOCKED` with
 `status_reason=cleanup_root_has_no_visible_table`, and nothing is deleted. This also applies in dry-run
 and when there are no candidates. The candidates are still listed in the audit row and the log, and the
 log's `DELETION` section gives the reason.
-
-**Changed in this version:** earlier versions recorded such a database as `SUCCESS` and could delete
-every unmatched folder in its location.
 
 ---
 

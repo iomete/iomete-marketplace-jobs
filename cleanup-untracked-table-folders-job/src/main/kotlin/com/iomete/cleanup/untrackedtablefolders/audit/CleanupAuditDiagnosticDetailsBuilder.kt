@@ -123,10 +123,6 @@ class CleanupAuditDiagnosticDetailsBuilder {
 
         scanPlan.restNamespaceRootStatus?.let { details["rest_namespace_root"] = it }
 
-        if (scanPlan.unresolvedOtherDatabases.isNotEmpty()) {
-            details["unresolved_other_database_boundaries"] = auditPathSample(scanPlan.unresolvedOtherDatabases)
-        }
-
         return details
     }
 

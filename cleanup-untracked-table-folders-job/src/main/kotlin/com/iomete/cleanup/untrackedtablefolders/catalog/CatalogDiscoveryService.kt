@@ -261,7 +261,7 @@ class CatalogDiscoveryService {
         }
     }
 
-    fun discoverDatabaseLocation(
+    private fun discoverDatabaseLocation(
         catalog: String,
         database: String,
     ): String? {

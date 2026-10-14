@@ -55,7 +55,7 @@ class CleanupSummaryLogger {
             add(SEPARATOR)
             add("")
             add("  Cleanup was skipped for this database. Nothing was deleted.")
-            addScanPlan(database, scanPlan)
+            addScanPlan(scanPlan)
             add(SEPARATOR)
         }
 
@@ -121,7 +121,7 @@ class CleanupSummaryLogger {
             addListOrNone(summary.unscannedTableLocations)
         }
 
-        summary.scanPlan?.let { addScanPlan(summary.database, it) }
+        summary.scanPlan?.let { addScanPlan(it) }
 
         add("")
         if (summary.deletionBlockReason != null) {
@@ -178,10 +178,7 @@ class CleanupSummaryLogger {
         repeat(BLANK_LINES_AROUND_REPORT) { add("") }
     }
 
-    private fun MutableList<String>.addScanPlan(
-        database: String,
-        scanPlan: ScanPlanReport,
-    ) {
+    private fun MutableList<String>.addScanPlan(scanPlan: ScanPlanReport) {
         add("")
         add("STORAGE ROOTS")
         add("")
@@ -196,11 +193,6 @@ class CleanupSummaryLogger {
         add("  Coverage is ${if (scanPlan.complete) "complete" else "partial"} for the tables visible to this job.")
         if (scanPlan.restNamespaceRootStatus != null && scanPlan.restNamespaceRootStatus != "derived") {
             add("  The REST namespace root was not derived: ${scanPlan.restNamespaceRootStatus}.")
-        }
-        if (scanPlan.unresolvedOtherDatabases.isNotEmpty()) {
-            add("  The storage of these configured databases could not be read, so custom approvals outside")
-            add("  this database's storage were refused and nothing is suggested for approval:")
-            add("  ${scanPlan.unresolvedOtherDatabases.joinToString(", ")}")
         }
         add("")
         val (notScanned, listed) = scanPlan.roots.partition { it.outcome == ScanRootOutcome.NOT_SCANNED }
@@ -224,26 +216,6 @@ class CleanupSummaryLogger {
         add("  These folders are not deleted. A table this job cannot see may still own them.")
         add("")
         addListOrNone(scanPlan.reportOnlyFolderPaths)
-
-        val suggestions = scanPlan.unapprovedTableParents
-        if (suggestions.isNotEmpty()) {
-            val roots = (scanPlan.acceptedApprovedRoots + suggestions.take(MAX_LOGGED_NOT_SCANNED_ROOTS)).distinct().sorted()
-            add("")
-            add("LOCATIONS THAT CAN BE APPROVED FOR REPORT-ONLY LISTING")
-            add("")
-            add("  Approve a location only if it belongs to this database. Approval lists it for review;")
-            add("  it never makes anything in it eligible for deletion. To approve, set this in the job config:")
-            add("")
-            add("  \"report_only_storage_roots\": {")
-            add("    \"$database\": [")
-            roots.forEachIndexed { index, root -> add("      \"$root\"" + if (index < roots.lastIndex) "," else "") }
-            add("    ]")
-            add("  }")
-            if (suggestions.size > MAX_LOGGED_NOT_SCANNED_ROOTS) {
-                add("")
-                add("  ${suggestions.size - MAX_LOGGED_NOT_SCANNED_ROOTS} more location(s) are not shown.")
-            }
-        }
     }
 
     private fun deletionBlockExplanation(reason: DeletionBlockReason): List<String> =

@@ -18,17 +18,7 @@ enum class ScanRootRejection(val code: String) {
     CONTAINS_DATABASE_STORAGE("contains_database_storage"),
     NO_VISIBLE_TABLE("no_visible_table"),
     ROOT_LIMIT_REACHED("root_limit_reached"),
-    LOOKS_LIKE_DATABASE_STORAGE("looks_like_database_storage"),
-    OTHER_DATABASE_LOCATION("other_database_location"),
-    OTHER_DATABASE_BOUNDARY_UNKNOWN("other_database_boundary_unknown"),
 }
-
-// Storage of the other databases configured for this run: normalized boundary root to database name.
-// A database whose location could not be read is unresolved and is never treated as non-overlapping.
-data class OtherDatabaseBoundaries(
-    val roots: Map<String, String>,
-    val unresolvedDatabases: List<String>,
-)
 
 data class PlannedScanRoot(
     val location: String,
@@ -71,22 +61,9 @@ data class ScanPlanReport(
     // Set only when planning threw; roots and coverage are then empty and must not be read as a result.
     val planningError: String? = null,
     val restNamespaceRootStatus: String? = null,
-    val unresolvedOtherDatabases: List<String> = emptyList(),
 ) {
     val reportOnlyFolderPaths: List<String>
         get() = roots.flatMap { it.unmatchedFolderPaths }.distinct().sorted()
-
-    val unapprovedTableParents: List<String>
-        get() =
-            roots
-                .filter {
-                    ScanRootSource.TABLE_PARENT in it.root.sources &&
-                        ScanRootSource.APPROVED !in it.root.sources &&
-                        it.root.rejection == ScanRootRejection.OUTSIDE_DATABASE_BOUNDARY
-                }.map { it.root.location }
-
-    val acceptedApprovedRoots: List<String>
-        get() = roots.filter { it.root.reportOnly && it.root.approved && ScanRootSource.APPROVED in it.root.sources }.map { it.root.location }
 
     // Coverage is measured against visible tables only, so "complete" never proves every table was seen.
     val complete: Boolean
@@ -107,7 +84,6 @@ class StorageScanLocationPlanner {
     // Only the cleanup root can delete. Other roots are listed for reporting only when they sit inside the
     // database's own storage (its location, the .db twin, the managed REST namespace root) or inside a root
     // approved for this database. A visible table alone never makes its parent listable.
-    // otherDatabaseBoundaries is called at most once, and only for an approval or a suggestion outside that storage.
     fun plan(
         cleanupRoot: String?,
         databaseLocation: String?,
@@ -115,7 +91,6 @@ class StorageScanLocationPlanner {
         approvedRoots: List<String>,
         activeTableLocations: List<String>,
         warehouseRoots: List<String>,
-        otherDatabaseBoundaries: () -> OtherDatabaseBoundaries = { OtherDatabaseBoundaries(emptyMap(), emptyList()) },
     ): List<PlannedScanRoot> {
         val normalizedCleanupRoot = cleanupRoot?.let(StoragePathUtils::normalizeLocation)
         val proposedSources = linkedMapOf<String, MutableSet<ScanRootSource>>()
@@ -150,41 +125,13 @@ class StorageScanLocationPlanner {
         fun holdsVisibleTable(location: String): Boolean =
             tableLocations.any { StoragePathUtils.isSameOrChildLocation(it, location) }
 
-        fun insideOwnStorage(location: String): Boolean = StoragePathUtils.isInsideAnyRoot(location, databaseStorage)
-
-        val otherDatabases by lazy(otherDatabaseBoundaries)
-
-        // A bucket root or a location holding a warehouse says nothing about who owns a path under it.
-        val otherDatabaseRoots by lazy {
-            otherDatabases.roots.keys.filterNot { root ->
-                StoragePathUtils.isStorageRoot(root) ||
-                    normalizedWarehouseRoots.any { StoragePathUtils.isSameOrChildLocation(it, root) }
-            }
-        }
-
-        fun otherDatabaseRejection(location: String): ScanRootRejection? =
-            when {
-                otherDatabaseRoots.any { StoragePathUtils.overlaps(location, it) } -> ScanRootRejection.OTHER_DATABASE_LOCATION
-                otherDatabases.unresolvedDatabases.isNotEmpty() -> ScanRootRejection.OTHER_DATABASE_BOUNDARY_UNKNOWN
-                else -> null
-            }
-
-        // Hive keeps a database in <warehouse>/<name>.db and the managed REST catalog in <warehouse>/<name>.
-        fun looksLikeDatabaseStorage(location: String): Boolean =
-            generateSequence(location) { StoragePathUtils.parentLocation(it) }
-                .takeWhile { !StoragePathUtils.isStorageRoot(it) }
-                .any { folder -> folder.endsWith(".db") || StoragePathUtils.parentLocation(folder) in normalizedWarehouseRoots }
-
         // Approval is evidence that a location is relevant to this database, never proof that it owns it.
         val approvedBoundaries =
             proposedSources
                 .filter { ScanRootSource.APPROVED in it.value }
                 .keys
-                .filter {
-                    structuralRejection(it) == null &&
-                        holdsVisibleTable(it) &&
-                        (insideOwnStorage(it) || otherDatabaseRejection(it) == null)
-                }.toSet()
+                .filter { structuralRejection(it) == null && holdsVisibleTable(it) }
+                .toSet()
 
         var acceptedReportOnlyRoots = 0
 
@@ -196,17 +143,18 @@ class StorageScanLocationPlanner {
                 }
 
                 val structural = structuralRejection(location)
-                val insideDatabaseStorage = structural == null && insideOwnStorage(location)
+                // A root that exists only because of an approval needs a visible table, even inside the database's own storage.
+                val approvalOnly = sources == setOf(ScanRootSource.APPROVED)
+                val insideDatabaseStorage = structural == null && StoragePathUtils.isInsideAnyRoot(location, databaseStorage)
 
                 val rejection =
                     structural
                         ?: when {
-                            insideDatabaseStorage -> null
+                            insideDatabaseStorage && !approvalOnly -> null
                             ScanRootSource.APPROVED in sources && !holdsVisibleTable(location) -> ScanRootRejection.NO_VISIBLE_TABLE
-                            ScanRootSource.APPROVED in sources -> otherDatabaseRejection(location)
+                            ScanRootSource.APPROVED in sources -> null
                             StoragePathUtils.isInsideAnyRoot(location, approvedBoundaries) -> null
-                            looksLikeDatabaseStorage(location) -> ScanRootRejection.LOOKS_LIKE_DATABASE_STORAGE
-                            else -> otherDatabaseRejection(location) ?: ScanRootRejection.OUTSIDE_DATABASE_BOUNDARY
+                            else -> ScanRootRejection.OUTSIDE_DATABASE_BOUNDARY
                         }
                         ?: if (acceptedReportOnlyRoots >= MAX_REPORT_ONLY_SCAN_ROOTS) {
                             ScanRootRejection.ROOT_LIMIT_REACHED
@@ -220,7 +168,7 @@ class StorageScanLocationPlanner {
                     sources = sources,
                     cleanupRoot = false,
                     rejection = rejection,
-                    approved = rejection == null && !insideDatabaseStorage,
+                    approved = rejection == null && (approvalOnly || !insideDatabaseStorage),
                 )
             }
     }
