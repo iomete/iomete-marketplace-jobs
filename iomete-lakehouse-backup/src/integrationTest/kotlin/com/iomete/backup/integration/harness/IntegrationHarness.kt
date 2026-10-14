@@ -33,7 +33,7 @@ object IntegrationHarness {
                 DockerImageName
                     .parse("rustfs/rustfs:1.0.1")
                     .asCompatibleSubstituteFor("minio/minio")
-            // Set explicitly: without them the container falls back to its own default credentials.
+            // MinIOContainer only passes credentials it was given; RustFS defaults to different ones.
             MinIOContainer(image)
                 .withUserName("minioadmin")
                 .withPassword("minioadmin")
