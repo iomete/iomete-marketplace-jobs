@@ -6,6 +6,7 @@ import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoverySe
 import com.iomete.cleanup.untrackedtablefolders.storage.PlannedScanRoot
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootRejection
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootResult
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import jakarta.enterprise.context.ApplicationScoped
@@ -30,7 +31,13 @@ class ReportOnlyRootScanner {
 
         val results =
             roots.map { root ->
-                val visibleTableCount = activeTableLocations.count { StoragePathUtils.isSameOrChildLocation(it, root.location) }
+                // The planner already found an invalid location unparseable, so it is never compared with table paths.
+                val visibleTableCount =
+                    if (root.rejection == ScanRootRejection.INVALID_LOCATION) {
+                        0
+                    } else {
+                        activeTableLocations.count { StoragePathUtils.isSameOrChildLocation(it, root.location) }
+                    }
                 when {
                     root.cleanupRoot -> ScanRootResult(root, ScanRootOutcome.SCANNED, visibleTableCount)
                     !root.reportOnly -> ScanRootResult(root, ScanRootOutcome.NOT_SCANNED, visibleTableCount)

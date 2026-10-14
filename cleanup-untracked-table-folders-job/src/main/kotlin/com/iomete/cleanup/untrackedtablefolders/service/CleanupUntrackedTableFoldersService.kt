@@ -58,7 +58,8 @@ class CleanupUntrackedTableFoldersService {
         cleanupAuditTableService.ensureAuditTableExists()
 
         var auditFailure: Throwable? = null
-        // Configured database locations seen in this run, so each database is looked up at most once.
+        // Locations of configured databases, so boundary checks look each one up at most once. The main loop
+        // still discovers its own database fresh, because its location feeds the cleanup root.
         val databaseLocations = mutableMapOf<String, String?>()
 
         fun recordAudit(

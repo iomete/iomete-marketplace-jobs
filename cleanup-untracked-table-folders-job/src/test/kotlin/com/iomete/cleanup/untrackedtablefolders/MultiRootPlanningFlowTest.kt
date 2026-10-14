@@ -563,6 +563,20 @@ class MultiRootPlanningFlowTest {
         assertTrue("  The REST namespace root was not derived: unrecognized_uri." in flow.summaryLines())
     }
 
+    @Test
+    fun `a malformed approved root is reported as invalid without failing the plan`() {
+        folders(DATABASE_LOCATION, "t1", "orphan")
+        val flow = flow(tables = listOf("$DATABASE_LOCATION/t1"), approvedRoots = listOf("://bad"))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("SUCCESS", record.status)
+        assertEquals("planned", record.diagnosticDetails["scan_plan_status"])
+        assertTrue("://bad=not_scanned:invalid_location:visible_tables=0" in rootLines(record))
+        assertEquals(listOf("$DATABASE_LOCATION/orphan"), record.deletedFolders)
+    }
+
     private fun folders(
         root: String,
         vararg children: String,

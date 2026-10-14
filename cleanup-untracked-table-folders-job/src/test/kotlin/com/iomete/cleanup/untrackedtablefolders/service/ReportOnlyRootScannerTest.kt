@@ -98,6 +98,24 @@ class ReportOnlyRootScannerTest {
         assertTrue(report.complete)
     }
 
+    @Test
+    fun `a malformed root rejected by the planner is reported, not parsed`() {
+        val report =
+            scanner.scan(
+                "c",
+                "sales",
+                plan(
+                    cleanup("s3a://b/lake/sales.db"),
+                    PlannedScanRoot("://bad", setOf(ScanRootSource.APPROVED), cleanupRoot = false, rejection = ScanRootRejection.INVALID_LOCATION),
+                ),
+                activeTableLocations = listOf("s3a://b/lake/sales.db/t1"),
+            )
+
+        val malformed = report.roots.single { it.root.location == "://bad" }
+        assertEquals(ScanRootOutcome.NOT_SCANNED, malformed.outcome)
+        assertEquals(0, malformed.visibleTableCount)
+    }
+
     private fun folders(vararg paths: String) = paths.map { StorageFolder(it) }
 
     private fun plan(vararg roots: PlannedScanRoot) = roots.toList()
