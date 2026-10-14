@@ -31,9 +31,13 @@ object IntegrationHarness {
         lazy {
             val image =
                 DockerImageName
-                    .parse("quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z")
+                    .parse("rustfs/rustfs:1.0.1")
                     .asCompatibleSubstituteFor("minio/minio")
-            MinIOContainer(image).also { it.start() }
+            // MinIOContainer only passes credentials it was given; RustFS defaults to different ones.
+            MinIOContainer(image)
+                .withUserName("minioadmin")
+                .withPassword("minioadmin")
+                .also { it.start() }
         }
     val minio: MinIOContainer by minioLazy
 

@@ -141,7 +141,7 @@ class BackupJobIntegrationTest {
                 stats = IntegrationHarness.STATS_DISABLED,
             )
 
-        // MinIO truncates timestamps to whole seconds, so a copy taken within the same second as its
+        // S3 timestamps can be truncated to whole seconds, so a copy taken within the same second as its
         // source can be reported as older than it; wait the truncation out before each run.
         Thread.sleep(1_100)
 
@@ -202,7 +202,7 @@ class BackupJobIntegrationTest {
                 stats = IntegrationHarness.STATS_DISABLED,
             )
 
-        // MinIO truncates timestamps to whole seconds, so a copy taken within the same second as its
+        // S3 timestamps can be truncated to whole seconds, so a copy taken within the same second as its
         // source can be reported as older than it; wait the truncation out before the first run.
         Thread.sleep(1_100)
 
