@@ -1,5 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.audit
 
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
 import jakarta.enterprise.context.ApplicationScoped
 
 @ApplicationScoped
@@ -78,9 +80,59 @@ class CleanupAuditDiagnosticDetailsBuilder {
             else -> emptyMap()
         }
 
+    // No scan_plan_status means planning was not attempted. A failed plan never changes the row's status.
+    fun scanPlanDetails(scanPlan: ScanPlanReport?): Map<String, String> {
+        if (scanPlan == null) {
+            return emptyMap()
+        }
+
+        if (scanPlan.planningError != null) {
+            return mapOf(
+                "scan_plan_status" to "failed",
+                "scan_plan_error" to scanPlan.planningError.take(MAX_SCAN_PLAN_ERROR_LENGTH),
+            )
+        }
+
+        val rootLines =
+            scanPlan.roots.map { "${it.root.location}=${it.role}:${it.status}:visible_tables=${it.visibleTableCount}" }
+        val reportOnlyFolders = scanPlan.reportOnlyFolderPaths
+        val uncovered = scanPlan.uncoveredTableLocations
+
+        val details =
+            mutableMapOf(
+                "scan_plan_status" to "planned",
+                "ownership_basis" to "visible_catalog_tables",
+                "scan_root_count" to scanPlan.roots.size.toString(),
+                "scan_root_not_scanned_count" to scanPlan.roots.count { it.outcome == ScanRootOutcome.NOT_SCANNED }.toString(),
+                "scan_roots_sample" to auditPathSample(rootLines),
+                "scan_roots_truncated" to isAuditPathSampleTruncated(rootLines).toString(),
+                "scan_plan_coverage" to if (scanPlan.complete) "complete" else "partial",
+                "scan_plan_uncovered_table_location_count" to uncovered.size.toString(),
+                "report_only_folder_count" to reportOnlyFolders.size.toString(),
+            )
+
+        if (uncovered.isNotEmpty()) {
+            details["scan_plan_uncovered_table_locations_sample"] = auditPathSample(uncovered)
+            details["scan_plan_uncovered_table_locations_truncated"] = isAuditPathSampleTruncated(uncovered).toString()
+        }
+
+        if (reportOnlyFolders.isNotEmpty()) {
+            details["report_only_folders_sample"] = auditPathSample(reportOnlyFolders)
+            details["report_only_folders_truncated"] = isAuditPathSampleTruncated(reportOnlyFolders).toString()
+        }
+
+        scanPlan.restNamespaceRootStatus?.let { details["rest_namespace_root"] = it }
+
+        return details
+    }
+
     private fun auditPathSample(paths: List<String>): String =
         paths.take(MAX_AUDIT_PATH_SAMPLE_SIZE).joinToString("\n")
 
     private fun isAuditPathSampleTruncated(paths: List<String>): Boolean =
         paths.size > MAX_AUDIT_PATH_SAMPLE_SIZE
+
+    private companion object {
+        const val MAX_SCAN_PLAN_ERROR_LENGTH = 500
+    }
 }

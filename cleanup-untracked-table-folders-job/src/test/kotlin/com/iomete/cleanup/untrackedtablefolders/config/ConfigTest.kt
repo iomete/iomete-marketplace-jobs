@@ -89,4 +89,44 @@ class ConfigTest {
             ApplicationConfig(catalog = "spark_catalog", databases = listOf("analytics"), collectSizeStatistics = true).deprecationWarnings(),
         )
     }
+
+    @Test
+    fun `report-only storage roots are optional and parsed per database`() {
+        val mapper = applicationConfigObjectMapper()
+
+        val withoutRoots = mapper.readValue("""{"catalog":"spark_catalog","databases":["sales"]}""", ApplicationConfig::class.java)
+        val withRoots =
+            mapper.readValue(
+                """{"catalog":"spark_catalog","databases":["sales"],"report_only_storage_roots":{"sales":["s3a://bucket2/ext/a"]}}""",
+                ApplicationConfig::class.java,
+            )
+
+        assertEquals(emptyMap<String, List<String>>(), withoutRoots.reportOnlyStorageRoots)
+        assertEquals(mapOf("sales" to listOf("s3a://bucket2/ext/a")), withRoots.reportOnlyStorageRoots)
+        assertDoesNotThrow { withRoots.validate() }
+    }
+
+    @Test
+    fun `report-only storage roots must name a configured database`() {
+        val config =
+            ApplicationConfig(
+                catalog = "spark_catalog",
+                databases = listOf("sales"),
+                reportOnlyStorageRoots = mapOf("analytics" to listOf("s3a://bucket2/ext/a")),
+            )
+
+        assertThrows(IllegalArgumentException::class.java) { config.validate() }
+    }
+
+    @Test
+    fun `report-only storage roots must not be blank`() {
+        val config =
+            ApplicationConfig(
+                catalog = "spark_catalog",
+                databases = listOf("sales"),
+                reportOnlyStorageRoots = mapOf("sales" to listOf(" ")),
+            )
+
+        assertThrows(IllegalArgumentException::class.java) { config.validate() }
+    }
 }

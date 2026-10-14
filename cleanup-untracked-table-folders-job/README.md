@@ -258,6 +258,7 @@ Rules:
 - The folder part must not contain `/`.
 - Catalog prefixes are not supported in this field.
 - The entry is converted to a full physical path internally and then handled together with `exclude_paths`.
+- The same folder name is also excluded under every [additional storage root](#additional-storage-roots-report-only) the job lists for reporting.
 
 | Input | Supported? | Notes |
 |---|---:|---|
@@ -369,6 +370,31 @@ Audit rows store raw byte values:
 - `deleted_total_size_bytes`
 
 Logs display the same values in a human-readable format such as MB, GB, or TB.
+
+### `report_only_storage_roots`
+
+Optional. Storage locations, per database, that the job may list one level deep for review. Nothing in
+them is ever deleted.
+
+```json
+"report_only_storage_roots": {
+  "sales": ["s3a://other-bucket/external/sales_events"]
+}
+```
+
+Use it for table locations outside the database's own storage, which the job does not list on its own.
+Approval is evidence that the location is relevant, not proof that the database owns everything in it.
+
+**Approve only locations that belong to the database they are listed under.** The job does not compare
+approved locations with the storage of other databases. If an approved location holds another
+database's tables, the report lists their folders as not matched to a visible table.
+
+- Each key must be listed in `databases`.
+- A location is listed only if at least one table of that database that the job can see is stored under
+  it, including a location inside the database's own storage, and it passes the same checks as every
+  other root. See [Additional storage roots](#additional-storage-roots-report-only).
+- Table parents outside the database's storage are reported as `not_scanned` with
+  `outside_database_boundary`. Review them before adding any of them here.
 
 ## Safety model
 
@@ -542,7 +568,7 @@ Before choosing a scan root, the job checks the database location itself:
 
 The warehouse root is read from `spark.sql.catalog.<catalog>.warehouse`. For `spark_catalog`, Spark's `spark.sql.warehouse.dir` is checked as well. If the catalog warehouse is not configured, the job cannot run this check and skips the database.
 
-A rejected database is recorded as `SKIPPED` with one of these reasons, and its storage is never listed:
+A rejected database is recorded as `SKIPPED` with one of these reasons. The rejected location itself is never listed:
 
 | `status_reason` | Meaning |
 |---|---|
@@ -551,6 +577,12 @@ A rejected database is recorded as `SKIPPED` with one of these reasons, and its 
 | `catalog_warehouse_unknown` | The catalog warehouse location is not configured |
 | `scan_root_outside_database_boundary` | The resolved scan root falls outside the database location |
 | `invalid_storage_location` | A database, table, or warehouse location cannot be parsed |
+
+The row keeps this status and reason. For `scan_root_outside_database_boundary`,
+`database_location_is_bucket_root` and `database_location_contains_warehouse_root`, the job may still list
+[report-only roots](#additional-storage-roots-report-only) whose own checks pass, and adds them to
+`diagnostic_details`. A rejected bucket-root or warehouse-root database location is never one of them.
+Nothing is deleted.
 
 When tables sit under more than one parent location, the job keeps the conservative fallback and scans only the database location. Table locations outside the scanned root are not checked in that run, and the job reports this instead of hiding it:
 
@@ -561,6 +593,48 @@ When tables sit under more than one parent location, the job keeps the conservat
 - A `FAILED` row always has `unscanned_table_location_count` once coverage was checked. A value of
   `0` means the scan covered every table location. No count means the job failed before it got
   that far.
+
+The scan root above is the **cleanup root**. It is the only place where folders can be deleted. Deletion
+is also blocked when no table the job can see is stored under the cleanup root. See
+[Cleanup root with no visible table](#cleanup-root-with-no-visible-table).
+
+### Additional storage roots (report only)
+
+A database often has tables under more than one parent folder. The job also lists these other roots, one
+level deep, and reports what it finds. It never deletes from them.
+
+A root is listed only when it sits inside the database's own storage:
+
+- the database location, or the same path without the `.db` suffix;
+- for `spark_catalog` and other IOMETE-managed REST catalogs, `<catalog warehouse>/<database>`, where the
+  catalog stores the database's Iceberg tables. A catalog counts as IOMETE-managed when its `uri` ends with
+  `/internal/catalogs/<catalog>`, or with `/catalogs/<catalog>` on the in-cluster `iom-rest-catalog`
+  service. For any other Iceberg REST catalog, the audit row has `rest_namespace_root=unrecognized_uri`
+  and the log explains it;
+- a location approved for the database in `report_only_storage_roots`, as long as at least one visible
+  table of the database is stored under it.
+
+Every other table parent is reported as `not_scanned` with a reason, and its table locations count as
+uncovered:
+
+| Reason | Meaning |
+|---|---|
+| `outside_database_boundary` | The parent is outside the database's own storage, in the same or another bucket |
+| `bucket_root` | The parent is a bucket root |
+| `contains_warehouse_root` | The parent equals or contains the catalog warehouse root |
+| `inside_table_location` | The parent sits inside another table's folder |
+| `contains_database_storage` | The location would contain the database's own location or REST root |
+| `no_visible_table` | An approved location holds no table of the database that the job can see |
+| `invalid_location` | The location cannot be parsed |
+| `root_limit_reached` | More than 25 additional roots were found; the rest are not listed |
+
+A listed root is `scanned`, `absent` (it does not exist yet) or `listing_failed`. A failed listing never
+changes what is deleted. Folders in these roots that do not belong to a table the job can see are listed
+under `FOLDERS IN REPORT-ONLY ROOTS NOT MATCHED TO A VISIBLE TABLE`. A table the job cannot see may
+still own them, so treat them as items to review, not as orphans.
+
+Approval never overrides these checks, and a root listed because of approval is shown with the role
+`report_only_approved`. The log prints at most 25 not-scanned roots. The audit counts are always complete.
 
 ---
 
@@ -655,8 +729,35 @@ unresolved_tables_sample
 non_candidate_storage_folder_paths_sample
 unscanned_table_location_count
 unscanned_table_locations_sample
+ownership_basis
+scan_plan_status
+scan_plan_error
+scan_root_count
+scan_root_not_scanned_count
+scan_roots_sample
+scan_plan_coverage
+scan_plan_uncovered_table_location_count
+scan_plan_uncovered_table_locations_sample
+report_only_folder_count
+report_only_folders_sample
+rest_namespace_root
 *_truncated
 ```
+
+Storage root keys follow `scan_plan_status`:
+
+- No `scan_plan_status` means planning was not attempted, for example a database skipped before its
+  storage was checked.
+- `scan_plan_status=failed` means planning threw. `scan_plan_error` holds the error, and no other storage
+  root key is written. The row keeps the status it would have had anyway.
+- `scan_plan_status=planned` comes with the keys below.
+- `scan_roots_sample` has one line per root: `<location>=<role>:<status>:visible_tables=<n>`, where
+  role is `cleanup`, `report_only`, `report_only_approved` or `not_scanned`. The cleanup root comes first,
+  then listed roots, then not-scanned roots with the most visible tables first.
+- `scan_plan_coverage` is `complete` when every table the job can see sits under a listed root and every
+  listing worked. It says nothing about tables the job cannot see.
+- `ownership_basis=visible_catalog_tables` records that ownership was checked only against the tables the
+  job can see in the catalog.
 
 Path lists are sampled to avoid writing very large audit rows.
 
@@ -679,6 +780,7 @@ Its state is unknown: it may be fully present, partly deleted, or gone.
 | Unexpected catalog, storage, or deletion failure | `FAILED` | Real failure path remains an error |
 | Deletion failed partway through the candidates | `FAILED` | `status_reason=deletion_failed`; see [Partial deletion](#partial-deletion) |
 | An earlier audit write in the same run failed | `BLOCKED` | `status_reason=audit_integrity_lost`; see [Audit write failures](#audit-write-failures) |
+| No visible table is stored under the cleanup root | `BLOCKED` | `status_reason=cleanup_root_has_no_visible_table`; candidates are reported, nothing is deleted |
 
 ---
 
@@ -718,6 +820,17 @@ it did. From that point on:
 
 Each later row is written once on a best-effort basis. A database whose own audit row failed has
 no row in the audit table, so use the job log for that database.
+
+---
+
+## Cleanup root with no visible table
+
+When tables sit under more than one parent location, the cleanup root falls back to the database
+location. If no table the job can see is stored under that location, nothing in it can be checked
+against a known table. The database is then recorded as `BLOCKED` with
+`status_reason=cleanup_root_has_no_visible_table`, and nothing is deleted. This also applies in dry-run
+and when there are no candidates. The candidates are still listed in the audit row and the log, and the
+log's `DELETION` section gives the reason.
 
 ---
 
@@ -867,6 +980,10 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T18 | A candidate folder holds a recently written object | The folder is skipped as too new |
 | T19 | Deletion fails partway through the candidates | `FAILED`, `status_reason=deletion_failed`, `deleted_folders` lists only folders deleted before the failure |
 | T20 | Audit write fails for one database in a multi-database run | Later databases are not deleted, eligible ones are `BLOCKED` with `status_reason=audit_integrity_lost`, the job fails |
+| T21 | Tables under several parent folders | `scan_roots_sample` lists each root with its role and status; folders are deleted only under the cleanup root |
+| T22 | A table parent outside the database's storage | Reported as `not_scanned:outside_database_boundary`, never listed, its table counted as uncovered |
+| T23 | The same parent added to `report_only_storage_roots` | Listed as `report_only_approved`; its folders are reported and never deleted |
+| T24 | A database rejected with `scan_root_outside_database_boundary` | Still `SKIPPED` with the same reason; report-only roots appear in `diagnostic_details`; nothing is deleted |
 
 ---
 
@@ -965,9 +1082,15 @@ Any old unreferenced files inside that active table folder should be handled by 
 - Candidate discovery is table-folder-level: the job only selects immediate child folders under the resolved scan root as cleanup candidates.
 - When a selected candidate folder is deleted, the full object-storage prefix under that folder is deleted, including nested data and metadata objects.
 - The job relies on Spark catalog discovery for active table locations.
+- `report_only_storage_roots` approves listing for review only. It cannot make a location eligible for
+  deletion. Older job versions reject configs that contain this setting, so upgrade the job before adding it.
 - Object-storage access supports S3 and S3-compatible storage. A non-S3 catalog location falls back to Spark's own Hadoop configuration, which carries no catalog-specific endpoint or credentials.
 - Catalogs using vended or remotely signed credentials are not supported for storage access, because those credentials are issued per Iceberg request and never appear in `sparkConf`.
 - Folder names are compared case-sensitively, because `ORDERS` and `orders` are different object-storage prefixes.
 - A database whose location equals or contains the catalog warehouse root cannot be cleaned by this job.
+- Folders are deleted only under the cleanup root. Additional roots are reported only, and table parents
+  outside the database's own storage are not listed at all.
+- Ownership is checked against the tables the job can see in the catalog. A table the job cannot see does
+  not protect its folder.
 - The job is intended for controlled cleanup workflows, not blind automatic deletion.
 - Folder age and size require recursively listing objects under each candidate folder, for at most `max_candidate_folders_per_database` folders per database. This can take time for folders with many objects and cannot be turned off, because it is needed to establish folder age.

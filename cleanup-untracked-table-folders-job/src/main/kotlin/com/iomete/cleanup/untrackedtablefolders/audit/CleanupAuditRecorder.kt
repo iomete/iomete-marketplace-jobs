@@ -2,6 +2,7 @@ package com.iomete.cleanup.untrackedtablefolders.audit
 
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
@@ -53,6 +54,7 @@ class CleanupAuditRecorder {
         reason: String,
         errorMessage: String,
         excludedPaths: List<String>,
+        scanPlan: ScanPlanReport? = null,
     ) {
         writeAuditRecord(
             runId = runId,
@@ -66,7 +68,8 @@ class CleanupAuditRecorder {
             activeTableCount = activeTableCount,
             excludedPaths = excludedPaths,
             diagnosticDetails =
-                auditDiagnosticDetailsBuilder.build(activeTableLocations = activeTableLocations),
+                auditDiagnosticDetailsBuilder.build(activeTableLocations = activeTableLocations) +
+                    auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan),
         )
     }
 
@@ -108,6 +111,7 @@ class CleanupAuditRecorder {
         cutoffTime: Instant,
         excludedPaths: List<String>,
         unscannedTableLocations: List<String> = emptyList(),
+        scanPlan: ScanPlanReport? = null,
     ) {
         writeAuditRecord(
             runId = runId,
@@ -132,7 +136,7 @@ class CleanupAuditRecorder {
                     unresolvedTables = unresolvedTables,
                     potentiallyUntrackedFolderPaths = potentiallyUntrackedFolderPaths,
                     unscannedTableLocations = unscannedTableLocations,
-                ),
+                ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan),
         )
     }
 
@@ -151,6 +155,7 @@ class CleanupAuditRecorder {
         excludedPaths: List<String>,
         errorMessage: String,
         unscannedTableLocations: List<String> = emptyList(),
+        scanPlan: ScanPlanReport? = null,
     ) {
         writeAuditRecord(
             runId = runId,
@@ -174,7 +179,7 @@ class CleanupAuditRecorder {
                     storageFolderPaths = storageFolderPaths,
                     candidateFolderPaths = candidateFolderPaths,
                     unscannedTableLocations = unscannedTableLocations,
-                ),
+                ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan),
         )
     }
 
@@ -195,6 +200,7 @@ class CleanupAuditRecorder {
         cutoffTime: Instant,
         excludedPaths: List<String>,
         unscannedTableLocations: List<String> = emptyList(),
+        scanPlan: ScanPlanReport? = null,
     ) {
         val candidateFolderPathSet = candidateFolderPaths.toSet()
 
@@ -228,7 +234,7 @@ class CleanupAuditRecorder {
                     nonCandidateStorageFolderPaths =
                         storageFolderPaths.filter { it !in candidateFolderPathSet }.sorted(),
                     unscannedTableLocations = unscannedTableLocations,
-                ),
+                ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan),
         )
     }
 
@@ -250,6 +256,7 @@ class CleanupAuditRecorder {
         cutoffTime: Instant,
         excludedPaths: List<String>,
         unscannedTableLocations: List<String>,
+        scanPlan: ScanPlanReport? = null,
         error: Throwable,
     ) {
         writeAuditRecord(
@@ -282,11 +289,12 @@ class CleanupAuditRecorder {
                     unscannedTableLocations = unscannedTableLocations,
                     reportCompleteScanCoverage = true,
                     deletionFailedFolderPath = failedFolderPath,
-                ),
+                ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan),
         )
     }
 
-    fun recordAuditIntegrityLost(
+    fun recordDeletionBlocked(
+        reason: DeletionBlockReason,
         runId: String,
         databaseStartTime: Instant,
         catalogName: String,
@@ -301,6 +309,7 @@ class CleanupAuditRecorder {
         cutoffTime: Instant,
         excludedPaths: List<String>,
         unscannedTableLocations: List<String>,
+        scanPlan: ScanPlanReport?,
     ) {
         writeAuditRecord(
             runId = runId,
@@ -308,7 +317,7 @@ class CleanupAuditRecorder {
             catalogName = catalogName,
             databaseName = databaseName,
             status = STATUS_BLOCKED,
-            statusReason = "audit_integrity_lost",
+            statusReason = reason.code,
             errorMessage = null,
             discoveredDatabaseLocation = discoveredDatabaseLocation,
             storageScanLocation = storageScanLocation,
@@ -326,7 +335,7 @@ class CleanupAuditRecorder {
                     storageFolderPaths = storageFolderPaths,
                     candidateFolderPaths = candidateFolderPaths,
                     unscannedTableLocations = unscannedTableLocations,
-                ),
+                ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan),
         )
     }
 
@@ -353,6 +362,7 @@ class CleanupAuditRecorder {
         databaseStartTime: Instant,
         excludedPaths: List<String> = excludePathResolver.normalizedConfiguredExcludePaths(),
         unscannedTableLocations: List<String>? = null,
+        scanPlan: ScanPlanReport? = null,
         error: Throwable,
     ) {
         writeAuditRecord(
@@ -367,7 +377,7 @@ class CleanupAuditRecorder {
             diagnosticDetails =
                 unscannedTableLocations
                     ?.let { auditDiagnosticDetailsBuilder.scanCoverageDetails(it, reportCompleteScanCoverage = true) }
-                    .orEmpty(),
+                    .orEmpty() + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan),
         )
     }
 

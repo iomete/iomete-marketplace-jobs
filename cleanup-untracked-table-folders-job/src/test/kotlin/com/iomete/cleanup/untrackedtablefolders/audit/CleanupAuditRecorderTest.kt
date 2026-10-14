@@ -61,7 +61,8 @@ class CleanupAuditRecorderTest {
 
     @Test
     fun `audit integrity loss writes a BLOCKED record that keeps the candidates and deletes nothing`() {
-        recorder.recordAuditIntegrityLost(
+        recorder.recordDeletionBlocked(
+            reason = DeletionBlockReason.AUDIT_INTEGRITY_LOST,
             runId = "run-5",
             databaseStartTime = Instant.EPOCH,
             catalogName = "example_catalog",
@@ -76,6 +77,7 @@ class CleanupAuditRecorderTest {
             cutoffTime = Instant.EPOCH,
             excludedPaths = emptyList(),
             unscannedTableLocations = listOf("s3a://example-bucket/other/events"),
+            scanPlan = null,
         )
 
         val record = capturedRecord()
@@ -86,6 +88,35 @@ class CleanupAuditRecorderTest {
         assertEquals(1, record.candidateFolderCount)
         assertEquals(0, record.deletedFolderCount)
         assertEquals("1", record.diagnosticDetails["unscanned_table_location_count"])
+    }
+
+    @Test
+    fun `a cleanup root with no visible table writes a BLOCKED record that deletes nothing`() {
+        recorder.recordDeletionBlocked(
+            reason = DeletionBlockReason.CLEANUP_ROOT_HAS_NO_VISIBLE_TABLE,
+            runId = "run-6",
+            databaseStartTime = Instant.EPOCH,
+            catalogName = "example_catalog",
+            databaseName = "analytics",
+            discoveredDatabaseLocation = "s3a://example-bucket/db",
+            storageScanLocation = "s3a://example-bucket/db",
+            activeTableCount = 1,
+            activeTableLocations = listOf("s3a://example-bucket/other/orders"),
+            storageFolderPaths = listOf("s3a://example-bucket/db/a"),
+            candidateFolderPaths = listOf("s3a://example-bucket/db/a"),
+            candidateSizeStats = null,
+            cutoffTime = Instant.EPOCH,
+            excludedPaths = emptyList(),
+            unscannedTableLocations = listOf("s3a://example-bucket/other/orders"),
+            scanPlan = null,
+        )
+
+        val record = capturedRecord()
+
+        assertEquals("BLOCKED", record.status)
+        assertEquals("cleanup_root_has_no_visible_table", record.statusReason)
+        assertEquals(listOf("s3a://example-bucket/db/a"), record.candidateFolders)
+        assertEquals(0, record.deletedFolderCount)
     }
 
     private fun capturedRecord(): CleanupAuditRecord {

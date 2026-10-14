@@ -1,5 +1,10 @@
 package com.iomete.cleanup.untrackedtablefolders.logging
 
+import com.iomete.cleanup.untrackedtablefolders.storage.PlannedScanRoot
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootResult
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootSource
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -121,5 +126,32 @@ class CleanupSummaryLoggerTest {
 
         assertTrue(report.contains("Table locations outside the scanned root         0"))
         assertFalse(report.contains("TABLE LOCATIONS OUTSIDE THE SCANNED ROOT"))
+    }
+
+    @Test
+    fun `storage roots section appears only with a plan and never calls report-only folders deletable`() {
+        assertFalse(logger.buildReportLines(summary()).contains("STORAGE ROOTS"))
+
+        val plan =
+            ScanPlanReport(
+                roots =
+                    listOf(
+                        ScanRootResult(PlannedScanRoot("s3a://bucket/db", setOf(ScanRootSource.DATABASE_LOCATION), cleanupRoot = true), ScanRootOutcome.SCANNED, 1),
+                        ScanRootResult(
+                            PlannedScanRoot("s3a://bucket/rest/db", setOf(ScanRootSource.REST_NAMESPACE), cleanupRoot = false),
+                            ScanRootOutcome.SCANNED,
+                            0,
+                            listOf("s3a://bucket/rest/db/x"),
+                        ),
+                    ),
+                uncoveredTableLocations = emptyList(),
+            )
+
+        val lines = logger.buildReportLines(summary().copy(scanPlan = plan))
+
+        assertTrue(lines.contains("STORAGE ROOTS"))
+        assertTrue(lines.contains("- s3a://bucket/rest/db  report_only  scanned  visible tables: 0"))
+        assertTrue(lines.contains("  These folders are not deleted. A table this job cannot see may still own them."))
+        assertTrue(lines.contains("- s3a://bucket/rest/db/x"))
     }
 }

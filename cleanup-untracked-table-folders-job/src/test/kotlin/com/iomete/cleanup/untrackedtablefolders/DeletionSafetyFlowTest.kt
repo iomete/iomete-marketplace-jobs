@@ -160,8 +160,36 @@ class DeletionSafetyFlowTest {
 
         flow.run()
 
-        assertEquals("SUCCESS", flow.auditRecords.single().status)
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("cleanup_root_has_no_visible_table", record.statusReason)
         assertTrue(flow.objectExists("s3a://bucket/lake/sales.db/orphan/part-0.parquet"))
+    }
+
+    @Test
+    fun `a fallback cleanup root with no visible table blocks deletion and the summary says why`() {
+        putFolder("s3a://bucket/lake/sales.db")
+        putFolder("s3a://bucket/lake/sales.db/hidden_hive_table", "part-0.parquet")
+        putFolder("s3a://bucket/lake/sales/t_rest", "part-0.parquet")
+        putFolder("s3a://bucket/custom/x/t_custom", "part-0.parquet")
+        val flow = flow(deleteEnabled = true)
+        flow.catalogReturns(
+            database("sales", "s3a://bucket/lake/sales.db", "s3a://bucket/lake/sales/t_rest", "s3a://bucket/custom/x/t_custom"),
+        )
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("s3a://bucket/lake/sales.db", record.storageScanLocation)
+        assertEquals("BLOCKED", record.status)
+        assertEquals("cleanup_root_has_no_visible_table", record.statusReason)
+        assertEquals(listOf("s3a://bucket/lake/sales.db/hidden_hive_table"), record.candidateFolders)
+        assertTrue(record.deletedFolders.isEmpty())
+        assertTrue(flow.objectExists("s3a://bucket/lake/sales.db/hidden_hive_table/part-0.parquet"))
+        val summary = flow.summaryLines()
+        assertTrue(summary.none { "eligible for cleanup" in it })
+        assertTrue("  Reason: cleanup_root_has_no_visible_table" in summary)
+        assertTrue("  No folder in this database was deleted." in summary)
     }
 
     @Test

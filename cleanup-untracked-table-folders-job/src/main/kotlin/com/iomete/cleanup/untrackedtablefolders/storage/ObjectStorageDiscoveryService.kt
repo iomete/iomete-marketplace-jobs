@@ -43,15 +43,35 @@ class ObjectStorageDiscoveryService {
             operation = "list immediate child folders",
             locations = listOf(location),
         ) { fileSystem ->
-            fileSystem
-                .listStatus(Path(location))
-                .filter { it.isDirectory }
-                .map {
-                    StorageFolder(path = it.path.toString())
-                }
-                .sortedBy { it.path }
+            childFolders(fileSystem, Path(location))
         }
     }
+
+    fun listImmediateChildFoldersIfPresent(
+        catalog: String,
+        location: String,
+    ): List<StorageFolder>? {
+        logger.info("Listing immediate child folders for catalog=$catalog under location=$location")
+
+        return catalogFileSystemProvider.withFileSystem(
+            catalog = catalog,
+            operation = "list immediate child folders",
+            locations = listOf(location),
+        ) { fileSystem ->
+            val path = Path(location)
+            if (fileSystem.exists(path)) childFolders(fileSystem, path) else null
+        }
+    }
+
+    private fun childFolders(
+        fileSystem: FileSystem,
+        path: Path,
+    ): List<StorageFolder> =
+        fileSystem
+            .listStatus(path)
+            .filter { it.isDirectory }
+            .map { StorageFolder(path = it.path.toString()) }
+            .sortedBy { it.path }
 
     fun collectSizeStatsPerFolder(
         catalog: String,

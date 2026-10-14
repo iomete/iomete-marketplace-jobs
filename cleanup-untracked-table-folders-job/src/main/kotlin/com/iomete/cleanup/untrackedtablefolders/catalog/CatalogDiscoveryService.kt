@@ -15,6 +15,12 @@ data class DiscoveredDatabase(
     val unresolvedTables: List<DiscoveredTable> get() = tables.filter { it.isUnresolved }
 }
 
+// status is derived, unrecognized_uri or no_warehouse; location is set only when derived.
+data class RestNamespaceRoot(
+    val location: String?,
+    val status: String,
+)
+
 data class DiscoveredTable(
     val catalog: String,
     val database: String,
@@ -50,6 +56,28 @@ private const val MISSING_METADATA_MESSAGE = "Location does not exist:"
 private const val WAREHOUSE_PROPERTY = "warehouse"
 private const val SESSION_CATALOG_NAME = "spark_catalog"
 private const val SESSION_WAREHOUSE_KEY = "spark.sql.warehouse.dir"
+private const val CATALOG_TYPE_PROPERTY = "type"
+private const val CATALOG_URI_PROPERTY = "uri"
+private val ICEBERG_CATALOG_CLASSES =
+    setOf("org.apache.iceberg.spark.SparkSessionCatalog", "org.apache.iceberg.spark.SparkCatalog")
+private const val REST_CATALOG_SERVICE_HOST = "iom-rest-catalog"
+
+// iom-core gives computes <base>/internal/catalogs/<catalog>. iom-rest-catalog also serves the same catalogs at
+// /catalogs/<catalog>, which is accepted only on its own in-cluster service host.
+internal fun isManagedRestCatalogUri(
+    uri: String,
+    catalog: String,
+): Boolean {
+    val parsed = runCatching { java.net.URI(uri.trim()) }.getOrNull() ?: return false
+    val path = parsed.path?.trimEnd('/') ?: return false
+    if (path.endsWith("/internal/catalogs/$catalog")) {
+        return true
+    }
+
+    val host = parsed.host.orEmpty().lowercase()
+    val restCatalogServiceHost = host == REST_CATALOG_SERVICE_HOST || host.startsWith("$REST_CATALOG_SERVICE_HOST.")
+    return restCatalogServiceHost && path.endsWith("/catalogs/$catalog")
+}
 
 internal fun isMetadataNotFoundError(error: Throwable): Boolean {
     var current: Throwable? = error
@@ -131,6 +159,46 @@ class CatalogDiscoveryService {
             }
 
         return listOf(catalogWarehouse, sessionWarehouse).filter { it.isNotEmpty() }.distinct()
+    }
+
+    fun knownWarehouseRoots(): List<String> {
+        val spark = sparkSessionProvider.getOrCreate()
+        val catalogWarehouses =
+            spark.sparkContext().getConf()
+                .getAllWithPrefix("spark.sql.catalog.")
+                .filter { it._1().endsWith(".$WAREHOUSE_PROPERTY") }
+                .map { it._2().trim() }
+
+        return (catalogWarehouses + spark.conf().get(SESSION_WAREHOUSE_KEY, "").trim())
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .sorted()
+    }
+
+    // The managed REST catalog places every table at <warehouse>/<namespace>/<table> and ignores any
+    // namespace location property, so this root holds its tables even when none of them is visible.
+    // Null when the catalog is not an Iceberg REST catalog at all.
+    fun restNamespaceRoot(
+        catalog: String,
+        database: String,
+    ): RestNamespaceRoot? {
+        val sparkConf = sparkSessionProvider.getOrCreate().sparkContext().getConf()
+        val prefix = CatalogStorageProperties.catalogPropertyPrefix(catalog)
+
+        val catalogClass = sparkConf.get(prefix.removeSuffix("."), "").trim()
+        val catalogType = sparkConf.get(prefix + CATALOG_TYPE_PROPERTY, "").trim()
+        val catalogUri = sparkConf.get(prefix + CATALOG_URI_PROPERTY, "").trim()
+        val warehouse = sparkConf.get(prefix + WAREHOUSE_PROPERTY, "").trim().trimEnd('/')
+
+        if (catalogClass !in ICEBERG_CATALOG_CLASSES || !catalogType.equals("rest", ignoreCase = true)) {
+            return null
+        }
+
+        return when {
+            !isManagedRestCatalogUri(catalogUri, catalog) -> RestNamespaceRoot(location = null, status = "unrecognized_uri")
+            warehouse.isEmpty() -> RestNamespaceRoot(location = null, status = "no_warehouse")
+            else -> RestNamespaceRoot(location = "$warehouse/$database", status = "derived")
+        }
     }
 
     fun discoverTables(

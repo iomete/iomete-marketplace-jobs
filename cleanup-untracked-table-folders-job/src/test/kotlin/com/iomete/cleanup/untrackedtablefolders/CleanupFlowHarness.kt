@@ -7,18 +7,22 @@ import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditTableService
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
+import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
 import com.iomete.cleanup.untrackedtablefolders.service.CleanupUntrackedTableFoldersService
+import com.iomete.cleanup.untrackedtablefolders.service.ReportOnlyRootScanner
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
 import com.iomete.cleanup.untrackedtablefolders.storage.CatalogStorageTestHarness
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.InMemoryS3FileSystem
+import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationPlanner
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationResolver
 import io.mockk.Runs
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
+import io.mockk.spyk
 
 /** Real cleanup flow over [InMemoryS3FileSystem]; only catalog discovery and the audit table are faked. */
 class CleanupFlowHarness(
@@ -26,6 +30,7 @@ class CleanupFlowHarness(
 ) {
     val catalogDiscoveryService: CatalogDiscoveryService = mockk()
     val auditRecords = mutableListOf<CleanupAuditRecord>()
+    val summaries = mutableListOf<CleanupSummary>()
 
     private val auditTableService: CleanupAuditTableService = mockk(relaxed = true)
     private val storage =
@@ -37,6 +42,8 @@ class CleanupFlowHarness(
 
     init {
         every { auditTableService.writeAuditRecord(capture(auditRecords)) } just Runs
+        every { catalogDiscoveryService.restNamespaceRoot(any(), any()) } returns null
+        every { catalogDiscoveryService.knownWarehouseRoots() } returns emptyList()
 
         val excludePathResolver = ExcludePathResolver().also { it.config = config }
         val discovery = storage.discoveryService()
@@ -55,7 +62,10 @@ class CleanupFlowHarness(
                         recorder.auditDiagnosticDetailsBuilder = CleanupAuditDiagnosticDetailsBuilder()
                         recorder.excludePathResolver = excludePathResolver
                     }
-                it.cleanupSummaryLogger = CleanupSummaryLogger()
+                it.cleanupSummaryLogger =
+                    spyk(CleanupSummaryLogger()).also { logger ->
+                        every { logger.logCleanupSummary(capture(summaries)) } answers { callOriginal() }
+                    }
                 it.storageScanLocationResolver = StorageScanLocationResolver()
                 it.excludePathResolver = excludePathResolver
                 it.candidateSizeStatCollector =
@@ -69,10 +79,19 @@ class CleanupFlowHarness(
                         gate.catalogDiscoveryService = catalogDiscoveryService
                         gate.objectStorageDeletionService = storage.deletionService()
                     }
+                it.storageScanLocationPlanner = StorageScanLocationPlanner()
+                it.reportOnlyRootScanner =
+                    ReportOnlyRootScanner().also { scanner ->
+                        scanner.objectStorageDiscoveryService = discovery
+                        scanner.untrackedFolderCandidateDetector = UntrackedFolderCandidateDetector()
+                        scanner.excludePathResolver = excludePathResolver
+                    }
             }
     }
 
     fun run() = service.run()
+
+    fun summaryLines(): List<String> = CleanupSummaryLogger().buildReportLines(summaries.single())
 
     fun objectExists(path: String): Boolean = path in InMemoryS3FileSystem.paths(ENDPOINT)
 
