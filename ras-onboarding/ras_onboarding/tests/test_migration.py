@@ -600,12 +600,45 @@ def test_migrate_single_asset_type_success(migration, db_manager):
 
     # Verify success
     assert result is True
+    mock_connection.rollback.assert_not_called()
 
     # Verify get_domain_assets was called
     migration.get_domain_assets.assert_called()
 
     # Restore original method
     migration.get_domain_assets = original_get_domain_assets
+
+
+def test_migrate_single_asset_type_dry_run_rolls_back(migration, db_manager):
+    """Test that dry run rolls back asset and permission changes."""
+    migration.migration_config['dry_run'] = True
+    migration.get_domain_assets = Mock(return_value=['asset-1', 'asset-2'])
+
+    mock_connection = Mock()
+    mock_transaction = Mock()
+    mock_transaction.__enter__ = Mock(return_value=mock_connection)
+    mock_transaction.__exit__ = Mock(return_value=None)
+    db_manager.get_transaction.return_value = mock_transaction
+
+    db_manager.execute_query.side_effect = [
+        [{'username': 'test_owner'}],  # owner validation
+        [],  # check_existing_bundle (no existing bundle)
+        [],  # get_existing_bundle_assets (no existing assets)
+        [],  # get_existing_bundle_permissions for users
+        []   # get_existing_bundle_permissions for groups
+    ]
+    db_manager.execute_insert.return_value = 'new-bundle-id'
+
+    mock_cursor = Mock()
+    mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+    mock_cursor.__exit__ = Mock(return_value=None)
+    mock_cursor.rowcount = 2
+    mock_connection.cursor.return_value = mock_cursor
+
+    result = migration.migrate_single_asset_type('test_domain', 'test_owner', 'USER', 'COMPUTE')
+
+    assert result is True
+    mock_connection.rollback.assert_called_once()
 
 
 def test_migrate_domain_multiple_asset_types(migration, db_manager):
