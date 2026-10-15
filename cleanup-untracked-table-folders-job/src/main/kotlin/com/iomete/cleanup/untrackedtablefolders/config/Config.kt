@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.fasterxml.jackson.module.kotlin.readValue
+import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.inject.Produces
 import org.jboss.logging.Logger
@@ -60,6 +61,13 @@ data class ApplicationConfig(
         }
 
         val configuredDatabaseSet = databases.toSet()
+
+        // An exclusion that cannot be compared with storage paths would protect nothing.
+        excludePaths.forEach { excludePath ->
+            require(runCatching { StoragePathUtils.isQualifiedLocation(excludePath) }.getOrDefault(false)) {
+                "exclude_paths entries must include a scheme and bucket, for example s3a://bucket/path: $excludePath"
+            }
+        }
 
         excludeDatabaseFolders.forEach { excludedDatabaseFolder ->
             val parts = excludedDatabaseFolder.split(".")

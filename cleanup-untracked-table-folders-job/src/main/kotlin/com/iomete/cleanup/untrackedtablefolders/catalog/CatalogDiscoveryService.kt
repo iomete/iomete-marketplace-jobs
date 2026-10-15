@@ -2,6 +2,7 @@ package com.iomete.cleanup.untrackedtablefolders.catalog
 
 import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
 import com.iomete.cleanup.untrackedtablefolders.storage.CatalogStorageProperties
+import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import org.apache.spark.sql.Row
@@ -342,6 +343,7 @@ class CatalogDiscoveryService {
             ?.takeIf { it.isNotBlank() }
     }
 
+    // A path without a scheme and bucket resolves against the writer's default filesystem, which the job cannot know.
     private fun discoverTableStorage(
         catalog: String,
         database: String,
@@ -365,6 +367,12 @@ class CatalogDiscoveryService {
             }
 
         val location = describeValue(rows, "Location")
+        if (location != null && runCatching { !StoragePathUtils.isQualifiedLocation(location) }.getOrDefault(true)) {
+            throw TableLocationUnresolvedException(
+                "The table location has no scheme or bucket, so it cannot be matched to storage",
+                IllegalStateException("unqualified table location"),
+            )
+        }
         val provider = describeValue(rows, "Provider")
         if (location == null || (provider != null && !provider.equals("iceberg", ignoreCase = true))) {
             return TableStorage(location, emptyList())
@@ -391,10 +399,15 @@ class CatalogDiscoveryService {
             )
         }
 
-        return TableStorage(
-            location = location,
-            writeLocations = ICEBERG_WRITE_PATH_PROPERTIES.mapNotNull { properties[it]?.trim()?.takeIf(String::isNotBlank) },
-        )
+        val writeLocations = ICEBERG_WRITE_PATH_PROPERTIES.mapNotNull { properties[it]?.trim()?.takeIf(String::isNotBlank) }
+        if (writeLocations.any { runCatching { !StoragePathUtils.isQualifiedLocation(it) }.getOrDefault(true) }) {
+            throw TableLocationUnresolvedException(
+                "A declared write path has no scheme or bucket, so it cannot be matched to storage",
+                IllegalStateException("unqualified write path"),
+            )
+        }
+
+        return TableStorage(location = location, writeLocations = writeLocations)
     }
 
     private fun describeValue(

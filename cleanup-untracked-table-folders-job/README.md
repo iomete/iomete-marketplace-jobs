@@ -209,6 +209,7 @@ For a shorter database-scoped exclusion format, use `exclude_database_folders`.
 | `s3a://bucket/data/analytics/customer_events/` | Yes | Trailing slash is normalized |
 | `customer_events` | No | Table/folder name alone is ambiguous across databases |
 | `analytics.customer_events` | No for `exclude_paths` | Use `exclude_database_folders` for this database-scoped folder format |
+| `/data/analytics/customer_events` | No | A path without a scheme and bucket fails validation, because it cannot be compared with storage paths |
 | `customer` as a substring | No | Substring matching is intentionally not supported |
 
 Full paths are the most explicit option and avoid ambiguity when multiple configured databases contain folders with the same table or folder name.
@@ -578,7 +579,7 @@ A rejected database is recorded as `SKIPPED` with one of these reasons. The reje
 | `database_location_contains_warehouse_root` | The database location equals or contains the catalog warehouse root |
 | `catalog_warehouse_unknown` | The catalog warehouse location is not configured |
 | `scan_root_outside_database_boundary` | The resolved scan root falls outside the database location |
-| `invalid_storage_location` | A database, table, or warehouse location cannot be parsed |
+| `invalid_storage_location` | A database, table, or warehouse location cannot be parsed, or a database or warehouse location has no scheme or bucket |
 
 The row keeps this status and reason. For `scan_root_outside_database_boundary`,
 `database_location_is_bucket_root` and `database_location_contains_warehouse_root`, the job may still list
@@ -852,14 +853,18 @@ namespace folder, `<catalog warehouse>/<database>`, where its Iceberg tables liv
   table exists, its location is protected.
 - A REST namespace folder of another database that holds the cleanup root cannot be checked this way,
   because the catalog adds a unique suffix to table folders.
-- In that case, or if the database list, a database location, or the table lookup cannot be read, the
-  database is `BLOCKED` with `status_reason=other_database_storage_unknown`, and nothing is deleted.
+- The job finds its own database in that list by its exact name. If the catalog normalizes names, one
+  entry that differs only in letter case is its own. If two entries differ from the configured name
+  only in letter case, the job cannot tell which one is its own.
+- In that case, or if the database list, a database location, or the table lookup cannot be read, or a
+  location has no scheme and bucket, the database is `BLOCKED` with
+  `status_reason=other_database_storage_unknown`, and nothing is deleted.
 
 For an Iceberg table the job can see, its `write.data.path`, `write.metadata.path`,
 `write.object-storage.path` and `write.folder-storage.path` are protected like its location, during
 candidate selection and again in the pre-delete recheck. A table with `gc.enabled=false` or
-`write.location-provider.impl`, or whose properties cannot be read, is treated as an unresolved table,
-which blocks deletion for its database.
+`write.location-provider.impl`, a write path without a scheme and bucket, or properties that cannot be
+read is treated as an unresolved table, which blocks deletion for its database.
 
 These checks use only what the job can see. They do not protect a database or table hidden from the
 job, another database's table stored inside the cleanup root, or files that a table reaches without a
@@ -870,8 +875,9 @@ write path property, for example through `add_files`, `migrate`, `snapshot`, or 
 ## Unresolved table storage ownership
 
 A table is unresolved when it exists in the catalog but the job cannot read its Iceberg metadata or
-storage location during the run. This says nothing about whether the table is wanted or healthy. It
-only means the job does not currently know which storage folder that table owns.
+storage location during the run, or its location has no scheme and bucket. This says nothing about
+whether the table is wanted or healthy. It only means the job does not currently know which storage
+folder that table owns.
 
 Storage reconciliation still runs. The job lists the database's storage folders and compares them
 against the table locations it could verify, so the operator still gets the full picture of what is

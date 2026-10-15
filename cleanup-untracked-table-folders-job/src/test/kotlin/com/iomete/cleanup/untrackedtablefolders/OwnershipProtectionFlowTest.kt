@@ -216,6 +216,86 @@ class OwnershipProtectionFlowTest {
         assertTrue(flow.objectExists("$area/orphan/part-0.parquet"))
     }
 
+    @Test
+    fun `an unqualified database location blocks deletion`() {
+        folders(SALES, "t1", "orphan", "other_db")
+        val flow = flow(tables = listOf(table("$SALES/t1")), databases = mapOf("sales" to SALES, "other" to "/lake/sales.db/other_db"))
+
+        flow.run()
+
+        assertEquals("other_database_storage_unknown", flow.auditRecords.single().statusReason)
+        assertTrue(flow.objectExists("$SALES/other_db/part-0.parquet"))
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+    }
+
+    @Test
+    fun `an unqualified location for the table on the cleanup root's path blocks deletion`() {
+        val restRoot = "$WAREHOUSE/sales"
+        folders(restRoot, "t_rest", "dt=2024-01-01")
+        val flow = flow(tables = listOf(table("$restRoot/t_rest")), databases = mapOf("default" to WAREHOUSE))
+        every { flow.catalogDiscoveryService.tableLocationIfExists(CATALOG, "default", "sales") } returns "/lake/sales"
+
+        flow.run()
+
+        assertEquals("other_database_storage_unknown", flow.auditRecords.single().statusReason)
+        assertTrue(flow.objectExists("$restRoot/dt=2024-01-01/part-0.parquet"))
+    }
+
+    @Test
+    fun `a namespace that differs only in letter case is another database when the catalog lists both`() {
+        folders(SALES, "t1", "orphan", "x_data")
+        val flow = flow(tables = listOf(table("$SALES/t1")), databases = mapOf("sales" to SALES, "Sales" to "$SALES/x_data"))
+
+        flow.run()
+
+        assertEquals(listOf("$SALES/orphan"), flow.auditRecords.single().deletedFolders)
+        assertTrue(flow.objectExists("$SALES/x_data/part-0.parquet"))
+    }
+
+    @Test
+    fun `a catalog that lowercases names still recognizes the configured database`() {
+        folders(SALES, "t1", "orphan")
+        val flow = flow(tables = listOf(table("$SALES/t1")), databases = mapOf("sales" to SALES), database = "Sales")
+
+        flow.run()
+
+        assertEquals(listOf("$SALES/orphan"), flow.auditRecords.single().deletedFolders)
+    }
+
+    @Test
+    fun `two case variants of the configured name with no exact match block deletion`() {
+        folders(SALES, "t1", "orphan")
+        val flow =
+            flow(tables = listOf(table("$SALES/t1")), databases = mapOf("sales" to SALES, "Sales" to "$WAREHOUSE/Sales.db"), database = "SALES")
+
+        flow.run()
+
+        assertEquals("other_database_storage_unknown", flow.auditRecords.single().statusReason)
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+    }
+
+    @Test
+    fun `a table that becomes unresolved before the final check stops deletion`() {
+        folders(SALES, "t1", "t2", "orphan")
+        val flow = flow(tables = listOf(table("$SALES/t1")))
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "sales") } returnsMany
+            listOf(
+                database(listOf(table("$SALES/t1"))),
+                database(
+                    listOf(
+                        table("$SALES/t1"),
+                        DiscoveredTable(CATALOG, "sales", "t2", false, location = null, unresolvedReason = "The table location has no scheme or bucket"),
+                    ),
+                ),
+            )
+
+        flow.run()
+
+        assertTrue(flow.auditRecords.single().deletedFolders.isEmpty())
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+        assertTrue(flow.objectExists("$SALES/t2/part-0.parquet"))
+    }
+
     private fun folders(
         root: String,
         vararg children: String,
@@ -237,12 +317,13 @@ class OwnershipProtectionFlowTest {
         databases: Map<String, String?> = mapOf("sales" to SALES),
         deleteEnabled: Boolean = true,
         databaseLocation: String = SALES,
+        database: String = "sales",
     ): CleanupFlowHarness {
         val flow =
             CleanupFlowHarness(
-                ApplicationConfig(catalog = CATALOG, databases = listOf("sales"), dryRun = !deleteEnabled, deleteEnabled = deleteEnabled),
+                ApplicationConfig(catalog = CATALOG, databases = listOf(database), dryRun = !deleteEnabled, deleteEnabled = deleteEnabled),
             )
-        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "sales") } returns DiscoveredDatabase(CATALOG, "sales", databaseLocation, tables)
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, database) } returns DiscoveredDatabase(CATALOG, database, databaseLocation, tables)
         every { flow.catalogDiscoveryService.sharedWarehouseRoots(CATALOG) } returns listOf(WAREHOUSE)
         every { flow.catalogDiscoveryService.visibleDatabaseLocations(CATALOG) } returns databases
         return flow

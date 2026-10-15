@@ -578,10 +578,22 @@ class CleanupUntrackedTableFoldersService {
     ): List<String>? {
         try {
             val root = StoragePathUtils.normalizeLocation(cleanupRoot)
-            return databaseLocations.getOrThrow()
-                .filterKeys { !it.equals(discoveredDatabase.database, ignoreCase = true) }
+            val locations = databaseLocations.getOrThrow()
+            // The listing shows how the catalog treats letter case: an exact name is this database; otherwise one
+            // entry that differs only in case is this database as the catalog normalized it. More than one is ambiguous.
+            val sameName = locations.keys.filter { it.equals(discoveredDatabase.database, ignoreCase = true) }
+            val ownName = sameName.firstOrNull { it == discoveredDatabase.database } ?: sameName.singleOrNull()
+            if (ownName == null && sameName.isNotEmpty()) {
+                return null
+            }
+
+            return locations
+                .filterKeys { it != ownName }
                 .flatMap { (database, location) ->
-                    val hiveRoot = StoragePathUtils.normalizeLocation(location ?: return null)
+                    if (location == null || !StoragePathUtils.isQualifiedLocation(location)) {
+                        return null
+                    }
+                    val hiveRoot = StoragePathUtils.normalizeLocation(location)
                     val restRoot =
                         catalogDiscoveryService.restNamespaceRoot(discoveredDatabase.catalog, database)?.location
                             ?.let(StoragePathUtils::normalizeLocation)
@@ -593,7 +605,12 @@ class CleanupUntrackedTableFoldersService {
                             storage == restRoot -> return null
                             else -> {
                                 val folderOnRootPath = root.removePrefix("$storage/").substringBefore('/')
-                                listOfNotNull(catalogDiscoveryService.tableLocationIfExists(discoveredDatabase.catalog, database, folderOnRootPath))
+                                val tableLocation =
+                                    catalogDiscoveryService.tableLocationIfExists(discoveredDatabase.catalog, database, folderOnRootPath)
+                                if (tableLocation != null && !StoragePathUtils.isQualifiedLocation(tableLocation)) {
+                                    return null
+                                }
+                                listOfNotNull(tableLocation)
                             }
                         }
                     }

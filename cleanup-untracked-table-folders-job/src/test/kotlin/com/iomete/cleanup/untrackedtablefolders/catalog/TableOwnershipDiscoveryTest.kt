@@ -65,6 +65,25 @@ class TableOwnershipDiscoveryTest {
     }
 
     @Test
+    fun `an Iceberg write path without a scheme or bucket is unresolved`() {
+        listsOneTable(provider = "iceberg")
+        rows("SHOW TBLPROPERTIES $TABLE", "write.data.path" to "/lake/sales.db/events_data")
+
+        assertEquals(true, discovery.discoverTables("c", "sales").single().isUnresolved)
+    }
+
+    @Test
+    fun `a table location without a scheme or bucket is unresolved`() {
+        every { spark.sql("SHOW TABLES FROM `c`.`sales`") } returns dataset(listOf(RowFactory.create("sales", "events", false)))
+        rows("DESCRIBE EXTENDED $TABLE", "Location" to "/lake/sales.db/events", "Provider" to "hive")
+
+        val table = discovery.discoverTables("c", "sales").single()
+
+        assertNull(table.location)
+        assertEquals(true, table.isUnresolved)
+    }
+
+    @Test
     fun `an Iceberg table whose properties cannot be read is unresolved`() {
         listsOneTable(provider = "iceberg")
         every { spark.sql("SHOW TBLPROPERTIES $TABLE") } throws IllegalStateException("denied")

@@ -71,6 +71,13 @@ class StorageScanLocationResolver {
         databaseRoots: Set<String>,
         sharedWarehouseRoots: List<String>,
     ) {
+        if (!parsed(databaseLocation) { StoragePathUtils.isQualifiedLocation(databaseLocation) }) {
+            throw UnsafeScanRootException(
+                UnsafeScanRootReason.INVALID_STORAGE_LOCATION,
+                "Database location has no scheme or bucket, so it cannot be checked against the warehouse or table locations. databaseLocation=$databaseLocation",
+            )
+        }
+
         if (databaseRoots.any { StoragePathUtils.isStorageRoot(it) }) {
             throw UnsafeScanRootException(
                 UnsafeScanRootReason.DATABASE_LOCATION_IS_BUCKET_ROOT,
