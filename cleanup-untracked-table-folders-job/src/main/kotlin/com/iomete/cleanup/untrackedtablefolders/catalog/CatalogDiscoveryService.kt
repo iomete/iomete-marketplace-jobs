@@ -307,8 +307,9 @@ class CatalogDiscoveryService {
                 }
                 throw IllegalStateException("Failed to look up table=$catalog.$database.$table", th)
             }
+        val details = tableDetails(rows) ?: throw IllegalStateException("No single table details section for table=$catalog.$database.$table")
 
-        return describeValue(rows, "Location")
+        return describeValue(details, "Location")
     }
 
     private fun discoverDatabaseLocation(
@@ -366,14 +367,19 @@ class CatalogDiscoveryService {
                 )
             }
 
-        val location = describeValue(rows, "Location")
+        val details =
+            tableDetails(rows) ?: throw TableLocationUnresolvedException(
+                "DESCRIBE EXTENDED returned no single table details section",
+                IllegalStateException("no single table details section"),
+            )
+        val location = describeValue(details, "Location")
         if (location != null && runCatching { !StoragePathUtils.isQualifiedLocation(location) }.getOrDefault(true)) {
             throw TableLocationUnresolvedException(
                 "The table location has no scheme or bucket, so it cannot be matched to storage",
                 IllegalStateException("unqualified table location"),
             )
         }
-        val provider = describeValue(rows, "Provider")
+        val provider = describeValue(details, "Provider")
         if (location == null || (provider != null && !provider.equals("iceberg", ignoreCase = true))) {
             return TableStorage(location, emptyList())
         }
@@ -410,13 +416,22 @@ class CatalogDiscoveryService {
         return TableStorage(location = location, writeLocations = writeLocations)
     }
 
+    // Columns are listed before the table details, and on v1 tables columns with defaults again after them, so a
+    // column named like a detail field must not be read as one. The details start at a header row with no data type,
+    // which no column has, and end at the next blank row. Null when that section is missing, repeated, or repeats a field.
+    private fun tableDetails(rows: List<Row>): Map<String, String>? {
+        val header =
+            rows.indices.singleOrNull { index ->
+                rows[index].getString(0)?.trim() == "# Detailed Table Information" && rows[index].getString(1).isNullOrBlank()
+            } ?: return null
+        val fields = rows.drop(header + 1).takeWhile { !it.getString(0).isNullOrBlank() }
+        val details = fields.associate { it.getString(0).trim().lowercase() to it.getString(1)?.trim().orEmpty() }
+
+        return details.takeIf { it.size == fields.size }
+    }
+
     private fun describeValue(
-        rows: List<Row>,
+        details: Map<String, String>,
         name: String,
-    ): String? =
-        rows
-            .firstOrNull { row -> row.getString(0).trim().equals(name, ignoreCase = true) }
-            ?.getString(1)
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
+    ): String? = details[name.lowercase()]?.takeIf { it.isNotBlank() }
 }
