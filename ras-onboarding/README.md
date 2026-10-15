@@ -18,6 +18,8 @@ A dynamic PySpark job that automates migration from **domain-based access contro
 
 This README will guide you through creating and running the job template in the IOMETE Console, following the same flow as the **Create Job Template** page.
 
+> **Upgrading from 3.x to 4.0?** See [Upgrading From 3.x to 4.0](#upgrading-from-3x-to-40) for the configuration to use.
+
 ---
 
 ## Table of Contents
@@ -37,6 +39,7 @@ This README will guide you through creating and running the job template in the 
 14. [Troubleshooting](#troubleshooting)
 15. [Security Notes](#security-notes)
 16. [Monitoring and Logging](#monitoring-and-logging)
+17. [Upgrading From 3.x to 4.0](#upgrading-from-3x-to-40)
 
 ---
 
@@ -114,7 +117,7 @@ SPARK_JOB: {
     permission_mappings: {
         list: ["VIEW"]
         view: ["VIEW"]
-        manage: ["UPDATE", "DELETE", "RUN", "CONSUME"]
+        manage: ["UPDATE", "DELETE", "RUN", "SUSPEND"]
     }
     asset_action_on_duplicate: "UPDATE"
 }
@@ -277,7 +280,7 @@ Main Application File: local:///app/driver.py
             permission_mappings: {
                 list: ["VIEW"]
                 view: ["VIEW"]
-                manage: ["UPDATE", "DELETE", "RUN", "CONSUME"]
+                manage: ["UPDATE", "DELETE", "RUN", "SUSPEND"]
             }
             asset_action_on_duplicate: "UPDATE"
         },
@@ -961,7 +964,7 @@ INFO: Domain production migrated: 25 COMPUTE, 15 SPARK_JOB, 8 JUPYTER_CONTAINER 
 DEBUG: Generated asset query for COMPUTE: SELECT id, domain FROM lakehouse WHERE domain = ? AND is_deleted = false
 DEBUG: Generated permission subquery for COMPUTE: service = 'lakehouse' AND permission IN ('UPDATE', 'DELETE', 'EXECUTE', 'CONSUME')
 DEBUG: Generated asset query for SPARK_JOB: SELECT id, domain FROM spark_job WHERE domain = ? AND is_deleted = false
-DEBUG: Generated permission subquery for SPARK_JOB: service = 'spark_job' AND permission IN ('UPDATE', 'DELETE', 'RUN', 'CONSUME')
+DEBUG: Generated permission subquery for SPARK_JOB: service = 'spark_job' AND permission IN ('UPDATE', 'DELETE', 'RUN', 'SUSPEND')
 DEBUG: Generated asset query for JUPYTER_CONTAINER: SELECT id, domain FROM jupyter_container WHERE domain = ? AND is_deleted = false
 DEBUG: Generated permission subquery for JUPYTER_CONTAINER: all users get permissions ['VIEW', 'UPDATE', 'DELETE', 'RUN']
 ```
@@ -1026,3 +1029,33 @@ ERROR: Table 'nonexistent_table' doesn't exist for asset type CUSTOM_ASSET
 ERROR: Invalid permission mapping for CUSTOM_ASSET: manage permissions list is empty
 ```
 **Solution:** Ensure all permission mappings (list, view, manage) are properly configured.
+
+---
+
+## Upgrading From 3.x to 4.0
+
+In 4.0, `onboardComputeRas`, `onboardSparkJobRas`, `onboardWorkspaceRas` and `onboardNamespaceMappingRas` are always on. If they were off before the upgrade, your existing compute clusters, Spark jobs and namespaces aren't in any resource bundle, so the console hides them from every user, admins included. Nothing is deleted. Running this job once after the upgrade brings them back.
+
+Start from the [example configuration](#example-configuration) and set one entry per domain:
+
+```hocon
+domains: [
+    {
+        domain_id: "default"
+        owner_id: "admin"        # an existing user or group that will own the bundles
+        owner_type: "USER"       # USER or GROUP
+        asset_types: ["NAMESPACE", "COMPUTE", "SPARK_JOB"]
+    }
+    # one entry per domain
+]
+dry_run: true
+duplicate_bundle_action: "UPDATE"
+```
+
+- Run it with `dry_run: true` first. The job logs what it would migrate, then rolls everything back. If the counts look right, set it to `false` and run it again. Use image `1.0.7` or later: older images commit `COMPUTE` and `SPARK_JOB` changes even in a dry run.
+- If your database doesn't use SSL, add `ssl_mode: "disable"` to both database blocks. The job defaults to `require`.
+- Leave out `DOMAIN`: `domainLevelBundleAuthorization` stays off in 4.0.
+- Leave out `JUPYTER_CONTAINER`: Jupyter containers were already in bundles before 4.0.
+- Users keep the access they had through their domain roles. It moves into bundle permissions.
+- Running it again changes nothing, so it's safe to re-run after a failure.
+- Run it before adding more data planes. A namespace mapped on several data planes only gets one of its mappings bundled.
