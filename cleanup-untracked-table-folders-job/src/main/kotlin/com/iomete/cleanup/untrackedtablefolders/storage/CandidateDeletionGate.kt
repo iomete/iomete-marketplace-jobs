@@ -62,7 +62,7 @@ class CandidateDeletionGate {
 
         return discoveredDatabase
             .tables
-            .mapNotNull { it.location }
+            .flatMap { listOfNotNull(it.location) + it.writeLocations }
             .map { StoragePathUtils.normalizeLocation(it) }
     }
 

@@ -256,6 +256,34 @@ class StorageScanLocationResolverTest {
     }
 
     @Test
+    fun `fails closed when the database location has no scheme or bucket`() {
+        val error =
+            assertThrows(UnsafeScanRootException::class.java) {
+                resolver.resolve(
+                    databaseLocation = "/lake",
+                    activeTableLocations = listOf("s3a://bucket/lake/sales.db/orders", "s3a://bucket/lake/other/events"),
+                    sharedWarehouseRoots = listOf("s3a://bucket/lake"),
+                )
+            }
+
+        assertEquals(UnsafeScanRootReason.INVALID_STORAGE_LOCATION, error.reason)
+    }
+
+    @Test
+    fun `refuses a database on a storage scheme the job does not support`() {
+        val error =
+            assertThrows(UnsafeScanRootException::class.java) {
+                resolver.resolve(
+                    databaseLocation = "hdfs://namenode/lake/sales.db",
+                    activeTableLocations = listOf("hdfs://namenode/lake/sales.db/orders"),
+                    sharedWarehouseRoots = listOf("hdfs://namenode/lake"),
+                )
+            }
+
+        assertEquals(UnsafeScanRootReason.INVALID_STORAGE_LOCATION, error.reason)
+    }
+
+    @Test
     fun `reports an unparseable location instead of a URI failure`() {
         val error =
             assertThrows(UnsafeScanRootException::class.java) {

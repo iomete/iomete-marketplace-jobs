@@ -209,6 +209,7 @@ For a shorter database-scoped exclusion format, use `exclude_database_folders`.
 | `s3a://bucket/data/analytics/customer_events/` | Yes | Trailing slash is normalized |
 | `customer_events` | No | Table/folder name alone is ambiguous across databases |
 | `analytics.customer_events` | No for `exclude_paths` | Use `exclude_database_folders` for this database-scoped folder format |
+| `/data/analytics/customer_events` | No | A path without a scheme and bucket fails validation, because it cannot be compared with storage paths |
 | `customer` as a substring | No | Substring matching is intentionally not supported |
 
 Full paths are the most explicit option and avoid ambiguity when multiple configured databases contain folders with the same table or folder name.
@@ -426,6 +427,8 @@ The main safety principle is **fail closed**: if the job cannot prove that a fol
 | Bucket-root database location rejection | Treating a whole bucket as one database's storage |
 | Warehouse-root rejection | Scanning a shared warehouse root where other databases live |
 | Active table location protection | Deleting folders still claimed by the catalog, including folders inside a table location |
+| Other database protection | Deleting the storage of another database the job can see that sits inside the cleanup root |
+| Iceberg write path protection | Deleting folders named by a visible Iceberg table's `write.*.path` properties |
 | Configured exclusions | Deleting folders explicitly protected through `exclude_paths` or `exclude_database_folders`, including an excluded path nested inside a candidate |
 | `older_than_hours` cutoff | Selecting folders that hold recently written objects; folders of unknown age are skipped |
 | `max_candidate_folders_per_database` | Broad accidental deletion when too many candidates appear |
@@ -576,7 +579,7 @@ A rejected database is recorded as `SKIPPED` with one of these reasons. The reje
 | `database_location_contains_warehouse_root` | The database location equals or contains the catalog warehouse root |
 | `catalog_warehouse_unknown` | The catalog warehouse location is not configured |
 | `scan_root_outside_database_boundary` | The resolved scan root falls outside the database location |
-| `invalid_storage_location` | A database, table, or warehouse location cannot be parsed |
+| `invalid_storage_location` | A database, table, or warehouse location cannot be parsed, a database or warehouse location has no scheme or bucket, or a database is on a storage scheme the job does not support, such as HDFS |
 
 The row keeps this status and reason. For `scan_root_outside_database_boundary`,
 `database_location_is_bucket_root` and `database_location_contains_warehouse_root`, the job may still list
@@ -781,6 +784,7 @@ Its state is unknown: it may be fully present, partly deleted, or gone.
 | Deletion failed partway through the candidates | `FAILED` | `status_reason=deletion_failed`; see [Partial deletion](#partial-deletion) |
 | An earlier audit write in the same run failed | `BLOCKED` | `status_reason=audit_integrity_lost`; see [Audit write failures](#audit-write-failures) |
 | No visible table is stored under the cleanup root | `BLOCKED` | `status_reason=cleanup_root_has_no_visible_table`; candidates are reported, nothing is deleted |
+| The storage of other databases could not be established | `BLOCKED` | `status_reason=other_database_storage_unknown`; candidates are reported, nothing is deleted; see [Storage of other databases and Iceberg write paths](#storage-of-other-databases-and-iceberg-write-paths) |
 
 ---
 
@@ -834,11 +838,47 @@ log's `DELETION` section gives the reason.
 
 ---
 
+## Storage of other databases and Iceberg write paths
+
+Before choosing candidates, the job reads the location of every database it can see in the catalog,
+once per run, with `SHOW NAMESPACES` and `DESCRIBE DATABASE`. It never lists other databases' tables.
+For `spark_catalog` and IOMETE-managed REST catalogs, a database's storage also includes its REST
+namespace folder, `<catalog warehouse>/<database>`, where its Iceberg tables live.
+
+- Storage of another database at or inside the cleanup root is protected. A folder that is, holds, or
+  sits inside it is never a candidate.
+- A database location that holds the cleanup root, such as `default` at the warehouse root, places its
+  Hive tables at `<location>/<table>`. The job looks up the one table that this rule would put on the
+  cleanup root's path, for example `default.sales` for a cleanup root at `<warehouse>/sales`. If that
+  table exists, its location is protected.
+- A REST namespace folder of another database that holds the cleanup root cannot be checked this way,
+  because the catalog adds a unique suffix to table folders.
+- The job finds its own database in that list by its exact name. If the catalog normalizes names, one
+  entry that differs only in letter case is its own. If two entries differ from the configured name
+  only in letter case, the job cannot tell which one is its own.
+- In that case, or if the database list, a database location, or the table lookup cannot be read, or a
+  location has no scheme and bucket, the database is `BLOCKED` with
+  `status_reason=other_database_storage_unknown`, and nothing is deleted.
+
+For an Iceberg table the job can see, its `write.data.path`, `write.metadata.path`,
+`write.object-storage.path` and `write.folder-storage.path` are protected like its location, during
+candidate selection and again in the pre-delete recheck. A table with `gc.enabled` set to anything but
+`true` or with `write.location-provider.impl` set, a blank write path or one without a scheme and bucket,
+or properties that cannot be read is treated as an unresolved table, which blocks deletion for its database.
+
+These checks use only what the job can see. They do not protect a database or table hidden from the
+job, another database's table stored inside the cleanup root, or files that a table reaches without a
+write path property, for example through `add_files`, `migrate`, `snapshot`, or an earlier location.
+
+---
+
 ## Unresolved table storage ownership
 
 A table is unresolved when it exists in the catalog but the job cannot read its Iceberg metadata or
-storage location during the run. This says nothing about whether the table is wanted or healthy. It
-only means the job does not currently know which storage folder that table owns.
+storage location during the run, its location is missing or blank and it is not a view, or its location
+has no scheme and bucket. This says nothing about
+whether the table is wanted or healthy. It only means the job does not currently know which storage
+folder that table owns.
 
 Storage reconciliation still runs. The job lists the database's storage folders and compares them
 against the table locations it could verify, so the operator still gets the full picture of what is
@@ -984,6 +1024,8 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T22 | A table parent outside the database's storage | Reported as `not_scanned:outside_database_boundary`, never listed, its table counted as uncovered |
 | T23 | The same parent added to `report_only_storage_roots` | Listed as `report_only_approved`; its folders are reported and never deleted |
 | T24 | A database rejected with `scan_root_outside_database_boundary` | Still `SKIPPED` with the same reason; report-only roots appear in `diagnostic_details`; nothing is deleted |
+| T25 | Another database is stored inside the cleanup root | That database's folder is never a candidate; unrelated orphans are still deleted |
+| T26 | An Iceberg table sets `write.data.path` to a folder under the cleanup root | That folder is never a candidate |
 
 ---
 
@@ -1085,12 +1127,14 @@ Any old unreferenced files inside that active table folder should be handled by 
 - `report_only_storage_roots` approves listing for review only. It cannot make a location eligible for
   deletion. Older job versions reject configs that contain this setting, so upgrade the job before adding it.
 - Object-storage access supports S3 and S3-compatible storage. A non-S3 catalog location falls back to Spark's own Hadoop configuration, which carries no catalog-specific endpoint or credentials.
+- Only databases on S3-compatible storage, Google Cloud Storage, or Azure storage are cleaned. A database on another filesystem, such as HDFS, is refused with `invalid_storage_location`.
 - Catalogs using vended or remotely signed credentials are not supported for storage access, because those credentials are issued per Iceberg request and never appear in `sparkConf`.
 - Folder names are compared case-sensitively, because `ORDERS` and `orders` are different object-storage prefixes.
 - A database whose location equals or contains the catalog warehouse root cannot be cleaned by this job.
 - Folders are deleted only under the cleanup root. Additional roots are reported only, and table parents
   outside the database's own storage are not listed at all.
-- Ownership is checked against the tables the job can see in the catalog. A table the job cannot see does
-  not protect its folder.
+- Ownership is checked against the tables and databases the job can see in the catalog. A table or
+  database the job cannot see does not protect its folder, and neither does another database's table
+  stored inside the cleanup root or a Hive partition stored outside its table's folder.
 - The job is intended for controlled cleanup workflows, not blind automatic deletion.
 - Folder age and size require recursively listing objects under each candidate folder, for at most `max_candidate_folders_per_database` folders per database. This can take time for folders with many objects and cannot be turned off, because it is needed to establish folder age.

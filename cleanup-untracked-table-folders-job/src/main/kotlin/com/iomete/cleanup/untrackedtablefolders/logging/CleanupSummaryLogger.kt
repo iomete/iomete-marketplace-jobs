@@ -227,6 +227,8 @@ class CleanupSummaryLogger {
                     "No table this job can see is stored under the cleanup root, so nothing in it can be",
                     "checked against a known table.",
                 )
+            DeletionBlockReason.OTHER_DATABASE_STORAGE_UNKNOWN ->
+                listOf("The storage of other databases could not be established, so it cannot be protected.")
         }
 
     private fun MutableList<String>.addListOrNone(values: List<String>) {

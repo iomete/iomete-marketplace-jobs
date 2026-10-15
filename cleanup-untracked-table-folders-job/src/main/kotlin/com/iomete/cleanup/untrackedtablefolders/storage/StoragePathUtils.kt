@@ -64,12 +64,15 @@ object StoragePathUtils {
         isSameOrChildLocation(candidateLocation = firstLocation, rootLocation = secondLocation) ||
             isSameOrChildLocation(candidateLocation = secondLocation, rootLocation = firstLocation)
 
-    // A location without a scheme, or an S3 location without a bucket, cannot be compared with qualified paths.
+    // A location without a scheme, or without a bucket or host, resolves against the writer's default filesystem
+    // and cannot be compared with qualified paths. Only local file paths have no authority.
     fun isQualifiedLocation(location: String): Boolean {
         val uri = Path(location.trim()).toUri()
-        val scheme = uri.scheme?.lowercase()?.let(::canonicalizeScheme) ?: return false
-        return scheme != "s3a" || !uri.authority.isNullOrBlank()
+        val scheme = uri.scheme?.lowercase() ?: return false
+        return scheme == "file" || !uri.authority.isNullOrBlank()
     }
+
+    fun scheme(location: String): String? = Path(location.trim()).toUri().scheme?.lowercase()
 
     fun isStorageRoot(location: String): Boolean =
         normalizeUriPath(Path(location.trim().trimEnd('/').ifEmpty { "/" }).toUri().normalize()) == "/"
@@ -92,6 +95,8 @@ object StoragePathUtils {
     private fun canonicalizeScheme(scheme: String): String =
         when (scheme) {
             "s3", "s3a", "s3n" -> "s3a"
+            "abfs", "abfss" -> "abfss"
+            "wasb", "wasbs" -> "wasbs"
             else -> scheme
         }
 

@@ -99,6 +99,18 @@ class StoragePathUtilsTest {
     }
 
     @Test
+    fun `canonicalizes Azure TLS and non-TLS scheme aliases`() {
+        assertEquals(
+            StoragePathUtils.normalizeLocation("abfss://lake@account.dfs.core.windows.net/data/db"),
+            StoragePathUtils.normalizeLocation("abfs://lake@account.dfs.core.windows.net/data/db"),
+        )
+        assertEquals(
+            StoragePathUtils.normalizeLocation("wasbs://lake@account.blob.core.windows.net/data/db"),
+            StoragePathUtils.normalizeLocation("wasb://lake@account.blob.core.windows.net/data/db"),
+        )
+    }
+
+    @Test
     fun `treats mixed scheme aliases as same location for containment`() {
         assertTrue(
             StoragePathUtils.isSameOrChildLocation(
@@ -131,12 +143,16 @@ class StoragePathUtilsTest {
     }
 
     @Test
-    fun `a location needs a scheme and, for S3, a bucket to be qualified`() {
+    fun `a location needs a scheme and a bucket or host to be qualified`() {
         assertTrue(StoragePathUtils.isQualifiedLocation("s3a://bucket/lake"))
         assertTrue(StoragePathUtils.isQualifiedLocation("s3://bucket"))
+        assertTrue(StoragePathUtils.isQualifiedLocation("gs://bucket/lake"))
+        assertTrue(StoragePathUtils.isQualifiedLocation("hdfs://namenode/lake"))
         assertTrue(StoragePathUtils.isQualifiedLocation("file:/opt/spark/warehouse"))
         assertFalse(StoragePathUtils.isQualifiedLocation("/lake"))
         assertFalse(StoragePathUtils.isQualifiedLocation("bucket/lake"))
         assertFalse(StoragePathUtils.isQualifiedLocation("s3a:/lake"))
+        assertFalse(StoragePathUtils.isQualifiedLocation("hdfs:/lake/sales.db/live_data"))
+        assertFalse(StoragePathUtils.isQualifiedLocation("gs:/lake"))
     }
 }

@@ -70,6 +70,8 @@ class CleanupUntrackedTableFoldersServiceTest {
         every { catalogDiscoveryService.sharedWarehouseRoots(any()) } returns listOf("s3a://warehouse-bucket/warehouse")
         every { catalogDiscoveryService.restNamespaceRoot(any(), any()) } returns null
         every { catalogDiscoveryService.knownWarehouseRoots() } returns emptyList()
+        every { catalogDiscoveryService.visibleDatabaseLocations(any()) } returns emptyMap()
+        every { catalogDiscoveryService.tableLocationIfExists(any(), any(), any()) } returns null
     }
 
     @Test

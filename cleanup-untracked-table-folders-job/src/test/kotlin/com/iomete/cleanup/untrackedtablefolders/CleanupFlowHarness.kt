@@ -44,6 +44,8 @@ class CleanupFlowHarness(
         every { auditTableService.writeAuditRecord(capture(auditRecords)) } just Runs
         every { catalogDiscoveryService.restNamespaceRoot(any(), any()) } returns null
         every { catalogDiscoveryService.knownWarehouseRoots() } returns emptyList()
+        every { catalogDiscoveryService.visibleDatabaseLocations(any()) } returns emptyMap()
+        every { catalogDiscoveryService.tableLocationIfExists(any(), any(), any()) } returns null
 
         val excludePathResolver = ExcludePathResolver().also { it.config = config }
         val discovery = storage.discoveryService()

@@ -3,6 +3,9 @@ package com.iomete.cleanup.untrackedtablefolders.storage
 import jakarta.enterprise.context.ApplicationScoped
 import org.jboss.logging.Logger
 
+// IOMETE stores lakehouse data in S3-compatible storage, Google Cloud Storage, or Azure storage.
+private val SUPPORTED_STORAGE_SCHEMES = setOf("s3", "s3a", "s3n", "gs", "abfs", "abfss", "wasb", "wasbs")
+
 enum class UnsafeScanRootReason(val code: String) {
     CATALOG_WAREHOUSE_UNKNOWN("catalog_warehouse_unknown"),
     DATABASE_LOCATION_IS_BUCKET_ROOT("database_location_is_bucket_root"),
@@ -71,6 +74,21 @@ class StorageScanLocationResolver {
         databaseRoots: Set<String>,
         sharedWarehouseRoots: List<String>,
     ) {
+        if (!parsed(databaseLocation) { StoragePathUtils.isQualifiedLocation(databaseLocation) }) {
+            throw UnsafeScanRootException(
+                UnsafeScanRootReason.INVALID_STORAGE_LOCATION,
+                "Database location has no scheme or bucket, so it cannot be checked against the warehouse or table locations. databaseLocation=$databaseLocation",
+            )
+        }
+
+        val scheme = StoragePathUtils.scheme(databaseLocation)
+        if (scheme !in SUPPORTED_STORAGE_SCHEMES) {
+            throw UnsafeScanRootException(
+                UnsafeScanRootReason.INVALID_STORAGE_LOCATION,
+                "Database location uses storage scheme '$scheme', which this job does not support. databaseLocation=$databaseLocation",
+            )
+        }
+
         if (databaseRoots.any { StoragePathUtils.isStorageRoot(it) }) {
             throw UnsafeScanRootException(
                 UnsafeScanRootReason.DATABASE_LOCATION_IS_BUCKET_ROOT,

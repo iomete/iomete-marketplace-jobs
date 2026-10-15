@@ -57,6 +57,7 @@ class CleanupUntrackedTableFoldersService {
         cleanupAuditTableService.ensureAuditTableExists()
 
         var auditFailure: Throwable? = null
+        val otherDatabaseLocations by lazy { runCatching { catalogDiscoveryService.visibleDatabaseLocations(config.catalog) } }
 
         fun recordAudit(
             database: String,
@@ -264,13 +265,25 @@ class CleanupUntrackedTableFoldersService {
 
                     val storageFolderPaths = storageFolders.map { it.path }.sorted()
 
+                    // Null when the storage of other databases cannot be established, which blocks deletion.
+                    val otherDatabaseStorage =
+                        if (storageFolders.isEmpty()) {
+                            emptyList()
+                        } else {
+                            otherDatabaseStorage(discoveredDatabase, storageScanLocation, otherDatabaseLocations)
+                        }
+                    otherDatabaseStorage.orEmpty().forEach { location ->
+                        logger.warn("Protecting storage of another database under storage scan location=$storageScanLocation: $location")
+                    }
+                    val protectedPaths = effectiveExcludedPaths + otherDatabaseStorage.orEmpty()
+
                     val detectedReconciliation =
                         try {
                             untrackedFolderCandidateDetector.detectCandidates(
                                 storageFolders = storageFolders,
                                 activeTableLocations =
-                                    discoveredDatabase.tables.mapNotNull { it.location },
-                                excludedPaths = effectiveExcludedPaths,
+                                    discoveredDatabase.tables.flatMap { listOfNotNull(it.location) + it.writeLocations },
+                                excludedPaths = protectedPaths,
                                 maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
                                 unresolvedTableCount = unresolvedTableNames.size,
                             )
@@ -336,6 +349,7 @@ class CleanupUntrackedTableFoldersService {
                             reconciliation !is StorageFolderReconciliation.DeletionEligible -> null
                             auditFailure != null -> DeletionBlockReason.AUDIT_INTEGRITY_LOST
                             !cleanupRootHasVisibleTable -> DeletionBlockReason.CLEANUP_ROOT_HAS_NO_VISIBLE_TABLE
+                            otherDatabaseStorage == null -> DeletionBlockReason.OTHER_DATABASE_STORAGE_UNKNOWN
                             else -> null
                         }
 
@@ -348,6 +362,8 @@ class CleanupUntrackedTableFoldersService {
                                             DeletionBlockReason.AUDIT_INTEGRITY_LOST -> "an audit write failed earlier in this run."
                                             DeletionBlockReason.CLEANUP_ROOT_HAS_NO_VISIBLE_TABLE ->
                                                 "no visible table is stored under storage scan location=$storageScanLocation."
+                                            DeletionBlockReason.OTHER_DATABASE_STORAGE_UNKNOWN ->
+                                                "the storage of other databases could not be established."
                                         }
                                     logger.warn(
                                         "Not deleting any folder for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: $detail"
@@ -359,7 +375,7 @@ class CleanupUntrackedTableFoldersService {
                                             catalog = discoveredDatabase.catalog,
                                             database = discoveredDatabase.database,
                                             reconciliation = reconciliation,
-                                            excludedPaths = effectiveExcludedPaths,
+                                            excludedPaths = protectedPaths,
                                         )
                                     } catch (th: PartialDeletionException) {
                                         logger.error(
@@ -548,6 +564,63 @@ class CleanupUntrackedTableFoldersService {
             logger.warn(
                 "Deletion mode completed. Candidate folders were deleted only when they passed the configured safety checks."
             )
+        }
+    }
+
+    // A database's location and REST namespace folder are where its tables go by default, not claims on
+    // everything below them. Inside the cleanup root they are protected whole. Above it, only the table that Hive
+    // placement would put on the root's path matters; REST folders add a unique suffix, so that table cannot be
+    // found by name and the storage is unknown.
+    private fun otherDatabaseStorage(
+        discoveredDatabase: DiscoveredDatabase,
+        cleanupRoot: String,
+        databaseLocations: Result<Map<String, String?>>,
+    ): List<String>? {
+        try {
+            val root = StoragePathUtils.normalizeLocation(cleanupRoot)
+            val locations = databaseLocations.getOrThrow()
+            // The listing shows how the catalog treats letter case: an exact name is this database; otherwise one
+            // entry that differs only in case is this database as the catalog normalized it. More than one is ambiguous.
+            val sameName = locations.keys.filter { it.equals(discoveredDatabase.database, ignoreCase = true) }
+            val ownName = sameName.firstOrNull { it == discoveredDatabase.database } ?: sameName.singleOrNull()
+            if (ownName == null && sameName.isNotEmpty()) {
+                return null
+            }
+
+            return locations
+                .filterKeys { it != ownName }
+                .flatMap { (database, location) ->
+                    if (location == null || !StoragePathUtils.isQualifiedLocation(location)) {
+                        return null
+                    }
+                    val hiveRoot = StoragePathUtils.normalizeLocation(location)
+                    val restRoot =
+                        catalogDiscoveryService.restNamespaceRoot(discoveredDatabase.catalog, database)?.location
+                            ?.let(StoragePathUtils::normalizeLocation)
+
+                    listOfNotNull(hiveRoot, restRoot).flatMap { storage ->
+                        when {
+                            StoragePathUtils.isSameOrChildLocation(storage, root) -> listOf(storage)
+                            !StoragePathUtils.isSameOrChildLocation(root, storage) -> emptyList()
+                            storage == restRoot -> return null
+                            else -> {
+                                val folderOnRootPath = root.removePrefix("$storage/").substringBefore('/')
+                                val tableLocation =
+                                    catalogDiscoveryService.tableLocationIfExists(discoveredDatabase.catalog, database, folderOnRootPath)
+                                if (tableLocation != null && !StoragePathUtils.isQualifiedLocation(tableLocation)) {
+                                    return null
+                                }
+                                listOfNotNull(tableLocation)
+                            }
+                        }
+                    }
+                }
+        } catch (error: Exception) {
+            logger.warn(
+                "Could not establish the storage of other databases for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}",
+                error,
+            )
+            return null
         }
     }
 

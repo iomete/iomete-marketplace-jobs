@@ -2,8 +2,12 @@ package com.iomete.cleanup.untrackedtablefolders.catalog
 
 import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
 import com.iomete.cleanup.untrackedtablefolders.storage.CatalogStorageProperties
+import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
+import org.apache.spark.SparkThrowable
+import org.apache.spark.sql.Row
+import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
 import org.jboss.logging.Logger
 
 data class DiscoveredDatabase(
@@ -28,6 +32,8 @@ data class DiscoveredTable(
     val isTemporary: Boolean,
     val location: String?,
     val unresolvedReason: String? = null,
+    // Iceberg write paths can place this table's files outside its location.
+    val writeLocations: List<String> = emptyList(),
 ) {
     // A null location means the catalog object owns no storage, such as a view. Unresolved means
     // the table owns storage we could not locate, so its folder cannot be identified.
@@ -94,6 +100,20 @@ internal fun isMetadataNotFoundError(error: Throwable): Boolean {
 
     return false
 }
+
+private val ICEBERG_WRITE_PATH_PROPERTIES =
+    listOf("write.data.path", "write.metadata.path", "write.object-storage.path", "write.folder-storage.path")
+
+private data class TableStorage(
+    val location: String?,
+    val writeLocations: List<String>,
+)
+
+// Typed errors only: a denied lookup's message can name a table that looks like this error class.
+private fun isTableNotFoundError(error: Throwable): Boolean =
+    generateSequence(error) { it.cause }.any { current ->
+        current is NoSuchTableException || (current is SparkThrowable && current.errorClass == "TABLE_OR_VIEW_NOT_FOUND")
+    }
 
 private fun isDatabaseNotFoundError(error: Throwable): Boolean {
     var current: Throwable? = error
@@ -232,16 +252,14 @@ class CatalogDiscoveryService {
             val isTemporary = row.getBoolean(2)
 
             try {
+                val storage = discoverTableStorage(catalog = catalog, database = database, table = tableName)
                 DiscoveredTable(
                     catalog = catalog,
                     database = database,
                     table = tableName,
                     isTemporary = isTemporary,
-                    location = discoverTableLocation(
-                        catalog = catalog,
-                        database = database,
-                        table = tableName,
-                    ),
+                    location = storage.location,
+                    writeLocations = storage.writeLocations,
                 )
             } catch (th: TableLocationUnresolvedException) {
                 logger.warn(
@@ -259,6 +277,43 @@ class CatalogDiscoveryService {
                 )
             }
         }
+    }
+
+    // A database whose location cannot be read maps to null.
+    fun visibleDatabaseLocations(catalog: String): Map<String, String?> {
+        val spark = sparkSessionProvider.getOrCreate()
+        val databases = spark.sql("SHOW NAMESPACES IN `$catalog`").collectAsList().map { it.getString(0) }
+
+        return databases.associateWith { database ->
+            try {
+                discoverDatabaseLocation(catalog, database)
+            } catch (error: Exception) {
+                logger.warn("Could not read the location of database=$database in catalog=$catalog", error)
+                null
+            }
+        }
+    }
+
+    // Null when the table does not exist; any other failure is thrown so the caller can fail closed.
+    fun tableLocationIfExists(
+        catalog: String,
+        database: String,
+        table: String,
+    ): String? {
+        val rows =
+            try {
+                sparkSessionProvider.getOrCreate().sql("DESCRIBE EXTENDED `$catalog`.`$database`.`$table`").collectAsList()
+            } catch (th: Throwable) {
+                if (isTableNotFoundError(th)) {
+                    return null
+                }
+                throw IllegalStateException("Failed to look up table=$catalog.$database.$table", th)
+            }
+        val details = tableDetails(rows) ?: throw IllegalStateException("No single table details section for table=$catalog.$database.$table")
+        val location = describeValue(details, "Location")
+        check(location != null || isView(details)) { "No location for table=$catalog.$database.$table" }
+
+        return location
     }
 
     private fun discoverDatabaseLocation(
@@ -293,11 +348,12 @@ class CatalogDiscoveryService {
             ?.takeIf { it.isNotBlank() }
     }
 
-    private fun discoverTableLocation(
+    // A path without a scheme and bucket resolves against the writer's default filesystem, which the job cannot know.
+    private fun discoverTableStorage(
         catalog: String,
         database: String,
         table: String,
-    ): String? {
+    ): TableStorage {
         val spark = sparkSessionProvider.getOrCreate()
         val qualifiedTableName = "`$catalog`.`$database`.`$table`"
 
@@ -315,10 +371,83 @@ class CatalogDiscoveryService {
                 )
             }
 
-        return rows
-            .firstOrNull { row -> row.getString(0).trim().equals("Location", ignoreCase = true) }
-            ?.getString(1)
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
+        val details =
+            tableDetails(rows) ?: throw TableLocationUnresolvedException(
+                "DESCRIBE EXTENDED returned no single table details section",
+                IllegalStateException("no single table details section"),
+            )
+        val location =
+            describeValue(details, "Location") ?: if (isView(details)) {
+                return TableStorage(null, emptyList())
+            } else {
+                throw TableLocationUnresolvedException(
+                    "The table has no location, so its storage cannot be found",
+                    IllegalStateException("missing table location"),
+                )
+            }
+        if (runCatching { !StoragePathUtils.isQualifiedLocation(location) }.getOrDefault(true)) {
+            throw TableLocationUnresolvedException(
+                "The table location has no scheme or bucket, so it cannot be matched to storage",
+                IllegalStateException("unqualified table location"),
+            )
+        }
+        val provider = describeValue(details, "Provider")
+        if (provider != null && !provider.equals("iceberg", ignoreCase = true)) {
+            return TableStorage(location, emptyList())
+        }
+
+        val properties =
+            try {
+                spark.sql("SHOW TBLPROPERTIES $qualifiedTableName").collectAsList().associate { it.getString(0) to it.getString(1) }
+            } catch (th: Throwable) {
+                throw TableLocationUnresolvedException("Table properties could not be read: ${th.message ?: th::class.java.name}", th)
+            }
+
+        // Both settings let the table use files outside its location and declared write paths. Iceberg reads any
+        // gc.enabled value other than true as false.
+        if (properties["gc.enabled"]?.equals("true", ignoreCase = true) == false) {
+            throw TableLocationUnresolvedException(
+                "gc.enabled is not true, so the table may use files outside its location",
+                IllegalStateException("gc.enabled is not true"),
+            )
+        }
+        if (properties.containsKey("write.location-provider.impl")) {
+            throw TableLocationUnresolvedException(
+                "write.location-provider.impl is set, so the table may write outside its declared paths",
+                IllegalStateException("write.location-provider.impl"),
+            )
+        }
+
+        val writeLocations = ICEBERG_WRITE_PATH_PROPERTIES.mapNotNull { properties[it]?.trim() }
+        if (writeLocations.any { runCatching { !StoragePathUtils.isQualifiedLocation(it) }.getOrDefault(true) }) {
+            throw TableLocationUnresolvedException(
+                "A declared write path has no scheme or bucket, so it cannot be matched to storage",
+                IllegalStateException("unqualified write path"),
+            )
+        }
+
+        return TableStorage(location = location, writeLocations = writeLocations)
     }
+
+    // Columns are listed before the table details, and on v1 tables columns with defaults again after them, so a
+    // column named like a detail field must not be read as one. The details start at a header row with no data type,
+    // which no column has, and end at the next blank row. Null when that section is missing, repeated, or repeats a field.
+    private fun tableDetails(rows: List<Row>): Map<String, String>? {
+        val header =
+            rows.indices.singleOrNull { index ->
+                rows[index].getString(0)?.trim() == "# Detailed Table Information" && rows[index].getString(1).isNullOrBlank()
+            } ?: return null
+        val fields = rows.drop(header + 1).takeWhile { !it.getString(0).isNullOrBlank() }
+        val details = fields.associate { it.getString(0).trim().lowercase() to it.getString(1)?.trim().orEmpty() }
+
+        return details.takeIf { it.size == fields.size }
+    }
+
+    // A view owns no storage, so it is the only catalog object that may have no location.
+    private fun isView(details: Map<String, String>): Boolean = describeValue(details, "Type").equals("VIEW", ignoreCase = true)
+
+    private fun describeValue(
+        details: Map<String, String>,
+        name: String,
+    ): String? = details[name.lowercase()]?.takeIf { it.isNotBlank() }
 }

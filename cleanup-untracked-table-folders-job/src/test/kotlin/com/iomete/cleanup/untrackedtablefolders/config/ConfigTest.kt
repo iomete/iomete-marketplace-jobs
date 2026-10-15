@@ -129,4 +129,16 @@ class ConfigTest {
 
         assertThrows(IllegalArgumentException::class.java) { config.validate() }
     }
+
+    @Test
+    fun `exclude paths must include a scheme and bucket`() {
+        val config =
+            ApplicationConfig(
+                catalog = "spark_catalog",
+                databases = listOf("sales"),
+                excludePaths = listOf("/lake/sales.db/keep"),
+            )
+
+        assertThrows(IllegalArgumentException::class.java) { config.validate() }
+    }
 }

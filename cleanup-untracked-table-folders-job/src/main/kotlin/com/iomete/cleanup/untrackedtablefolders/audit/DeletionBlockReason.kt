@@ -4,4 +4,5 @@ package com.iomete.cleanup.untrackedtablefolders.audit
 enum class DeletionBlockReason(val code: String) {
     AUDIT_INTEGRITY_LOST("audit_integrity_lost"),
     CLEANUP_ROOT_HAS_NO_VISIBLE_TABLE("cleanup_root_has_no_visible_table"),
+    OTHER_DATABASE_STORAGE_UNKNOWN("other_database_storage_unknown"),
 }
