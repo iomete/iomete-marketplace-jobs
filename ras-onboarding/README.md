@@ -40,6 +40,7 @@ This README will guide you through creating and running the job template in the 
 15. [Security Notes](#security-notes)
 16. [Monitoring and Logging](#monitoring-and-logging)
 17. [Upgrading From 3.x to 4.0](#upgrading-from-3x-to-40)
+18. [Running as a Kubernetes Job](#running-as-a-kubernetes-job)
 
 ---
 
@@ -166,6 +167,8 @@ In the IOMETE Console:
   Run as User: <user>
   Application Type: Python
   ```
+
+If the namespace list is empty, for example right after upgrading to 4.0, see [Running as a Kubernetes Job](#running-as-a-kubernetes-job).
 
 ---
 
@@ -1059,3 +1062,53 @@ duplicate_bundle_action: "UPDATE"
 - Users keep the access they had through their domain roles. It moves into bundle permissions.
 - Running it again changes nothing, so it's safe to re-run after a failure.
 - Run it before adding more data planes. A namespace mapped on several data planes only gets one of its mappings bundled.
+
+---
+
+## Running as a Kubernetes Job
+
+The job only talks to Postgres, so it can also run as a plain Kubernetes Job, outside the console. The command below calls the job's entry point with plain Python, because `spark-submit` fails in a bare pod. Use this when you can't create the job template, for example when no namespace shows up in the namespace picker.
+
+Save your config as `application.conf`, keeping the `user`/`password` lines from the [example configuration](#example-configuration) so it reads them from environment variables. Then create the config map and a secret for the database credentials, in any namespace that can reach the IOMETE database:
+
+```bash
+kubectl -n <namespace> create configmap ras-onboarding-config --from-file=application.conf
+kubectl -n <namespace> create secret generic ras-onboarding-db \
+  --from-literal=DB_USER=<user> --from-literal=DB_PASSWORD=<password> \
+  --from-literal=ASSET_DB_USER=<user> --from-literal=ASSET_DB_PASSWORD=<password>
+```
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ras-onboarding
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      # imagePullSecrets: [{ name: <pull-secret> }]   # if your registry needs one
+      containers:
+        - name: ras-onboarding
+          image: iomete.azurecr.io/iomete/ras-onboarding:1.0.7
+          workingDir: /app
+          command: ["python", "-c", "from ras_onboarding.common.config import get_config; from ras_onboarding.main import start_job; start_job(None, get_config())"]
+          envFrom:
+            - secretRef:
+                name: ras-onboarding-db
+          volumeMounts:
+            - name: config
+              mountPath: /etc/configs
+      volumes:
+        - name: config
+          configMap:
+            name: ras-onboarding-config
+```
+
+```bash
+kubectl -n <namespace> apply -f ras-onboarding-job.yaml
+kubectl -n <namespace> logs -f job/ras-onboarding
+```
+
+To run it again, delete the Job first with `kubectl -n <namespace> delete job ras-onboarding`. When you're done, delete the config map and the secret too.
