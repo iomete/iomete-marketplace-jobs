@@ -426,6 +426,8 @@ The main safety principle is **fail closed**: if the job cannot prove that a fol
 | Bucket-root database location rejection | Treating a whole bucket as one database's storage |
 | Warehouse-root rejection | Scanning a shared warehouse root where other databases live |
 | Active table location protection | Deleting folders still claimed by the catalog, including folders inside a table location |
+| Other database protection | Deleting the storage of another database the job can see that sits inside the cleanup root |
+| Iceberg write path protection | Deleting folders named by a visible Iceberg table's `write.*.path` properties |
 | Configured exclusions | Deleting folders explicitly protected through `exclude_paths` or `exclude_database_folders`, including an excluded path nested inside a candidate |
 | `older_than_hours` cutoff | Selecting folders that hold recently written objects; folders of unknown age are skipped |
 | `max_candidate_folders_per_database` | Broad accidental deletion when too many candidates appear |
@@ -781,6 +783,7 @@ Its state is unknown: it may be fully present, partly deleted, or gone.
 | Deletion failed partway through the candidates | `FAILED` | `status_reason=deletion_failed`; see [Partial deletion](#partial-deletion) |
 | An earlier audit write in the same run failed | `BLOCKED` | `status_reason=audit_integrity_lost`; see [Audit write failures](#audit-write-failures) |
 | No visible table is stored under the cleanup root | `BLOCKED` | `status_reason=cleanup_root_has_no_visible_table`; candidates are reported, nothing is deleted |
+| The storage of other databases could not be established | `BLOCKED` | `status_reason=other_database_storage_unknown`; candidates are reported, nothing is deleted; see [Storage of other databases and Iceberg write paths](#storage-of-other-databases-and-iceberg-write-paths) |
 
 ---
 
@@ -831,6 +834,36 @@ against a known table. The database is then recorded as `BLOCKED` with
 `status_reason=cleanup_root_has_no_visible_table`, and nothing is deleted. This also applies in dry-run
 and when there are no candidates. The candidates are still listed in the audit row and the log, and the
 log's `DELETION` section gives the reason.
+
+---
+
+## Storage of other databases and Iceberg write paths
+
+Before choosing candidates, the job reads the location of every database it can see in the catalog,
+once per run, with `SHOW NAMESPACES` and `DESCRIBE DATABASE`. It never lists other databases' tables.
+For `spark_catalog` and IOMETE-managed REST catalogs, a database's storage also includes its REST
+namespace folder, `<catalog warehouse>/<database>`, where its Iceberg tables live.
+
+- Storage of another database at or inside the cleanup root is protected. A folder that is, holds, or
+  sits inside it is never a candidate.
+- A database location that holds the cleanup root, such as `default` at the warehouse root, places its
+  Hive tables at `<location>/<table>`. The job looks up the one table that this rule would put on the
+  cleanup root's path, for example `default.sales` for a cleanup root at `<warehouse>/sales`. If that
+  table exists, its location is protected.
+- A REST namespace folder of another database that holds the cleanup root cannot be checked this way,
+  because the catalog adds a unique suffix to table folders.
+- In that case, or if the database list, a database location, or the table lookup cannot be read, the
+  database is `BLOCKED` with `status_reason=other_database_storage_unknown`, and nothing is deleted.
+
+For an Iceberg table the job can see, its `write.data.path`, `write.metadata.path`,
+`write.object-storage.path` and `write.folder-storage.path` are protected like its location, during
+candidate selection and again in the pre-delete recheck. A table with `gc.enabled=false` or
+`write.location-provider.impl`, or whose properties cannot be read, is treated as an unresolved table,
+which blocks deletion for its database.
+
+These checks use only what the job can see. They do not protect a database or table hidden from the
+job, another database's table stored inside the cleanup root, or files that a table reaches without a
+write path property, for example through `add_files`, `migrate`, `snapshot`, or an earlier location.
 
 ---
 
@@ -984,6 +1017,8 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T22 | A table parent outside the database's storage | Reported as `not_scanned:outside_database_boundary`, never listed, its table counted as uncovered |
 | T23 | The same parent added to `report_only_storage_roots` | Listed as `report_only_approved`; its folders are reported and never deleted |
 | T24 | A database rejected with `scan_root_outside_database_boundary` | Still `SKIPPED` with the same reason; report-only roots appear in `diagnostic_details`; nothing is deleted |
+| T25 | Another database is stored inside the cleanup root | That database's folder is never a candidate; unrelated orphans are still deleted |
+| T26 | An Iceberg table sets `write.data.path` to a folder under the cleanup root | That folder is never a candidate |
 
 ---
 
@@ -1090,7 +1125,8 @@ Any old unreferenced files inside that active table folder should be handled by 
 - A database whose location equals or contains the catalog warehouse root cannot be cleaned by this job.
 - Folders are deleted only under the cleanup root. Additional roots are reported only, and table parents
   outside the database's own storage are not listed at all.
-- Ownership is checked against the tables the job can see in the catalog. A table the job cannot see does
-  not protect its folder.
+- Ownership is checked against the tables and databases the job can see in the catalog. A table or
+  database the job cannot see does not protect its folder, and neither does another database's table
+  stored inside the cleanup root.
 - The job is intended for controlled cleanup workflows, not blind automatic deletion.
 - Folder age and size require recursively listing objects under each candidate folder, for at most `max_candidate_folders_per_database` folders per database. This can take time for folders with many objects and cannot be turned off, because it is needed to establish folder age.

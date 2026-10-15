@@ -4,6 +4,7 @@ import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
 import com.iomete.cleanup.untrackedtablefolders.storage.CatalogStorageProperties
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
+import org.apache.spark.sql.Row
 import org.jboss.logging.Logger
 
 data class DiscoveredDatabase(
@@ -28,6 +29,8 @@ data class DiscoveredTable(
     val isTemporary: Boolean,
     val location: String?,
     val unresolvedReason: String? = null,
+    // Iceberg write paths can place this table's files outside its location.
+    val writeLocations: List<String> = emptyList(),
 ) {
     // A null location means the catalog object owns no storage, such as a view. Unresolved means
     // the table owns storage we could not locate, so its folder cannot be identified.
@@ -94,6 +97,20 @@ internal fun isMetadataNotFoundError(error: Throwable): Boolean {
 
     return false
 }
+
+private val ICEBERG_WRITE_PATH_PROPERTIES =
+    listOf("write.data.path", "write.metadata.path", "write.object-storage.path", "write.folder-storage.path")
+
+private data class TableStorage(
+    val location: String?,
+    val writeLocations: List<String>,
+)
+
+private fun isTableNotFoundError(error: Throwable): Boolean =
+    generateSequence(error) { it.cause }.any { current ->
+        current.javaClass.name.endsWith("NoSuchTableException") ||
+            current.message.orEmpty().contains("TABLE_OR_VIEW_NOT_FOUND", ignoreCase = true)
+    }
 
 private fun isDatabaseNotFoundError(error: Throwable): Boolean {
     var current: Throwable? = error
@@ -232,16 +249,14 @@ class CatalogDiscoveryService {
             val isTemporary = row.getBoolean(2)
 
             try {
+                val storage = discoverTableStorage(catalog = catalog, database = database, table = tableName)
                 DiscoveredTable(
                     catalog = catalog,
                     database = database,
                     table = tableName,
                     isTemporary = isTemporary,
-                    location = discoverTableLocation(
-                        catalog = catalog,
-                        database = database,
-                        table = tableName,
-                    ),
+                    location = storage.location,
+                    writeLocations = storage.writeLocations,
                 )
             } catch (th: TableLocationUnresolvedException) {
                 logger.warn(
@@ -259,6 +274,40 @@ class CatalogDiscoveryService {
                 )
             }
         }
+    }
+
+    // A database whose location cannot be read maps to null.
+    fun visibleDatabaseLocations(catalog: String): Map<String, String?> {
+        val spark = sparkSessionProvider.getOrCreate()
+        val databases = spark.sql("SHOW NAMESPACES IN `$catalog`").collectAsList().map { it.getString(0) }
+
+        return databases.associateWith { database ->
+            try {
+                discoverDatabaseLocation(catalog, database)
+            } catch (error: Exception) {
+                logger.warn("Could not read the location of database=$database in catalog=$catalog", error)
+                null
+            }
+        }
+    }
+
+    // Null when the table does not exist; any other failure is thrown so the caller can fail closed.
+    fun tableLocationIfExists(
+        catalog: String,
+        database: String,
+        table: String,
+    ): String? {
+        val rows =
+            try {
+                sparkSessionProvider.getOrCreate().sql("DESCRIBE EXTENDED `$catalog`.`$database`.`$table`").collectAsList()
+            } catch (th: Throwable) {
+                if (isTableNotFoundError(th)) {
+                    return null
+                }
+                throw IllegalStateException("Failed to look up table=$catalog.$database.$table", th)
+            }
+
+        return describeValue(rows, "Location")
     }
 
     private fun discoverDatabaseLocation(
@@ -293,11 +342,11 @@ class CatalogDiscoveryService {
             ?.takeIf { it.isNotBlank() }
     }
 
-    private fun discoverTableLocation(
+    private fun discoverTableStorage(
         catalog: String,
         database: String,
         table: String,
-    ): String? {
+    ): TableStorage {
         val spark = sparkSessionProvider.getOrCreate()
         val qualifiedTableName = "`$catalog`.`$database`.`$table`"
 
@@ -315,10 +364,46 @@ class CatalogDiscoveryService {
                 )
             }
 
-        return rows
-            .firstOrNull { row -> row.getString(0).trim().equals("Location", ignoreCase = true) }
+        val location = describeValue(rows, "Location")
+        val provider = describeValue(rows, "Provider")
+        if (location == null || (provider != null && !provider.equals("iceberg", ignoreCase = true))) {
+            return TableStorage(location, emptyList())
+        }
+
+        val properties =
+            try {
+                spark.sql("SHOW TBLPROPERTIES $qualifiedTableName").collectAsList().associate { it.getString(0) to it.getString(1) }
+            } catch (th: Throwable) {
+                throw TableLocationUnresolvedException("Table properties could not be read: ${th.message ?: th::class.java.name}", th)
+            }
+
+        // Both settings let the table use files outside its location and declared write paths.
+        if (properties["gc.enabled"]?.trim().equals("false", ignoreCase = true)) {
+            throw TableLocationUnresolvedException(
+                "gc.enabled=false, so the table may use files outside its location",
+                IllegalStateException("gc.enabled=false"),
+            )
+        }
+        if (!properties["write.location-provider.impl"].isNullOrBlank()) {
+            throw TableLocationUnresolvedException(
+                "write.location-provider.impl is set, so the table may write outside its declared paths",
+                IllegalStateException("write.location-provider.impl"),
+            )
+        }
+
+        return TableStorage(
+            location = location,
+            writeLocations = ICEBERG_WRITE_PATH_PROPERTIES.mapNotNull { properties[it]?.trim()?.takeIf(String::isNotBlank) },
+        )
+    }
+
+    private fun describeValue(
+        rows: List<Row>,
+        name: String,
+    ): String? =
+        rows
+            .firstOrNull { row -> row.getString(0).trim().equals(name, ignoreCase = true) }
             ?.getString(1)
             ?.trim()
             ?.takeIf { it.isNotBlank() }
-    }
 }

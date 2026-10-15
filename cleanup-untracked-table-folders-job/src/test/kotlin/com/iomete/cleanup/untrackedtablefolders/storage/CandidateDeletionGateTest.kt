@@ -243,6 +243,36 @@ class CandidateDeletionGateTest {
     }
 
     @Test
+    fun `skips a candidate that holds a table write path found by the pre-delete recheck`() {
+        every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
+            DiscoveredDatabase(
+                catalog = "spark_catalog",
+                database = "analytics",
+                location = "s3a://bucket/db",
+                tables =
+                    listOf(
+                        DiscoveredTable(
+                            "spark_catalog", "analytics", "events", false, "s3a://bucket/db/events",
+                            writeLocations = listOf("s3a://bucket/db/events_data"),
+                        ),
+                    ),
+            )
+        every { objectStorageDeletionService.deleteFoldersRecursively(any(), any()) } answers {
+            secondArg<List<String>>().map { DeletedStorageFolder(path = it, deleted = true) }
+        }
+
+        val result =
+            gateFor(config = applicationConfig(dryRun = false, deleteEnabled = true)).deleteCandidates(
+                catalog = "spark_catalog",
+                database = "analytics",
+                reconciliation = deletionEligible("s3a://bucket/db/events_data", "s3a://bucket/db/orphan"),
+                excludedPaths = emptyList(),
+            )
+
+        assertEquals(listOf("s3a://bucket/db/orphan"), result)
+    }
+
+    @Test
     fun `skips candidates that overlap an excluded path in either direction`() {
         every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
             discoveredDatabase(activeTableLocations = emptyList())
