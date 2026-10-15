@@ -825,6 +825,8 @@ class AssetOnboardingMigration:
                 validation = self.validate_domain_migration(mig_conn, domain_id, asset_type, owner_id, owner_type)
                 if not validation["can_proceed"]:
                     return validation.get("skip", False)
+                if not validation.get("has_assets", True):
+                    return True
 
                 existing_bundle = validation.get("existing_bundle")
                 is_update = validation.get("update", False)

@@ -641,6 +641,25 @@ def test_migrate_single_asset_type_dry_run_rolls_back(migration, db_manager):
     mock_connection.rollback.assert_called_once()
 
 
+def test_migrate_single_asset_type_without_assets_creates_no_bundle(migration, db_manager):
+    """Test that an asset type with no assets in the domain creates no bundle."""
+    migration.get_domain_assets = Mock(return_value=[])
+
+    mock_connection = Mock()
+    mock_transaction = Mock()
+    mock_transaction.__enter__ = Mock(return_value=mock_connection)
+    mock_transaction.__exit__ = Mock(return_value=None)
+    db_manager.get_transaction.return_value = mock_transaction
+    db_manager.execute_query.side_effect = [
+        [{'username': 'test_owner'}],  # owner validation
+    ]
+
+    result = migration.migrate_single_asset_type('test_domain', 'test_owner', 'USER', 'SPARK_JOB')
+
+    assert result is True
+    db_manager.execute_insert.assert_not_called()
+
+
 def test_migrate_domain_multiple_asset_types(migration, db_manager):
     """Test migrating domain with multiple asset types."""
     domain_config = {
