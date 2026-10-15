@@ -5,7 +5,9 @@ import com.iomete.cleanup.untrackedtablefolders.storage.CatalogStorageProperties
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
+import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.Row
+import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
 import org.jboss.logging.Logger
 
 data class DiscoveredDatabase(
@@ -107,10 +109,10 @@ private data class TableStorage(
     val writeLocations: List<String>,
 )
 
+// Typed errors only: a denied lookup's message can name a table that looks like this error class.
 private fun isTableNotFoundError(error: Throwable): Boolean =
     generateSequence(error) { it.cause }.any { current ->
-        current.javaClass.name.endsWith("NoSuchTableException") ||
-            current.message.orEmpty().contains("TABLE_OR_VIEW_NOT_FOUND", ignoreCase = true)
+        current is NoSuchTableException || (current is SparkThrowable && current.errorClass == "TABLE_OR_VIEW_NOT_FOUND")
     }
 
 private fun isDatabaseNotFoundError(error: Throwable): Boolean {

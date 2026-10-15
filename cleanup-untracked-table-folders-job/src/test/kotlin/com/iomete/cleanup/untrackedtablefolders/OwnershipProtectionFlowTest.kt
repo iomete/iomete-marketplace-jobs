@@ -242,6 +242,30 @@ class OwnershipProtectionFlowTest {
     }
 
     @Test
+    fun `a database location with a scheme but no bucket or host blocks deletion`() {
+        folders(SALES, "t1", "orphan", "other_db")
+        val flow = flow(tables = listOf(table("$SALES/t1")), databases = mapOf("sales" to SALES, "other" to "hdfs:/lake/sales.db/other_db"))
+
+        flow.run()
+
+        assertEquals("other_database_storage_unknown", flow.auditRecords.single().statusReason)
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+    }
+
+    @Test
+    fun `a looked-up table location with a scheme but no bucket or host blocks deletion`() {
+        val restRoot = "$WAREHOUSE/sales"
+        folders(restRoot, "t_rest", "dt=2024-01-01")
+        val flow = flow(tables = listOf(table("$restRoot/t_rest")), databases = mapOf("default" to WAREHOUSE))
+        every { flow.catalogDiscoveryService.tableLocationIfExists(CATALOG, "default", "sales") } returns "hdfs:/lake/sales"
+
+        flow.run()
+
+        assertEquals("other_database_storage_unknown", flow.auditRecords.single().statusReason)
+        assertTrue(flow.objectExists("$restRoot/dt=2024-01-01/part-0.parquet"))
+    }
+
+    @Test
     fun `a namespace that differs only in letter case is another database when the catalog lists both`() {
         folders(SALES, "t1", "orphan", "x_data")
         val flow = flow(tables = listOf(table("$SALES/t1")), databases = mapOf("sales" to SALES, "Sales" to "$SALES/x_data"))

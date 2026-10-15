@@ -579,7 +579,7 @@ A rejected database is recorded as `SKIPPED` with one of these reasons. The reje
 | `database_location_contains_warehouse_root` | The database location equals or contains the catalog warehouse root |
 | `catalog_warehouse_unknown` | The catalog warehouse location is not configured |
 | `scan_root_outside_database_boundary` | The resolved scan root falls outside the database location |
-| `invalid_storage_location` | A database, table, or warehouse location cannot be parsed, or a database or warehouse location has no scheme or bucket |
+| `invalid_storage_location` | A database, table, or warehouse location cannot be parsed, a database or warehouse location has no scheme or bucket, or a database is on a storage scheme the job does not support, such as HDFS |
 
 The row keeps this status and reason. For `scan_root_outside_database_boundary`,
 `database_location_is_bucket_root` and `database_location_contains_warehouse_root`, the job may still list
@@ -1126,6 +1126,7 @@ Any old unreferenced files inside that active table folder should be handled by 
 - `report_only_storage_roots` approves listing for review only. It cannot make a location eligible for
   deletion. Older job versions reject configs that contain this setting, so upgrade the job before adding it.
 - Object-storage access supports S3 and S3-compatible storage. A non-S3 catalog location falls back to Spark's own Hadoop configuration, which carries no catalog-specific endpoint or credentials.
+- Only databases on S3-compatible storage, Google Cloud Storage, or Azure storage are cleaned. A database on another filesystem, such as HDFS, is refused with `invalid_storage_location`.
 - Catalogs using vended or remotely signed credentials are not supported for storage access, because those credentials are issued per Iceberg request and never appear in `sparkConf`.
 - Folder names are compared case-sensitively, because `ORDERS` and `orders` are different object-storage prefixes.
 - A database whose location equals or contains the catalog warehouse root cannot be cleaned by this job.
@@ -1133,6 +1134,6 @@ Any old unreferenced files inside that active table folder should be handled by 
   outside the database's own storage are not listed at all.
 - Ownership is checked against the tables and databases the job can see in the catalog. A table or
   database the job cannot see does not protect its folder, and neither does another database's table
-  stored inside the cleanup root.
+  stored inside the cleanup root or a Hive partition stored outside its table's folder.
 - The job is intended for controlled cleanup workflows, not blind automatic deletion.
 - Folder age and size require recursively listing objects under each candidate folder, for at most `max_candidate_folders_per_database` folders per database. This can take time for folders with many objects and cannot be turned off, because it is needed to establish folder age.

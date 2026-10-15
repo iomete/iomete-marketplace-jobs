@@ -4,10 +4,12 @@ import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.RowFactory
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -69,6 +71,14 @@ class TableOwnershipDiscoveryTest {
     fun `an Iceberg write path without a scheme or bucket is unresolved`() {
         listsOneTable(provider = "iceberg")
         rows("SHOW TBLPROPERTIES $TABLE", "write.data.path" to "/lake/sales.db/events_data")
+
+        assertEquals(true, discovery.discoverTables("c", "sales").single().isUnresolved)
+    }
+
+    @Test
+    fun `an Iceberg write path with a scheme but no bucket or host is unresolved`() {
+        listsOneTable(provider = "iceberg")
+        rows("SHOW TBLPROPERTIES $TABLE", "write.data.path" to "hdfs:/lake/sales.db/live_data")
 
         assertEquals(true, discovery.discoverTables("c", "sales").single().isUnresolved)
     }
@@ -164,12 +174,21 @@ class TableOwnershipDiscoveryTest {
 
     @Test
     fun `a missing table is reported as absent and any other failure is thrown`() {
-        every { spark.sql("DESCRIBE EXTENDED `c`.`default`.`sales`") } throws
-            IllegalStateException("[TABLE_OR_VIEW_NOT_FOUND] The table or view cannot be found")
+        every { spark.sql("DESCRIBE EXTENDED `c`.`default`.`sales`") } throws NoSuchTableException("default", "sales")
+        every { spark.sql("DESCRIBE EXTENDED `c`.`default`.`events`") } throws
+            IllegalStateException("lookup failed", NotFoundError())
         every { spark.sql("DESCRIBE EXTENDED `c`.`default`.`orders`") } throws IllegalStateException("access denied")
+        every { spark.sql("DESCRIBE EXTENDED `c`.`default`.`table_or_view_not_found`") } throws
+            IllegalStateException("Access denied to c.default.table_or_view_not_found")
 
         assertNull(discovery.tableLocationIfExists("c", "default", "sales"))
+        assertNull(discovery.tableLocationIfExists("c", "default", "events"))
         assertThrows(IllegalStateException::class.java) { discovery.tableLocationIfExists("c", "default", "orders") }
+        assertThrows(IllegalStateException::class.java) { discovery.tableLocationIfExists("c", "default", "table_or_view_not_found") }
+    }
+
+    private class NotFoundError : RuntimeException("not found"), SparkThrowable {
+        override fun getErrorClass() = "TABLE_OR_VIEW_NOT_FOUND"
     }
 
     @Test
