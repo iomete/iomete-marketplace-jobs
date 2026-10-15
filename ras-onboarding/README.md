@@ -1039,20 +1039,22 @@ ERROR: Invalid permission mapping for CUSTOM_ASSET: manage permissions list is e
 
 In 4.0, `onboardComputeRas`, `onboardSparkJobRas`, `onboardWorkspaceRas` and `onboardNamespaceMappingRas` are always on. If they were off before the upgrade, your existing compute clusters, Spark jobs and namespaces aren't in any resource bundle, so the console hides them from every user, admins included. Nothing is deleted. Running this job once after the upgrade brings them back.
 
-Start from the [example configuration](#example-configuration) and set one entry per domain:
+Start from the [example configuration](#example-configuration) and replace its `migration` section with this, one entry per domain:
 
 ```hocon
-domains: [
-    {
-        domain_id: "default"
-        owner_id: "admin"        # an existing user or group that will own the bundles
-        owner_type: "USER"       # USER or GROUP
-        asset_types: ["NAMESPACE", "COMPUTE", "SPARK_JOB"]
-    }
-    # one entry per domain
-]
-dry_run: true
-duplicate_bundle_action: "UPDATE"
+migration: {
+    domains: [
+        {
+            domain_id: "default"
+            owner_id: "admin"        # an existing user or group that will own the bundles
+            owner_type: "USER"       # USER or GROUP
+            asset_types: ["NAMESPACE", "COMPUTE", "SPARK_JOB"]
+        }
+        # one entry per domain
+    ]
+    dry_run: true
+    duplicate_bundle_action: "UPDATE"
+}
 ```
 
 - Run it with `dry_run: true` first. The job logs what it would migrate, then rolls everything back. If the counts look right, set it to `false` and run it again. Use image `1.0.7` or later: older images commit `COMPUTE` and `SPARK_JOB` changes even in a dry run.
@@ -1111,4 +1113,13 @@ kubectl -n <namespace> apply -f ras-onboarding-job.yaml
 kubectl -n <namespace> logs -f job/ras-onboarding
 ```
 
-To run it again, delete the Job first with `kubectl -n <namespace> delete job ras-onboarding`. When you're done, delete the config map and the secret too.
+To run it again, for example after switching `dry_run` to `false`, refresh the config map from your edited `application.conf` and recreate the Job:
+
+```bash
+kubectl -n <namespace> create configmap ras-onboarding-config --from-file=application.conf \
+  --dry-run=client -o yaml | kubectl -n <namespace> apply -f -
+kubectl -n <namespace> delete job ras-onboarding
+kubectl -n <namespace> apply -f ras-onboarding-job.yaml
+```
+
+When you're done, delete the Job, the config map and the secret.
