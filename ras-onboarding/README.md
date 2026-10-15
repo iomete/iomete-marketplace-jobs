@@ -1061,6 +1061,7 @@ migration: {
 - If your database doesn't use SSL, add `ssl_mode: "disable"` to both database blocks. The job defaults to `require`.
 - Leave out `DOMAIN`: `domainLevelBundleAuthorization` stays off in 4.0.
 - Leave out `JUPYTER_CONTAINER`: Jupyter containers were already in bundles before 4.0.
+- Workspaces need no migration: with `onboardWorkspaceRas` off, only the built-in Personal and Shared workspaces exist, and they aren't stored in bundles. The job has no `WORKSPACE` asset type.
 - Users keep the access they had through their domain roles. It moves into bundle permissions.
 - Running it again changes nothing, so it's safe to re-run after a failure.
 - Run it before adding more data planes. A namespace mapped on several data planes only gets one of its mappings bundled.
