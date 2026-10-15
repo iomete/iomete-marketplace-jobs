@@ -1,6 +1,11 @@
 package com.iomete.cleanup.untrackedtablefolders.catalog
 
+import com.iomete.cleanup.untrackedtablefolders.candidate.StorageFolderReconciliation
+import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
+import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
+import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDeletionService
+import com.iomete.cleanup.untrackedtablefolders.storage.StorageFolder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -30,7 +35,7 @@ class TableOwnershipDiscoveryTest {
     @Test
     fun `an Iceberg table reports its declared write paths`() {
         listsOneTable(provider = "iceberg")
-        rows("SHOW TBLPROPERTIES $TABLE", "write.data.path" to "s3a://b/lake/sales.db/events_data", "write.metadata.path" to " ", "format" to "iceberg/parquet")
+        rows("SHOW TBLPROPERTIES $TABLE", "write.data.path" to "s3a://b/lake/sales.db/events_data", "format" to "iceberg/parquet")
 
         val table = discovery.discoverTables("c", "sales").single()
 
@@ -145,6 +150,48 @@ class TableOwnershipDiscoveryTest {
     }
 
     @Test
+    fun `a table with a missing or blank location is unresolved`() {
+        listsTables("events", "orders")
+        describes(TABLE, details("Type" to "MANAGED", "Provider" to "hive"))
+        describes("`c`.`sales`.`orders`", details("Type" to "EXTERNAL", "Location" to " ", "Provider" to "iceberg"))
+
+        assertEquals(listOf(true, true), discovery.discoverTables("c", "sales").map { it.isUnresolved })
+    }
+
+    @Test
+    fun `a table without a location blocks deletion at discovery and at the final check`() {
+        rows("DESCRIBE DATABASE EXTENDED `c`.`sales`", "Location" to "s3a://b/lake/sales.db")
+        listsTables("events")
+        describes(TABLE, details("Type" to "MANAGED", "Provider" to "hive"))
+        val deletion = mockk<ObjectStorageDeletionService>()
+        val gate =
+            CandidateDeletionGate().apply {
+                config = ApplicationConfig(catalog = "c", databases = listOf("sales"), dryRun = false, deleteEnabled = true)
+                catalogDiscoveryService = discovery
+                objectStorageDeletionService = deletion
+            }
+
+        assertEquals(1, discovery.discoverDatabase("c", "sales").unresolvedTables.size)
+        assertThrows(IllegalStateException::class.java) {
+            gate.deleteCandidates("c", "sales", StorageFolderReconciliation.DeletionEligible(listOf(StorageFolder(LOCATION))), emptyList())
+        }
+        verify(exactly = 0) { deletion.deleteFoldersRecursively(any(), any()) }
+    }
+
+    @Test
+    fun `Iceberg settings that are blank or not true are unresolved`() {
+        listsTables("events", "orders", "refunds")
+        listOf("events", "orders", "refunds").forEach { name ->
+            describes("`c`.`sales`.`$name`", details("Location" to "s3a://b/lake/sales.db/$name", "Provider" to "iceberg"))
+        }
+        rows("SHOW TBLPROPERTIES $TABLE", "gc.enabled" to "")
+        rows("SHOW TBLPROPERTIES `c`.`sales`.`orders`", "write.metadata.path" to " ")
+        rows("SHOW TBLPROPERTIES `c`.`sales`.`refunds`", "write.location-provider.impl" to "")
+
+        assertEquals(listOf(true, true, true), discovery.discoverTables("c", "sales").map { it.isUnresolved })
+    }
+
+    @Test
     fun `a view has no location and stays resolved`() {
         listsTables("events")
         describes(TABLE, listOf(column("location", "int")) + details("Type" to "VIEW", "View Text" to "SELECT 1 AS location"))
@@ -198,6 +245,15 @@ class TableOwnershipDiscoveryTest {
 
         assertEquals("s3a://b/lake/sales", discovery.tableLocationIfExists("c", "default", "sales"))
         assertThrows(IllegalStateException::class.java) { discovery.tableLocationIfExists("c", "default", "orders") }
+    }
+
+    @Test
+    fun `a table lookup fails for a table without a location but not for a view`() {
+        describes("`c`.`default`.`sales`", details("Type" to "MANAGED", "Provider" to "hive"))
+        describes("`c`.`default`.`orders`", details("Type" to "VIEW", "View Text" to "SELECT 1"))
+
+        assertThrows(IllegalStateException::class.java) { discovery.tableLocationIfExists("c", "default", "sales") }
+        assertNull(discovery.tableLocationIfExists("c", "default", "orders"))
     }
 
     private fun listsOneTable(provider: String) {

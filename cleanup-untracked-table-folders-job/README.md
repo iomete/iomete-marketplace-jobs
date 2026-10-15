@@ -862,9 +862,9 @@ namespace folder, `<catalog warehouse>/<database>`, where its Iceberg tables liv
 
 For an Iceberg table the job can see, its `write.data.path`, `write.metadata.path`,
 `write.object-storage.path` and `write.folder-storage.path` are protected like its location, during
-candidate selection and again in the pre-delete recheck. A table with `gc.enabled=false` or
-`write.location-provider.impl`, a write path without a scheme and bucket, or properties that cannot be
-read is treated as an unresolved table, which blocks deletion for its database.
+candidate selection and again in the pre-delete recheck. A table with `gc.enabled` set to anything but
+`true` or with `write.location-provider.impl` set, a blank write path or one without a scheme and bucket,
+or properties that cannot be read is treated as an unresolved table, which blocks deletion for its database.
 
 These checks use only what the job can see. They do not protect a database or table hidden from the
 job, another database's table stored inside the cleanup root, or files that a table reaches without a
@@ -875,7 +875,8 @@ write path property, for example through `add_files`, `migrate`, `snapshot`, or 
 ## Unresolved table storage ownership
 
 A table is unresolved when it exists in the catalog but the job cannot read its Iceberg metadata or
-storage location during the run, or its location has no scheme and bucket. This says nothing about
+storage location during the run, its location is missing or blank and it is not a view, or its location
+has no scheme and bucket. This says nothing about
 whether the table is wanted or healthy. It only means the job does not currently know which storage
 folder that table owns.
 

@@ -310,8 +310,10 @@ class CatalogDiscoveryService {
                 throw IllegalStateException("Failed to look up table=$catalog.$database.$table", th)
             }
         val details = tableDetails(rows) ?: throw IllegalStateException("No single table details section for table=$catalog.$database.$table")
+        val location = describeValue(details, "Location")
+        check(location != null || isView(details)) { "No location for table=$catalog.$database.$table" }
 
-        return describeValue(details, "Location")
+        return location
     }
 
     private fun discoverDatabaseLocation(
@@ -374,15 +376,23 @@ class CatalogDiscoveryService {
                 "DESCRIBE EXTENDED returned no single table details section",
                 IllegalStateException("no single table details section"),
             )
-        val location = describeValue(details, "Location")
-        if (location != null && runCatching { !StoragePathUtils.isQualifiedLocation(location) }.getOrDefault(true)) {
+        val location =
+            describeValue(details, "Location") ?: if (isView(details)) {
+                return TableStorage(null, emptyList())
+            } else {
+                throw TableLocationUnresolvedException(
+                    "The table has no location, so its storage cannot be found",
+                    IllegalStateException("missing table location"),
+                )
+            }
+        if (runCatching { !StoragePathUtils.isQualifiedLocation(location) }.getOrDefault(true)) {
             throw TableLocationUnresolvedException(
                 "The table location has no scheme or bucket, so it cannot be matched to storage",
                 IllegalStateException("unqualified table location"),
             )
         }
         val provider = describeValue(details, "Provider")
-        if (location == null || (provider != null && !provider.equals("iceberg", ignoreCase = true))) {
+        if (provider != null && !provider.equals("iceberg", ignoreCase = true)) {
             return TableStorage(location, emptyList())
         }
 
@@ -393,21 +403,22 @@ class CatalogDiscoveryService {
                 throw TableLocationUnresolvedException("Table properties could not be read: ${th.message ?: th::class.java.name}", th)
             }
 
-        // Both settings let the table use files outside its location and declared write paths.
-        if (properties["gc.enabled"]?.trim().equals("false", ignoreCase = true)) {
+        // Both settings let the table use files outside its location and declared write paths. Iceberg reads any
+        // gc.enabled value other than true as false.
+        if (properties["gc.enabled"]?.equals("true", ignoreCase = true) == false) {
             throw TableLocationUnresolvedException(
-                "gc.enabled=false, so the table may use files outside its location",
-                IllegalStateException("gc.enabled=false"),
+                "gc.enabled is not true, so the table may use files outside its location",
+                IllegalStateException("gc.enabled is not true"),
             )
         }
-        if (!properties["write.location-provider.impl"].isNullOrBlank()) {
+        if (properties.containsKey("write.location-provider.impl")) {
             throw TableLocationUnresolvedException(
                 "write.location-provider.impl is set, so the table may write outside its declared paths",
                 IllegalStateException("write.location-provider.impl"),
             )
         }
 
-        val writeLocations = ICEBERG_WRITE_PATH_PROPERTIES.mapNotNull { properties[it]?.trim()?.takeIf(String::isNotBlank) }
+        val writeLocations = ICEBERG_WRITE_PATH_PROPERTIES.mapNotNull { properties[it]?.trim() }
         if (writeLocations.any { runCatching { !StoragePathUtils.isQualifiedLocation(it) }.getOrDefault(true) }) {
             throw TableLocationUnresolvedException(
                 "A declared write path has no scheme or bucket, so it cannot be matched to storage",
@@ -431,6 +442,9 @@ class CatalogDiscoveryService {
 
         return details.takeIf { it.size == fields.size }
     }
+
+    // A view owns no storage, so it is the only catalog object that may have no location.
+    private fun isView(details: Map<String, String>): Boolean = describeValue(details, "Type").equals("VIEW", ignoreCase = true)
 
     private fun describeValue(
         details: Map<String, String>,
