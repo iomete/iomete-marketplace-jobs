@@ -825,6 +825,8 @@ class AssetOnboardingMigration:
                 validation = self.validate_domain_migration(mig_conn, domain_id, asset_type, owner_id, owner_type)
                 if not validation["can_proceed"]:
                     return validation.get("skip", False)
+                if not validation.get("has_assets", True):
+                    return True
 
                 existing_bundle = validation.get("existing_bundle")
                 is_update = validation.get("update", False)
@@ -852,6 +854,10 @@ class AssetOnboardingMigration:
                 self.set_group_permissions(mig_conn, bundle_id, domain_id, asset_type, asset_action_on_duplicate)
 
                 logger.info(f"Domain {domain_id} migrated with {len(asset_ids)} {asset_type} assets (action: {asset_action_on_duplicate})")
+
+                if self.migration_config.get("dry_run", False):
+                    mig_conn.rollback()
+                    logger.info(f"DRY RUN: {asset_type} changes rolled back for domain {domain_id}")
                 return True
         except Exception as e:
             logger.error(f"Migration failed for domain {domain_id}, asset type {asset_type}: {e}")

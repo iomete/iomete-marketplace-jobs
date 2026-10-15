@@ -18,6 +18,8 @@ A dynamic PySpark job that automates migration from **domain-based access contro
 
 This README will guide you through creating and running the job template in the IOMETE Console, following the same flow as the **Create Job Template** page.
 
+> **Upgrading from 3.x to 4.0?** See [Upgrading From 3.x to 4.0](#upgrading-from-3x-to-40) for the configuration to use.
+
 ---
 
 ## Table of Contents
@@ -37,6 +39,8 @@ This README will guide you through creating and running the job template in the 
 14. [Troubleshooting](#troubleshooting)
 15. [Security Notes](#security-notes)
 16. [Monitoring and Logging](#monitoring-and-logging)
+17. [Upgrading From 3.x to 4.0](#upgrading-from-3x-to-40)
+18. [Running as a Kubernetes Job](#running-as-a-kubernetes-job)
 
 ---
 
@@ -114,7 +118,7 @@ SPARK_JOB: {
     permission_mappings: {
         list: ["VIEW"]
         view: ["VIEW"]
-        manage: ["UPDATE", "DELETE", "RUN", "CONSUME"]
+        manage: ["UPDATE", "DELETE", "RUN", "SUSPEND"]
     }
     asset_action_on_duplicate: "UPDATE"
 }
@@ -164,12 +168,14 @@ In the IOMETE Console:
   Application Type: Python
   ```
 
+If the namespace list is empty, for example right after upgrading to 4.0, see [Running as a Kubernetes Job](#running-as-a-kubernetes-job).
+
 ---
 
 ## Step 2 – Docker Image Configuration
 Under **Image settings**:
 ```yaml
-Image: iomete.azurecr.io/iomete/ras-onboarding:1.0.6
+Image: iomete.azurecr.io/iomete/ras-onboarding:1.0.7
 Main Application File: local:///app/driver.py
 ```
 ℹ️ **Note:** If you are using a self-hosted registry or a mirror, point to the `ras-onboarding` image in your registry/mirror.
@@ -277,7 +283,7 @@ Main Application File: local:///app/driver.py
             permission_mappings: {
                 list: ["VIEW"]
                 view: ["VIEW"]
-                manage: ["UPDATE", "DELETE", "RUN", "CONSUME"]
+                manage: ["UPDATE", "DELETE", "RUN", "SUSPEND"]
             }
             asset_action_on_duplicate: "UPDATE"
         },
@@ -961,7 +967,7 @@ INFO: Domain production migrated: 25 COMPUTE, 15 SPARK_JOB, 8 JUPYTER_CONTAINER 
 DEBUG: Generated asset query for COMPUTE: SELECT id, domain FROM lakehouse WHERE domain = ? AND is_deleted = false
 DEBUG: Generated permission subquery for COMPUTE: service = 'lakehouse' AND permission IN ('UPDATE', 'DELETE', 'EXECUTE', 'CONSUME')
 DEBUG: Generated asset query for SPARK_JOB: SELECT id, domain FROM spark_job WHERE domain = ? AND is_deleted = false
-DEBUG: Generated permission subquery for SPARK_JOB: service = 'spark_job' AND permission IN ('UPDATE', 'DELETE', 'RUN', 'CONSUME')
+DEBUG: Generated permission subquery for SPARK_JOB: service = 'spark_job' AND permission IN ('UPDATE', 'DELETE', 'RUN', 'SUSPEND')
 DEBUG: Generated asset query for JUPYTER_CONTAINER: SELECT id, domain FROM jupyter_container WHERE domain = ? AND is_deleted = false
 DEBUG: Generated permission subquery for JUPYTER_CONTAINER: all users get permissions ['VIEW', 'UPDATE', 'DELETE', 'RUN']
 ```
@@ -1026,3 +1032,95 @@ ERROR: Table 'nonexistent_table' doesn't exist for asset type CUSTOM_ASSET
 ERROR: Invalid permission mapping for CUSTOM_ASSET: manage permissions list is empty
 ```
 **Solution:** Ensure all permission mappings (list, view, manage) are properly configured.
+
+---
+
+## Upgrading From 3.x to 4.0
+
+In 4.0, `onboardComputeRas`, `onboardSparkJobRas`, `onboardWorkspaceRas` and `onboardNamespaceMappingRas` are always on. If they were off before the upgrade, your existing compute clusters, Spark jobs and namespaces aren't in any resource bundle, so the console hides them from every user, admins included. Nothing is deleted. Running this job once after the upgrade brings them back.
+
+Start from the [example configuration](#example-configuration) and replace its `migration` section with this, one entry per domain:
+
+```hocon
+migration: {
+    domains: [
+        {
+            domain_id: "default"
+            owner_id: "admin"        # an existing user or group that will own the bundles
+            owner_type: "USER"       # USER or GROUP
+            asset_types: ["NAMESPACE", "COMPUTE", "SPARK_JOB"]
+        }
+        # one entry per domain
+    ]
+    dry_run: true
+    duplicate_bundle_action: "UPDATE"
+}
+```
+
+- Run it with `dry_run: true` first. The job logs what it would migrate, then rolls everything back. If the counts look right, set it to `false` and run it again. Use image `1.0.7` or later: older images commit `COMPUTE` and `SPARK_JOB` changes even in a dry run.
+- If your database doesn't use SSL, add `ssl_mode: "disable"` to both database blocks. The job defaults to `require`.
+- Leave out `DOMAIN`: `domainLevelBundleAuthorization` stays off in 4.0.
+- Leave out `JUPYTER_CONTAINER`: Jupyter containers were already in bundles before 4.0.
+- Workspaces need no migration: with `onboardWorkspaceRas` off, only the built-in Personal and Shared workspaces exist, and they aren't stored in bundles. The job has no `WORKSPACE` asset type.
+- Users keep the access they had through their domain roles. It moves into bundle permissions.
+- Running it again changes nothing, so it's safe to re-run after a failure.
+- Run it before adding more data planes. A namespace mapped on several data planes only gets one of its mappings bundled.
+
+---
+
+## Running as a Kubernetes Job
+
+The job only talks to Postgres, so it can also run as a plain Kubernetes Job, outside the console. The command below calls the job's entry point with plain Python, because `spark-submit` fails in a bare pod. Use this when you can't create the job template, for example when no namespace shows up in the namespace picker.
+
+Save your config as `application.conf`, keeping the `user`/`password` lines from the [example configuration](#example-configuration) so it reads them from environment variables. Then create the config map and a secret for the database credentials, in any namespace that can reach the IOMETE database:
+
+```bash
+kubectl -n <namespace> create configmap ras-onboarding-config --from-file=application.conf
+kubectl -n <namespace> create secret generic ras-onboarding-db \
+  --from-literal=DB_USER=<user> --from-literal=DB_PASSWORD=<password> \
+  --from-literal=ASSET_DB_USER=<user> --from-literal=ASSET_DB_PASSWORD=<password>
+```
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ras-onboarding
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      # imagePullSecrets: [{ name: <pull-secret> }]   # if your registry needs one
+      containers:
+        - name: ras-onboarding
+          image: iomete.azurecr.io/iomete/ras-onboarding:1.0.7
+          workingDir: /app
+          command: ["python", "-c", "from ras_onboarding.common.config import get_config; from ras_onboarding.main import start_job; start_job(None, get_config())"]
+          envFrom:
+            - secretRef:
+                name: ras-onboarding-db
+          volumeMounts:
+            - name: config
+              mountPath: /etc/configs
+      volumes:
+        - name: config
+          configMap:
+            name: ras-onboarding-config
+```
+
+```bash
+kubectl -n <namespace> apply -f ras-onboarding-job.yaml
+kubectl -n <namespace> logs -f job/ras-onboarding
+```
+
+To run it again, for example after switching `dry_run` to `false`, refresh the config map from your edited `application.conf` and recreate the Job:
+
+```bash
+kubectl -n <namespace> create configmap ras-onboarding-config --from-file=application.conf \
+  --dry-run=client -o yaml | kubectl -n <namespace> apply -f -
+kubectl -n <namespace> delete job ras-onboarding
+kubectl -n <namespace> apply -f ras-onboarding-job.yaml
+```
+
+When you're done, delete the Job, the config map and the secret.
