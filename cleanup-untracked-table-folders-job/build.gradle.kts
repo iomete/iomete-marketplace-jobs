@@ -40,15 +40,9 @@ allprojects {
         implementation(kotlin("stdlib-jdk8"))
         implementation(enforcedPlatform("$quarkusPlatformGroupId:$quarkusPlatformArtifactId:$quarkusPlatformVersion"))
 
-        implementation("io.quarkus:quarkus-logging-json")
-
-        implementation("io.quarkus:quarkus-resteasy-jackson")
-
-        implementation("io.quarkus:quarkus-config-yaml")
+        implementation("io.quarkus:quarkus-arc")
         implementation("io.quarkus:quarkus-kotlin")
-        implementation("io.quarkus:quarkus-rest-client")
-        implementation("io.quarkus:quarkus-micrometer-registry-prometheus")
-        implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.22.3")
+        implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
 
         // Apache Spark
         compileOnly("org.apache.spark:spark-sql_2.12:3.5.9")
@@ -60,14 +54,11 @@ allprojects {
         testImplementation("org.apache.spark:spark-core_2.12:3.5.9")
         testImplementation("org.scala-lang:scala-library:2.12.21")
         testRuntimeOnly("org.scala-lang:scala-library:2.12.21")
+    }
 
-        // Force specific versions for transitive dependencies
-        implementation("org.apache.parquet:parquet-avro:1.18.1")
-        implementation("org.apache.avro:avro:1.12.2")
-        implementation("com.mysql:mysql-connector-j:8.4.0")
-        implementation("com.google.protobuf:protobuf-java:3.25.9")
-        implementation("org.apache.thrift:libthrift:0.25.0")
-        implementation("io.quarkus:quarkus-core:3.8.6.1")
+    // Spark supplies the SLF4J provider; a second one in this jar makes the provider depend on classpath order.
+    configurations.all {
+        exclude(group = "org.jboss.slf4j", module = "slf4j-jboss-logmanager")
     }
 }
 
