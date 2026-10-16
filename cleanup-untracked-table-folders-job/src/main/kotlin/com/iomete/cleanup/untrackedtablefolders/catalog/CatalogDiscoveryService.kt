@@ -281,17 +281,26 @@ class CatalogDiscoveryService {
 
     // A database whose location cannot be read maps to null.
     fun visibleDatabaseLocations(catalog: String): Map<String, String?> {
+        val startedAt = System.nanoTime()
         val spark = sparkSessionProvider.getOrCreate()
         val databases = spark.sql("SHOW NAMESPACES IN `$catalog`").collectAsList().map { it.getString(0) }
+        logger.info("Reading the locations of ${databases.size} visible database(s) in catalog=$catalog to protect their storage")
 
-        return databases.associateWith { database ->
-            try {
-                discoverDatabaseLocation(catalog, database)
-            } catch (error: Exception) {
-                logger.warn("Could not read the location of database=$database in catalog=$catalog", error)
-                null
+        val locations =
+            databases.associateWith { database ->
+                try {
+                    discoverDatabaseLocation(catalog, database)
+                } catch (error: Exception) {
+                    logger.warn("Could not read the location of database=$database in catalog=$catalog", error)
+                    null
+                }
             }
-        }
+
+        logger.info(
+            "Read the locations of ${locations.size} database(s) in catalog=$catalog in " +
+                "${(System.nanoTime() - startedAt) / 1_000_000} ms; ${locations.count { it.value == null }} had no readable location"
+        )
+        return locations
     }
 
     // Null when the table does not exist; any other failure is thrown so the caller can fail closed.
