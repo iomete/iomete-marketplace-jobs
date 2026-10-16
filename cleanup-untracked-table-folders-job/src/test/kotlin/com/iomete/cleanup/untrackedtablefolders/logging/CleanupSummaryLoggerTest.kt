@@ -20,6 +20,7 @@ class CleanupSummaryLoggerTest {
         deletionEligible: Boolean = true,
         unmatchedFolderPaths: List<String> = listOf("s3a://bucket/db/old_1"),
         deletedFolderPaths: List<String> = emptyList(),
+        dryRun: Boolean = false,
     ) = CleanupSummary(
         catalog = "spark_catalog",
         database = "analytics",
@@ -32,6 +33,7 @@ class CleanupSummaryLoggerTest {
         excludedPaths = emptyList(),
         unmatchedFolderPaths = unmatchedFolderPaths,
         unmatchedSizeStats = StorageSizeStats(objectCount = 2, totalSizeBytes = 2048),
+        dryRun = dryRun,
         deletionEligible = deletionEligible,
         deletedFolderPaths = deletedFolderPaths,
         deletedSizeStats = StorageSizeStats.ZERO,
@@ -106,6 +108,48 @@ class CleanupSummaryLoggerTest {
         assertTrue(report.contains("Folders discovered                               2"))
         assertTrue(report.contains("Folders belonging to verified catalog tables     1"))
         assertTrue(report.contains("Folders with no verified catalog owner           1"))
+    }
+
+    @Test
+    fun `only folders at visible table locations count as belonging to catalog tables`() {
+        val report =
+            logger.buildReportLines(
+                summary().copy(
+                    activeTableLocations = listOf("s3a://bucket/db/table_a", "s3a://bucket/db/nested/table_b"),
+                    storageFolderPaths =
+                        listOf(
+                            "s3a://bucket/db/table_a", "s3a://bucket/db/nested", "s3a://bucket/db/excluded",
+                            "s3a://bucket/db/too_new", "s3a://bucket/db/old_1",
+                        ),
+                    excludedPaths = listOf("s3a://bucket/db/excluded"),
+                ),
+            ).joinToString("\n")
+
+        assertTrue(report.contains("Folders discovered                               5"))
+        assertTrue(report.contains("Folders belonging to verified catalog tables     2"))
+        assertTrue(report.contains("Folders protected or skipped for other reasons   2"))
+        assertTrue(report.contains("Folders with no verified catalog owner           1"))
+        assertTrue(report.contains("STORAGE FOLDERS PROTECTED OR SKIPPED FOR OTHER REASONS"))
+        assertTrue(report.contains("- s3a://bucket/db/excluded\n- s3a://bucket/db/too_new"))
+    }
+
+    @Test
+    fun `a folder path that cannot be compared is reported, not thrown`() {
+        val lines = logger.buildReportLines(summary().copy(storageFolderPaths = listOf("s3a://bucket/db/table_a", " ")))
+
+        assertTrue("  Folders protected or skipped for other reasons   1" in lines)
+    }
+
+    @Test
+    fun `a dry run report says so and does not report deletions`() {
+        val dryRun = logger.buildReportLines(summary(dryRun = true))
+        val deletion = logger.buildReportLines(summary(deletedFolderPaths = listOf("s3a://bucket/db/old_1")))
+
+        assertTrue(" Mode: dry run, nothing is deleted" in dryRun)
+        assertTrue("  Dry run. No folder was deleted." in dryRun)
+        assertTrue(dryRun.none { "Folders deleted" in it })
+        assertTrue(" Mode: deletion enabled" in deletion)
+        assertTrue(deletion.any { it.startsWith("  Folders deleted") })
     }
 
     @Test

@@ -181,6 +181,27 @@ class OwnershipProtectionFlowTest {
     }
 
     @Test
+    fun `the summary does not count write paths or other databases' storage as table folders`() {
+        folders(SALES, "t1", "t1_data", "orphan")
+        folders("$SALES/x_data", "x_table")
+        val flow =
+            flow(
+                tables = listOf(table("$SALES/t1", writeLocations = listOf("$SALES/t1_data"))),
+                databases = mapOf("x" to "$SALES/x_data"),
+                deleteEnabled = false,
+            )
+
+        flow.run()
+        val lines = flow.summaryLines()
+
+        assertTrue("  Folders belonging to verified catalog tables     1" in lines)
+        assertTrue("  Folders protected or skipped for other reasons   2" in lines)
+        assertTrue("  Folders with no verified catalog owner           1" in lines)
+        assertTrue(" Mode: dry run, nothing is deleted" in lines)
+        assertTrue("  Dry run. No folder was deleted." in lines)
+    }
+
+    @Test
     fun `another database's REST namespace folder at the cleanup root keeps its Iceberg tables`() {
         val marketing = "$WAREHOUSE/marketing"
         folders(marketing, "v2_orders", "campaigns-6f1c")

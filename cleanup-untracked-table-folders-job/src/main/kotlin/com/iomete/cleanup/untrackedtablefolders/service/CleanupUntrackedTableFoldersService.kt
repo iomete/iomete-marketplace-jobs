@@ -442,6 +442,7 @@ class CleanupUntrackedTableFoldersService {
                             excludedPaths = effectiveExcludedPaths,
                             unmatchedFolderPaths = unmatchedFolderPaths,
                             unmatchedSizeStats = candidateSizeStats,
+                            dryRun = config.dryRun,
                             deletionEligible = reconciliation is StorageFolderReconciliation.DeletionEligible,
                             deletionBlockReason = deletionBlockReason,
                             deletedFolderPaths = deletedFolders,

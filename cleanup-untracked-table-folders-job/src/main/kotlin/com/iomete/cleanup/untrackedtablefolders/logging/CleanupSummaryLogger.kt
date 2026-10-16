@@ -3,6 +3,7 @@ package com.iomete.cleanup.untrackedtablefolders.logging
 import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
+import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import jakarta.enterprise.context.ApplicationScoped
 import org.jboss.logging.Logger
@@ -19,6 +20,7 @@ data class CleanupSummary(
     val excludedPaths: List<String>,
     val unmatchedFolderPaths: List<String>,
     val unmatchedSizeStats: StorageSizeStats?,
+    val dryRun: Boolean,
     val deletionEligible: Boolean,
     val deletionBlockReason: DeletionBlockReason? = null,
     val deletedFolderPaths: List<String>,
@@ -61,12 +63,18 @@ class CleanupSummaryLogger {
 
     internal fun buildReportLines(summary: CleanupSummary): List<String> = buildList {
         val unmatchedFolderSet = summary.unmatchedFolderPaths.toSet()
-        val matchedFolderPaths = summary.storageFolderPaths.filter { it !in unmatchedFolderSet }
+        // The report is written after deletion, so a path it cannot compare must not make it throw.
+        val tableFolderPaths =
+            summary.storageFolderPaths.filter { folder ->
+                summary.activeTableLocations.any { runCatching { StoragePathUtils.overlaps(folder, it) }.getOrDefault(false) }
+            }
+        val otherSkippedFolderPaths = summary.storageFolderPaths - tableFolderPaths.toSet() - unmatchedFolderSet
 
         repeat(BLANK_LINES_AROUND_REPORT) { add("") }
 
         add(SEPARATOR)
         add(" CLEANUP REPORT - ${summary.catalog}.${summary.database}")
+        add(if (summary.dryRun) " Mode: dry run, nothing is deleted" else " Mode: deletion enabled")
         add(SEPARATOR)
         add("")
         add("CATALOG")
@@ -91,7 +99,8 @@ class CleanupSummaryLogger {
         add("  Database location                                ${summary.discoveredDatabaseLocation}")
         add("  Folders scanned under                            ${summary.storageScanLocation}")
         add("  Folders discovered                               ${summary.storageFolderPaths.size}")
-        add("  Folders belonging to verified catalog tables     ${matchedFolderPaths.size}")
+        add("  Folders belonging to verified catalog tables     ${tableFolderPaths.size}")
+        add("  Folders protected or skipped for other reasons   ${otherSkippedFolderPaths.size}")
         add("  Folders with no verified catalog owner           ${summary.unmatchedFolderPaths.size}")
         add("  Table locations outside the scanned root         ${summary.unscannedTableLocations.size}")
         add(
@@ -111,6 +120,16 @@ class CleanupSummaryLogger {
         add("STORAGE FOLDERS EXCLUDED BY CONFIGURATION")
         add("")
         addListOrNone(summary.excludedPaths.sorted())
+
+        if (otherSkippedFolderPaths.isNotEmpty()) {
+            add("")
+            add("STORAGE FOLDERS PROTECTED OR SKIPPED FOR OTHER REASONS")
+            add("")
+            add("  These folders are not deleted. They are excluded, belong to another database or to a")
+            add("  table's write path, are framework working folders, or are too new or of unknown age.")
+            add("")
+            addListOrNone(otherSkippedFolderPaths)
+        }
 
         if (summary.unscannedTableLocations.isNotEmpty()) {
             add("")
@@ -155,6 +174,8 @@ class CleanupSummaryLogger {
             add("  Reason: ${summary.deletionBlockReason.code}")
             deletionBlockExplanation(summary.deletionBlockReason).forEach { add("  $it") }
             add("  No folder in this database was deleted.")
+        } else if (summary.deletionEligible && summary.dryRun) {
+            add("  Dry run. No folder was deleted.")
         } else if (summary.deletionEligible) {
             add("  Folders deleted                                  ${summary.deletedFolderPaths.size}")
             add(
