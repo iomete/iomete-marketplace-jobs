@@ -12,4 +12,4 @@ Jobs listed in `marketplace-jobs.json` are released by CI. Each keeps its versio
 
 A merge that does not change `VERSION` releases nothing. Use `make docker-build` to build an image locally.
 
-To release another job this way, add it to `marketplace-jobs.json` with a `VERSION` file, and add the job to `docker.marketplaceJobs` and `bom.yaml` in infra's `iomete-data-plane-enterprise` chart. Its Dockerfile has to build from a clean checkout, with no build steps beforehand.
+To release another job this way, add it to `marketplace-jobs.json` with a `VERSION` file, and, for a marketplace job, add it to `docker.marketplaceJobs` and `bom.yaml` in infra's `iomete-data-plane-enterprise` chart and to `mirrored_marketplace_job_repos` in `terraform/iomete-development-services/argo-workflows.tf`, so dev can pull it through its internal registry. Its Dockerfile has to build from a clean checkout, with no build steps beforehand.
