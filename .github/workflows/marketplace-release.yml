@@ -1,12 +1,7 @@
 name: Marketplace release
 
-# Asks the release pipeline to release every job whose VERSION is not released
-# yet. The pipeline reads main itself, so this only says "look now".
-#
-# The token can do nothing but start that release (iomete/infra
-# argo-workflows/templates/rbac/iom-marketplace-release.yaml). It and the server
-# host live in the marketplace-release environment, which only main can use,
-# and nothing the step prints names the server.
+# Asks the release pipeline to release every unreleased VERSION; it reads main itself.
+# The token can only start that release, and nothing printed names the server.
 on:
   push:
     branches: [main]
