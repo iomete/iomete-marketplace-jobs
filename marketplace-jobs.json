@@ -13,5 +13,20 @@
     "dir": "iomete-mysql-sync",
     "dockerfile": "iomete-mysql-sync/docker/Dockerfile",
     "context": "iomete-mysql-sync"
+  },
+  "kubernetes-event-collector-job": {
+    "dir": "kubernetes-event-collector",
+    "dockerfile": "kubernetes-event-collector/Dockerfile",
+    "context": "kubernetes-event-collector"
+  },
+  "ras-onboarding": {
+    "dir": "ras-onboarding",
+    "dockerfile": "ras-onboarding/docker/Dockerfile",
+    "context": "ras-onboarding"
+  },
+  "kafka-iceberg-stream": {
+    "dir": "kafka-iceberg-stream",
+    "dockerfile": "kafka-iceberg-stream/infra/Dockerfile",
+    "context": "kafka-iceberg-stream"
   }
 }

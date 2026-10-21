@@ -1,5 +1,6 @@
 docker_image := iomete.azurecr.io/iomete/kafka-iceberg-stream
-docker_tag := 1.2.0
+# Released by CI when VERSION changes on main, see the repo README.
+docker_tag := $(shell cat VERSION)
 
 export APP_CONFIG_PATH=application.conf
 export SPARK_CONF_DIR=./spark_conf
@@ -20,8 +21,3 @@ docker-build:
 	@echo ${docker_image}
 	@echo ${docker_tag}
 
-docker-push:
-	# Run this for one time: docker buildx create --use
-	docker buildx build --platform linux/amd64,linux/arm64 --push -f infra/Dockerfile -t ${docker_image}:${docker_tag} .
-	@echo ${docker_image}
-	@echo ${docker_tag}
