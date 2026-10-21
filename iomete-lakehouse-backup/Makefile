@@ -1,6 +1,6 @@
 image := iomete.azurecr.io/iomete/iomete-lakehouse-backup
 # Released by CI when VERSION changes on main, see the repo README.
-tag   := $(shell cat VERSION)
+tag   := $(shell cut -d: -f2 VERSION)
 
 spark_version  := $(shell sed -n 's/^sparkVersion=//p' gradle.properties)
 spark_revision := $(shell sed -n 's/^sparkImageRevision=//p' gradle.properties)

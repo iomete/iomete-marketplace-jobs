@@ -1,6 +1,6 @@
 image := iomete.azurecr.io/iomete/cleanup-untracked-table-folders
 # Released by CI when VERSION changes on main, see the repo README.
-tag   := $(shell cat VERSION)
+tag   := $(shell cut -d: -f2 VERSION)
 # Pass an image digest (repository@sha256:...) to reproduce a build exactly.
 spark_image := iomete.azurecr.io/iomete/spark:3.5.7-latest
 

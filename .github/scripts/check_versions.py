@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Fails a PR whose job VERSION cannot be released: not a version, not higher, or already published.
+"""Fails a PR whose job VERSION cannot be released: not image:1.2.15, a renamed image,
+not higher, or already published. A job is any folder with a VERSION file.
 
 usage: check_versions.py <base-ref>
 """
+import glob
 import json
+import os
 import re
 import subprocess
 import sys
 import urllib.error
 import urllib.request
 
-VERSION = re.compile(r"^\d+\.\d+\.\d+$")
+VERSION = re.compile(r"^([a-z0-9_.-]+):(\d+\.\d+\.\d+)$")
 
 
 def git(*args: str) -> str:
@@ -37,27 +40,35 @@ def published(name: str, version: str) -> bool:
         raise
 
 
-def problem(base: str, name: str, folder: str) -> str | None:
-    version = open(f"{folder}/VERSION").read().strip()
+def problem(base: str, folder: str) -> str | None:
+    line = open(f"{folder}/VERSION").read().strip()
     before = git("show", f"{base}:{folder}/VERSION")
-    if version == before:
+    if line == before:
         if git("diff", "--name-only", f"{base}...HEAD", "--", folder):
-            print(f"::warning::{name} changed but VERSION is still {version}, so merging releases nothing")
+            print(f"::warning::{folder} changed but VERSION is still {line}, so merging releases nothing")
         return None
-    if not VERSION.match(version):
-        return f"{name}: VERSION '{version}' is not a version like 1.2.15"
-    if before and [int(p) for p in version.split(".")] <= [int(p) for p in before.split(".")]:
-        return f"{name}: VERSION {version} is not higher than {before}"
-    # A job's first VERSION may name a version already shipped by hand.
-    if before and published(name, version):
-        return f"{name}: {version} is already published, pick a new version"
-    print(f"{name}: {before or 'new'} -> {version}")
+    match = VERSION.match(line)
+    if not match:
+        return f"{folder}/VERSION: '{line}' is not <image>:<version> like iomete_data_compaction:1.2.15"
+    if not os.path.exists(f"{folder}/Dockerfile"):
+        return f"{folder}: a job needs a Dockerfile next to its VERSION"
+    image, version = match.groups()
+    if before:
+        old_image, _, old_version = before.partition(":")
+        if image != old_image:
+            return f"{folder}: VERSION renames the image from {old_image} to {image}"
+        if [int(p) for p in version.split(".")] <= [int(p) for p in old_version.split(".")]:
+            return f"{folder}: VERSION {version} is not higher than {old_version}"
+        # A job's first VERSION may name a version already shipped by hand.
+        if published(image, version):
+            return f"{folder}: {image}:{version} is already published, pick a new version"
+    print(f"{image}: {before.partition(':')[2] or 'new'} -> {version}")
     return None
 
 
 if __name__ == "__main__":
-    jobs = json.load(open("marketplace-jobs.json"))
-    problems = [p for name, job in jobs.items() if (p := problem(sys.argv[1], name, job["dir"]))]
+    folders = sorted(os.path.dirname(path) for path in glob.glob("*/VERSION"))
+    problems = [p for folder in folders if (p := problem(sys.argv[1], folder))]
     for p in problems:
         print(f"::error::{p}")
     sys.exit(1 if problems else 0)

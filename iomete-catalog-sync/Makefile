@@ -1,6 +1,6 @@
 image := iomete.azurecr.io/iomete/iom-catalog-sync
 # Released by CI when VERSION changes on main, see the repo README.
-tag   := $(shell cat VERSION)
+tag   := $(shell cut -d: -f2 VERSION)
 
 .PHONY: docker-build
 docker-build:

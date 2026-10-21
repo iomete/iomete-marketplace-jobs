@@ -1,6 +1,6 @@
 docker_image := iomete.azurecr.io/iomete/kubernetes-event-collector-job
 # Released by CI when VERSION changes on main, see the repo README.
-docker_tag := $(shell cat VERSION)
+docker_tag := $(shell cut -d: -f2 VERSION)
 
 # Create virtualenv using poetry and install dependencies with dev-dependencies
 install:
