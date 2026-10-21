@@ -1,5 +1,11 @@
 image := iomete.azurecr.io/iomete/iom-catalog-sync
-tag   := 5.1.0
+# Released by CI when VERSION changes on main, see the repo README.
+tag   := $(shell cat VERSION)
+
+.PHONY: docker-build
+docker-build:
+	docker build -f Dockerfile -t ${image}:${tag} .
+	@echo ${image}:${tag}
 
 .PHONY: build
 build:
@@ -8,12 +14,6 @@ build:
 .PHONY: integration-test
 integration-test:
 	./gradlew integrationTest
-
-.PHONY: docker-push
-docker-push: build
-	docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile -t ${image}:${tag} --push . --sbom=true --provenance=true
-	@echo ${image}
-	@echo ${tag}
 
 spark_submit_cmd := /opt/spark/bin/spark-submit \
 			--properties-file=/opt/spark/conf/spark-defaults.conf \

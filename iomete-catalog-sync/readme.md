@@ -4,9 +4,8 @@
 # 1, Build code
 ../gradlew clean quarkusBuild
 
-# 2. Update docker tag version in Makefile
-# 3. Build image and push
-make docker-push
+# 2. Build the image locally. Releases come from bumping VERSION, see the repo README.
+make docker-build
 ```
 
 ### 1. Setup IOMETE Spark Folder

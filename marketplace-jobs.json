@@ -33,5 +33,20 @@
     "dir": "iomete-oracle-sync",
     "dockerfile": "iomete-oracle-sync/docker/Spark-Job-Dockerfile",
     "context": "iomete-oracle-sync"
+  },
+  "iom-catalog-sync": {
+    "dir": "iomete-catalog-sync",
+    "dockerfile": "iomete-catalog-sync/Dockerfile",
+    "context": "iomete-catalog-sync"
+  },
+  "cleanup-untracked-table-folders": {
+    "dir": "cleanup-untracked-table-folders-job",
+    "dockerfile": "cleanup-untracked-table-folders-job/Dockerfile",
+    "context": "cleanup-untracked-table-folders-job"
+  },
+  "iomete-lakehouse-backup": {
+    "dir": "iomete-lakehouse-backup",
+    "dockerfile": "iomete-lakehouse-backup/Dockerfile",
+    "context": "iomete-lakehouse-backup"
   }
 }

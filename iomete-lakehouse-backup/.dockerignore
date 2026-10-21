@@ -1,0 +1,7 @@
+*
+!gradlew
+!gradle/
+!*.gradle.kts
+!gradle.properties
+!src/
+!VERSION

@@ -1,6 +1,7 @@
 *
-!build/*-runner
-!build/*-runner.jar
-!build/lib/*
-!build/quarkus-app/*
-!docker_files/*
+!gradlew
+!gradle/
+!*.gradle.kts
+!gradle.properties
+!src/
+!VERSION
