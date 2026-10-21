@@ -1,0 +1,23 @@
+name: Marketplace version check
+
+# Catches a VERSION that cannot be released before merge. Needs no secrets, so it
+# runs the same on fork PRs.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check job versions
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 .github/scripts/check_versions.py "$BASE_SHA"
