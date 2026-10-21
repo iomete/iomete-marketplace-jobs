@@ -28,5 +28,10 @@
     "dir": "kafka-iceberg-stream",
     "dockerfile": "kafka-iceberg-stream/infra/Dockerfile",
     "context": "kafka-iceberg-stream"
+  },
+  "iomete-oracle-sync": {
+    "dir": "iomete-oracle-sync",
+    "dockerfile": "iomete-oracle-sync/docker/Spark-Job-Dockerfile",
+    "context": "iomete-oracle-sync"
   }
 }

@@ -73,8 +73,10 @@ docker buildx build --platform linux/amd64,linux/arm64 --push -f docker/Spark-Co
 ```
 
 **Spark Job Image**
+
+Released by CI as `iomete.azurecr.io/iomete/iomete-oracle-sync:<VERSION>` when `VERSION` changes on main, see the repo README. To build it locally:
 ```shell
-docker buildx build --platform linux/amd64,linux/arm64 --push -f docker/Spark-Job-Dockerfile -t iomete/iomete-oracle-sync:1.2.0-spark-job .
+docker build -f docker/Spark-Job-Dockerfile -t iomete-oracle-sync:dev .
 ```
 
 ## Run Jobs
