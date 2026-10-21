@@ -2,19 +2,16 @@
   "iomete_data_compaction": {
     "dir": "data-compaction-job",
     "dockerfile": "data-compaction-job/docker/Dockerfile",
-    "context": "data-compaction-job",
-    "marketplaceApp": "data-compaction"
+    "context": "data-compaction-job"
   },
   "iomete-file-streaming": {
     "dir": "file-streaming",
     "dockerfile": "file-streaming/docker/Dockerfile",
-    "context": "file-streaming",
-    "marketplaceApp": "file-streaming-job"
+    "context": "file-streaming"
   },
   "iomete_mysql_sync": {
     "dir": "iomete-mysql-sync",
     "dockerfile": "iomete-mysql-sync/docker/Dockerfile",
-    "context": "iomete-mysql-sync",
-    "marketplaceApp": "mysql-db-sync"
+    "context": "iomete-mysql-sync"
   }
 }
