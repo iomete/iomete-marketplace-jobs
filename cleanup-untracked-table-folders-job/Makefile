@@ -1,17 +1,17 @@
 image := iomete.azurecr.io/iomete/cleanup-untracked-table-folders
-tag   := 0.1.5
+# Released by CI when VERSION changes on main, see the repo README.
+tag   := $(shell cut -d: -f2 VERSION)
 # Pass an image digest (repository@sha256:...) to reproduce a build exactly.
 spark_image := iomete.azurecr.io/iomete/spark:3.5.7-latest
+
+.PHONY: docker-build
+docker-build:
+	docker build --build-arg SPARK_IMAGE=${spark_image} -f Dockerfile -t ${image}:${tag} .
+	@echo ${image}:${tag}
 
 .PHONY: build
 build:
 	./gradlew clean quarkusBuild
-
-.PHONY: docker-push
-docker-push: build
-	docker buildx build --platform linux/amd64,linux/arm64 --build-arg SPARK_IMAGE=${spark_image} -f Dockerfile -t ${image}:${tag} --push . --sbom=true --provenance=true
-	@echo ${image}
-	@echo ${tag}
 
 .PHONY: docker-run
 docker-run:

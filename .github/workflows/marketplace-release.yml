@@ -1,0 +1,39 @@
+name: Marketplace release
+
+# Asks the release pipeline to release every unreleased VERSION; it reads main itself.
+# The token can only start that release, and nothing printed names the server.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/VERSION'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: marketplace-release
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: marketplace-release
+    steps:
+      - name: Start the release
+        env:
+          ARGO_HOST: ${{ secrets.ARGO_HOST }}
+          ARGO_TOKEN: ${{ secrets.ARGO_TOKEN }}
+        run: |
+          set -u
+          status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 -X POST \
+            "https://${ARGO_HOST}/api/v1/workflows/argo/submit" \
+            -H "Authorization: Bearer ${ARGO_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"resourceKind":"WorkflowTemplate","resourceName":"iom-release-marketplace"}' || true)
+          if [ "$status" != "200" ]; then
+            echo "::error::Release request failed (HTTP ${status:-none})"
+            exit 1
+          fi
+          echo "Release started. Released versions are tagged <job>/<version> when they finish."

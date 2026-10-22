@@ -122,7 +122,7 @@ under the prefix; point it at something cheap for the first run.
 ```
 
 This produces `build/libs/iomete-lakehouse-backup-<version>.jar` (the version
-comes from `projectVersion` in `gradle.properties`). Rebuild this whenever you
+comes from the `VERSION` file). Rebuild this whenever you
 change source, so the jar the debugger runs matches the sources IntelliJ shows.
 
 ### 4. Launch under the debug agent
@@ -147,7 +147,7 @@ Notes:
   launcher (`JavaModuleOptions`); you do not need to pass them. This is why the
   image's `spark-defaults.conf` contains none.
 - On Linux, replace the `JAVA_HOME` expression with your JDK 17 path.
-- Update the jar filename if `projectVersion` changes.
+- Update the jar filename if `VERSION` changes.
 
 The process prints the Spark banner and then blocks on
 `Listening for transport dt_socket at address: 5005`.

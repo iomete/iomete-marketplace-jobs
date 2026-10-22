@@ -8,7 +8,8 @@ plugins {
 }
 
 group = "com.iomete"
-version = property("projectVersion") as String
+// VERSION reads <image>:<version>.
+version = file("VERSION").readText().trim().substringAfter(":")
 
 val sparkVersion = property("sparkVersion") as String
 val hadoopAwsVersion = property("hadoopAwsVersion") as String

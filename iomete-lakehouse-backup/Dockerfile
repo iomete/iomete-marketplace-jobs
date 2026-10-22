@@ -1,9 +1,14 @@
-# check=skip=InvalidDefaultArgInFrom
-# No default: Makefile injects SPARK_IMAGE from gradle.properties.
-ARG SPARK_IMAGE
-FROM ${SPARK_IMAGE}
+# Keep in step with sparkVersion and sparkImageRevision in gradle.properties.
+ARG SPARK_IMAGE=iomete.azurecr.io/iomete/spark:3.5.7-v2
 
-COPY build/libs/iomete-lakehouse-backup-*.jar /opt/spark/jars/iomete-lakehouse-backup.jar
+# Builds the jar inside the image, so a clean checkout is enough.
+FROM eclipse-temurin:17-jdk AS build
+WORKDIR /build
+COPY . .
+RUN ./gradlew --no-daemon clean jar
+
+FROM ${SPARK_IMAGE}
+COPY --from=build /build/build/libs/iomete-lakehouse-backup-*.jar /opt/spark/jars/iomete-lakehouse-backup.jar
 
 # Two copies of software.amazon.awssdk on one classpath link at random and break S3 rename (DEL-452).
 RUN rm -f /opt/spark/jars/iceberg-aws-bundle-*.jar \

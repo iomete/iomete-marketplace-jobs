@@ -1,7 +1,6 @@
 image := iomete.azurecr.io/iomete/iomete-lakehouse-backup
-tag   := $(shell sed -n 's/^projectVersion=//p' gradle.properties)
-# Optional second tag (e.g. commit SHA) for per-build traceability.
-extra_tag :=
+# Released by CI when VERSION changes on main, see the repo README.
+tag   := $(shell cut -d: -f2 VERSION)
 
 spark_version  := $(shell sed -n 's/^sparkVersion=//p' gradle.properties)
 spark_revision := $(shell sed -n 's/^sparkImageRevision=//p' gradle.properties)
@@ -12,23 +11,8 @@ build:
 	./gradlew clean jar
 
 .PHONY: docker-build
-docker-build: build
+docker-build:
 	docker build --build-arg SPARK_IMAGE=$(spark_image) -f Dockerfile -t ${image}:${tag} .
-
-.PHONY: docker-push
-docker-push: build
-	docker buildx build --platform linux/amd64,linux/arm64 --build-arg SPARK_IMAGE=$(spark_image) -f Dockerfile -t ${image}:${tag} --push . --sbom=true --provenance=true
-	@echo ${image}:${tag}
-
-.PHONY: docker-push-tag
-docker-push-tag: build
-	docker buildx build --platform linux/amd64,linux/arm64 --build-arg SPARK_IMAGE=$(spark_image) -f Dockerfile -t ${image}:${tag} -t ${image}:$(extra_tag) --push . --sbom=true --provenance=true
-	@echo ${image}:${tag} ${image}:$(extra_tag)
-
-.PHONY: docker-push-latest
-docker-push-latest: build
-	docker buildx build --platform linux/amd64,linux/arm64 --build-arg SPARK_IMAGE=$(spark_image) -f Dockerfile -t ${image}:latest --push . --sbom=true --provenance=true
-	@echo ${image}:latest
 
 .PHONY: test
 test:
