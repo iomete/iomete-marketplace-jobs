@@ -39,7 +39,7 @@ class SparkSessionProvider {
         SparkSession
             .builder()
             .enableHiveSupport()
-            .config(extensionsConfig)
+            .config(sessionConfig)
             .orCreate
 
     fun getSession(catalog: CoreClient.CatalogDetails): SparkSession {
@@ -63,7 +63,7 @@ class SparkSessionProvider {
             SparkSession
                 .builder()
                 .config(catalog.sparkProperties)
-                .config(extensionsConfig)
+                .config(sessionConfig)
                 .orCreate
 
         try {
@@ -77,11 +77,13 @@ class SparkSessionProvider {
 
     companion object {
         private val sessions: MutableMap<String, SparkSession> = mutableMapOf()
-        private val extensionsConfig: Map<String, String> =
+        internal val sessionConfig: Map<String, String> =
             mapOf(
                 "spark.sql.extensions" to
                     "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions," +
                     "org.projectnessie.spark.extensions.NessieSparkSessionExtensions",
+                // The IOMETE Spark image applies Ranger rules by default, which hide objects from the sync.
+                "spark.sql.hive.sessionStateBuilder" to "org.apache.spark.sql.hive.HiveSessionStateBuilder",
             )
     }
 }

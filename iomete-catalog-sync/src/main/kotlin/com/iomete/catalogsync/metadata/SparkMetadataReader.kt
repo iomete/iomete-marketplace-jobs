@@ -25,7 +25,7 @@ class SparkMetadataReader {
                 .collectAsList()
                 .map { it.getString(0) }
         } catch (th: Throwable) {
-            logger.warn("Couldn't fetch schemas in catalog: {}", catalog, th)
+            logger.error("Couldn't fetch schemas in catalog: {}", catalog, th)
             return emptyList()
         }
     }
@@ -99,7 +99,7 @@ class SparkMetadataReader {
         try {
             spark.sql("show tables from `$catalog`.`$schema`").collectAsList()
         } catch (th: Throwable) {
-            logger.warn("Failed to fetch tables for catalog {} & schema {}", catalog, schema, th)
+            logger.error("Failed to fetch tables for catalog {} & schema {}", catalog, schema, th)
             emptyList()
         }
 
