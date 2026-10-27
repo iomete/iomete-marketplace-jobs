@@ -3,4 +3,4 @@ pyhocon~=0.3.63
 
 # dev dependencies
 pyspark==4.2.0
-pytest==9.1.1
+pytest==9.2.0
