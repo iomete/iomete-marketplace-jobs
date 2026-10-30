@@ -61,7 +61,7 @@ testing {
                 runtimeOnly("org.mockito:mockito-core:5.24.0") // MiniDFSCluster uses Mockito internally
                 implementation("org.testcontainers:junit-jupiter:1.21.4")
                 implementation("org.testcontainers:minio:1.21.4")
-                implementation("software.amazon.awssdk:s3:2.49.6")
+                implementation("software.amazon.awssdk:s3:2.57.8")
                 implementation("org.jetbrains.kotlin:kotlin-test")
             }
             targets {
