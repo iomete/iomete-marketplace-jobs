@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.logging
 
 import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
+import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
@@ -27,6 +28,8 @@ data class CleanupSummary(
     val deletedSizeStats: StorageSizeStats?,
     val unscannedTableLocations: List<String> = emptyList(),
     val scanPlan: ScanPlanReport? = null,
+    val inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>> = emptyMap(),
+    val notFoundAtDeletionPaths: List<String> = emptyList(),
 )
 
 @ApplicationScoped
@@ -68,7 +71,9 @@ class CleanupSummaryLogger {
             summary.storageFolderPaths.filter { folder ->
                 summary.activeTableLocations.any { runCatching { StoragePathUtils.overlaps(folder, it) }.getOrDefault(false) }
             }
-        val otherSkippedFolderPaths = summary.storageFolderPaths - tableFolderPaths.toSet() - unmatchedFolderSet
+        val inspectedFolderPaths = summary.inspectionOutcomes.values.flatten().toSet()
+        val otherSkippedFolderPaths =
+            summary.storageFolderPaths - tableFolderPaths.toSet() - unmatchedFolderSet - inspectedFolderPaths
 
         repeat(BLANK_LINES_AROUND_REPORT) { add("") }
 
@@ -101,6 +106,9 @@ class CleanupSummaryLogger {
         add("  Folders discovered                               ${summary.storageFolderPaths.size}")
         add("  Folders belonging to verified catalog tables     ${tableFolderPaths.size}")
         add("  Folders protected or skipped for other reasons   ${otherSkippedFolderPaths.size}")
+        inspectionOutcomesInReportOrder(summary).forEach { (outcome, paths) ->
+            add("  ${inspectionOutcomeLabel(outcome).padEnd(STORAGE_LABEL_WIDTH)}${paths.size}")
+        }
         add("  Folders with no verified catalog owner           ${summary.unmatchedFolderPaths.size}")
         add("  Table locations outside the scanned root         ${summary.unscannedTableLocations.size}")
         add(
@@ -126,9 +134,24 @@ class CleanupSummaryLogger {
             add("STORAGE FOLDERS PROTECTED OR SKIPPED FOR OTHER REASONS")
             add("")
             add("  These folders are not deleted. They are excluded, belong to another database or to a")
-            add("  table's write path, are framework working folders, or are too new or of unknown age.")
+            add("  table's write path, are framework working folders, or are too new.")
             add("")
             addListOrNone(otherSkippedFolderPaths)
+        }
+
+        val inspectionOutcomes = inspectionOutcomesInReportOrder(summary)
+        if (inspectionOutcomes.isNotEmpty()) {
+            add("")
+            add("STORAGE FOLDERS SKIPPED AFTER INSPECTION")
+            add("")
+            add("  These folders have no verified catalog owner, but inspecting them did not establish")
+            add("  their age, so they are not deleted.")
+            inspectionOutcomes.forEach { (outcome, paths) ->
+                add("")
+                add("  ${outcome.code}: ${inspectionOutcomeExplanation(outcome)}")
+                add("")
+                addListOrNone(paths)
+            }
         }
 
         if (summary.unscannedTableLocations.isNotEmpty()) {
@@ -185,8 +208,18 @@ class CleanupSummaryLogger {
                     "  Size deleted                                     not available"
                 }
             )
+            if (summary.notFoundAtDeletionPaths.isNotEmpty()) {
+                add("  Folders not found at deletion                    ${summary.notFoundAtDeletionPaths.size}")
+            }
             add("")
             addListOrNone(summary.deletedFolderPaths)
+            if (summary.notFoundAtDeletionPaths.isNotEmpty()) {
+                add("")
+                add("  folder_not_found_at_deletion: passed inspection, but was gone when deletion started.")
+                add("  Still counted as a candidate, not as deleted.")
+                add("")
+                addListOrNone(summary.notFoundAtDeletionPaths)
+            }
         } else {
             add("  BLOCKED")
             add("")
@@ -239,6 +272,27 @@ class CleanupSummaryLogger {
         addListOrNone(scanPlan.reportOnlyFolderPaths)
     }
 
+    private fun inspectionOutcomesInReportOrder(summary: CleanupSummary): List<Pair<CandidateInspectionOutcome, List<String>>> =
+        CandidateInspectionOutcome.entries.mapNotNull { outcome ->
+            summary.inspectionOutcomes[outcome]?.takeIf { it.isNotEmpty() }?.let { outcome to it }
+        }
+
+    private fun inspectionOutcomeLabel(outcome: CandidateInspectionOutcome): String =
+        when (outcome) {
+            CandidateInspectionOutcome.FOLDER_NOT_FOUND -> "Folders no longer present when inspected"
+            CandidateInspectionOutcome.STATISTICS_UNAVAILABLE -> "Folders whose contents could not be listed"
+            CandidateInspectionOutcome.EMPTY_FOLDER -> "Empty folders"
+            CandidateInspectionOutcome.UNKNOWN_AGE -> "Folders of unknown age"
+        }
+
+    private fun inspectionOutcomeExplanation(outcome: CandidateInspectionOutcome): String =
+        when (outcome) {
+            CandidateInspectionOutcome.FOLDER_NOT_FOUND -> "listed under the cleanup root, but not found when inspected."
+            CandidateInspectionOutcome.STATISTICS_UNAVAILABLE -> "the contents could not be listed. See the WARN log for the error."
+            CandidateInspectionOutcome.EMPTY_FOLDER -> "no objects. Empty folders, including their directory markers, are not deleted."
+            CandidateInspectionOutcome.UNKNOWN_AGE -> "at least one object has no valid modification time."
+        }
+
     private fun deletionBlockExplanation(reason: DeletionBlockReason): List<String> =
         when (reason) {
             DeletionBlockReason.AUDIT_INTEGRITY_LOST ->
@@ -286,6 +340,7 @@ class CleanupSummaryLogger {
         const val MAX_LOG_PATH_SAMPLE_SIZE = 100
         const val MAX_LOGGED_NOT_SCANNED_ROOTS = 25
         const val BLANK_LINES_AROUND_REPORT = 3
+        const val STORAGE_LABEL_WIDTH = 49
         const val SEPARATOR = "================================================================"
     }
 }

@@ -1,8 +1,9 @@
 package com.iomete.cleanup.untrackedtablefolders.candidate
 
+import com.iomete.cleanup.untrackedtablefolders.storage.CandidateFolderStatistics
+import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageFolder
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
-import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import jakarta.enterprise.context.ApplicationScoped
 import org.jboss.logging.Logger
 import java.time.Instant
@@ -116,15 +117,17 @@ class UntrackedFolderCandidateDetector {
 
     fun applyAgeCutoff(
         reconciliation: StorageFolderReconciliation,
-        folderStats: Map<String, StorageSizeStats>,
+        folderStatistics: CandidateFolderStatistics,
         cutoffTimeMillis: Long,
     ): StorageFolderReconciliation {
         val skipReasonCounts = mutableMapOf<CandidateSkipReason, Int>()
 
         val oldEnoughFolders =
             reconciliation.folders.filter { storageFolder ->
-                val newestObjectModificationTimeMillis = folderStats[storageFolder.path]?.newestObjectModificationTimeMillis
-                val skipReason = ageSkipReason(newestObjectModificationTimeMillis, cutoffTimeMillis)
+                val newestObjectModificationTimeMillis =
+                    folderStatistics.statsByFolder[storageFolder.path]?.newestObjectModificationTimeMillis
+                val skipReason =
+                    ageSkipReason(folderStatistics.outcome(storageFolder.path), newestObjectModificationTimeMillis, cutoffTimeMillis)
 
                 if (skipReason != null) {
                     skipReasonCounts.merge(skipReason, 1, Int::plus)
@@ -158,16 +161,21 @@ class UntrackedFolderCandidateDetector {
     }
 
     private fun ageSkipReason(
+        outcome: CandidateInspectionOutcome?,
         newestObjectModificationTimeMillis: Long?,
         cutoffTimeMillis: Long,
     ): CandidateSkipReason? =
-        when {
-            // S3A directory mtimes are synthetic, so only a readable object can prove a folder is old.
-            newestObjectModificationTimeMillis == null || newestObjectModificationTimeMillis <= 0 ->
-                CandidateSkipReason.UNKNOWN_AGE
-
-            newestObjectModificationTimeMillis > cutoffTimeMillis -> CandidateSkipReason.TOO_NEW
-            else -> null
+        when (outcome) {
+            CandidateInspectionOutcome.FOLDER_NOT_FOUND -> CandidateSkipReason.FOLDER_NOT_FOUND
+            CandidateInspectionOutcome.STATISTICS_UNAVAILABLE -> CandidateSkipReason.STATISTICS_UNAVAILABLE
+            CandidateInspectionOutcome.EMPTY_FOLDER -> CandidateSkipReason.EMPTY_FOLDER
+            CandidateInspectionOutcome.UNKNOWN_AGE -> CandidateSkipReason.UNKNOWN_AGE
+            null ->
+                when {
+                    newestObjectModificationTimeMillis == null -> CandidateSkipReason.UNKNOWN_AGE
+                    newestObjectModificationTimeMillis > cutoffTimeMillis -> CandidateSkipReason.TOO_NEW
+                    else -> null
+                }
         }
 
     private fun skipReason(
@@ -295,12 +303,22 @@ class UntrackedFolderCandidateDetector {
         EXCLUDED_PATH("excluded_path"),
         CONTAINS_EXCLUDED_PATH("contains_excluded_path"),
         INSIDE_EXCLUDED_PATH("inside_excluded_path"),
+        FOLDER_NOT_FOUND("folder_not_found"),
+        STATISTICS_UNAVAILABLE("statistics_unavailable"),
+        EMPTY_FOLDER("empty_folder"),
         TOO_NEW("too_new"),
         UNKNOWN_AGE("unknown_age"),
     }
 
     private companion object {
-        val AGE_SKIP_REASONS = listOf(CandidateSkipReason.TOO_NEW, CandidateSkipReason.UNKNOWN_AGE)
+        val AGE_SKIP_REASONS =
+            listOf(
+                CandidateSkipReason.FOLDER_NOT_FOUND,
+                CandidateSkipReason.STATISTICS_UNAVAILABLE,
+                CandidateSkipReason.EMPTY_FOLDER,
+                CandidateSkipReason.TOO_NEW,
+                CandidateSkipReason.UNKNOWN_AGE,
+            )
 
         val SENTINEL_FOLDER_PREFIXES = setOf(
             "_temporary",

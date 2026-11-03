@@ -13,6 +13,7 @@ import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
+import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionResult
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
@@ -318,16 +319,19 @@ class CleanupUntrackedTableFoldersService {
                             return@forEach
                         }
 
-                    val candidateSizeStatsByFolder =
+                    val detectedFolderPaths = detectedReconciliation.folders.map { it.path }.sorted()
+                    val candidateFolderStatistics =
                         candidateSizeStatCollector.collectPerFolder(
                             catalog = discoveredDatabase.catalog,
-                            candidateFolderPaths = detectedReconciliation.folders.map { it.path }.sorted(),
+                            candidateFolderPaths = detectedFolderPaths,
                         )
+                    val candidateSizeStatsByFolder = candidateFolderStatistics.statsByFolder
+                    val inspectionOutcomes = candidateFolderStatistics.folderPathsByOutcome(detectedFolderPaths)
 
                     val reconciliation =
                         untrackedFolderCandidateDetector.applyAgeCutoff(
                             reconciliation = detectedReconciliation,
-                            folderStats = candidateSizeStatsByFolder,
+                            folderStatistics = candidateFolderStatistics,
                             cutoffTimeMillis = cutoffTimeMillis,
                         )
 
@@ -353,7 +357,7 @@ class CleanupUntrackedTableFoldersService {
                             else -> null
                         }
 
-                    val deletedFolders =
+                    val deletionResult =
                         when (reconciliation) {
                             is StorageFolderReconciliation.DeletionEligible ->
                                 if (deletionBlockReason != null) {
@@ -368,7 +372,7 @@ class CleanupUntrackedTableFoldersService {
                                     logger.warn(
                                         "Not deleting any folder for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: $detail"
                                     )
-                                    emptyList()
+                                    CandidateDeletionResult()
                                 } else {
                                     try {
                                         candidateDeletionGate.deleteCandidates(
@@ -406,6 +410,8 @@ class CleanupUntrackedTableFoldersService {
                                                 excludedPaths = effectiveExcludedPaths,
                                                 unscannedTableLocations = unscannedTableLocations,
                                                 scanPlan = scanPlan,
+                                                inspectionOutcomes = inspectionOutcomes,
+                                                notFoundAtDeletionPaths = th.notFoundPaths,
                                                 error = th,
                                             )
                                         }
@@ -414,8 +420,10 @@ class CleanupUntrackedTableFoldersService {
                                     }
                                 }
 
-                            is StorageFolderReconciliation.OwnershipUnverified -> emptyList()
+                            is StorageFolderReconciliation.OwnershipUnverified -> CandidateDeletionResult()
                         }
+
+                    val deletedFolders = deletionResult.deletedPaths
 
                     val deletedSizeStats =
                         candidateSizeStatCollector.sum(deletedFolders.mapNotNull { candidateSizeStatsByFolder[it] })
@@ -449,6 +457,8 @@ class CleanupUntrackedTableFoldersService {
                             deletedSizeStats = deletedSizeStats,
                             unscannedTableLocations = unscannedTableLocations,
                             scanPlan = scanPlan,
+                            inspectionOutcomes = inspectionOutcomes,
+                            notFoundAtDeletionPaths = deletionResult.notFoundPaths,
                         )
                     )
 
@@ -473,6 +483,7 @@ class CleanupUntrackedTableFoldersService {
                                         excludedPaths = effectiveExcludedPaths,
                                         unscannedTableLocations = unscannedTableLocations,
                                         scanPlan = scanPlan,
+                                        inspectionOutcomes = inspectionOutcomes,
                                     )
                                 }
                             } else {
@@ -495,6 +506,8 @@ class CleanupUntrackedTableFoldersService {
                                         excludedPaths = effectiveExcludedPaths,
                                         unscannedTableLocations = unscannedTableLocations,
                                         scanPlan = scanPlan,
+                                        inspectionOutcomes = inspectionOutcomes,
+                                        notFoundAtDeletionPaths = deletionResult.notFoundPaths,
                                     )
                                 }
                             }
@@ -517,6 +530,7 @@ class CleanupUntrackedTableFoldersService {
                                     excludedPaths = effectiveExcludedPaths,
                                     unscannedTableLocations = unscannedTableLocations,
                                     scanPlan = scanPlan,
+                                    inspectionOutcomes = inspectionOutcomes,
                                 )
                             }
                     }
