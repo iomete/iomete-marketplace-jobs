@@ -1,0 +1,16 @@
+# Last match wins, so the lines below override this default.
+*                                     @iomete/infra
+/cleanup-untracked-table-folders-job/ @HasanNiftiyev
+/data-compaction-job/                 @iomete/lakehouse-backend @iomete/ecosytem
+/debezium-server-iomete/              @vusal-iom @maksym-iomete
+/file-streaming/                      @HasanNiftiyev @maksym-iomete
+/iomete-catalog-sync/                 @iomete/lakehouse-backend @iomete/infra
+/iomete-lakehouse-backup/             @iomete/ecosytem
+/iomete-mysql-sync/                   @garayevs @vusal-iom
+/iomete-oracle-sync/                  @iomete/ecosytem
+/jupyter-notebook-scheduler/          @iomete/lakehouse-backend
+/kafka-iceberg-stream/                @iomete/ecosytem @iomete/lakehouse-backend
+/kubernetes-event-collector/          @iomete/ecosytem @iomete/infra
+/orphaned-asset-detection/            @iomete/platform-backend
+/query-scheduler-job/                 @vusal-iom @fmusayev
+/restart-computes/                    @HasanNiftiyev
