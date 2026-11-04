@@ -144,8 +144,8 @@ class CleanupSummaryLogger {
             add("")
             add("STORAGE FOLDERS SKIPPED AFTER INSPECTION")
             add("")
-            add("  These folders have no verified catalog owner, but inspecting them did not establish")
-            add("  their age, so they are not deleted.")
+            add("  These folders have no verified catalog owner, but they are not deleted. Inspection found")
+            add("  them missing, could not read them, found them empty, or could not establish their age.")
             inspectionOutcomes.forEach { (outcome, paths) ->
                 add("")
                 add("  ${outcome.code}: ${inspectionOutcomeExplanation(outcome)}")

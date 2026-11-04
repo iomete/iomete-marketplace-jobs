@@ -280,7 +280,7 @@ A folder's age is the modification time of the newest object anywhere under it. 
 
 This gives a safety buffer so folders with recently written objects are not selected immediately.
 
-Object storage does not keep a reliable modification time for folders themselves, so the job never uses folder timestamps. A folder whose age cannot be established is skipped and never deleted. The job records why:
+Object storage does not keep a reliable modification time for folders themselves, so the job never uses folder timestamps. A folder is skipped and never deleted when it is missing at inspection, cannot be read, is empty, or its age cannot be established. The job records why:
 
 | Reason | Meaning |
 |---|---|
@@ -468,14 +468,15 @@ the "every candidate folder failed" check, so a database whose candidate folders
 since they were listed does not fail; with no other block, it records `SUCCESS` with no candidates.
 
 If a recursive delete on S3-compatible storage (S3A) reports that an existing folder was not
-deleted, the job checks the folder again. S3A reports this only when the folder was already gone
-before anything was deleted. If the second check confirms it is gone, it is recorded as
-`folder_not_found_at_deletion` and deletion continues. If it still exists, or the second check
-fails, the folder's state is unknown. On Google Cloud Storage and Azure the job does not rely on
-this behavior: a refused delete always leaves the folder's state unknown. In both unknown cases the
-job stops deleting for that database and records `FAILED`. A folder already gone when deletion
-starts is also recorded as `folder_not_found_at_deletion`. These folders stay counted as
-candidates, not as deleted. A delete that throws an error is never treated as a missing folder.
+deleted, the job checks the folder again. In hadoop-aws 3.4.1, the S3A version this job was
+checked against, a folder that is not found produces this result. If the second check confirms the
+folder is gone, it is recorded as `folder_not_found_at_deletion` and deletion continues. If it still
+exists, or the second check fails, the folder's state is unknown. On Google Cloud Storage and Azure
+the job does not rely on this behavior: a refused delete always leaves the folder's state unknown.
+In both unknown cases the job stops deleting for that database and records `FAILED`. A folder
+already gone when deletion starts is also recorded as `folder_not_found_at_deletion`. These folders
+stay counted as candidates, not as deleted. A delete that throws an error is never treated as a
+missing folder.
 
 Outcome meanings:
 
