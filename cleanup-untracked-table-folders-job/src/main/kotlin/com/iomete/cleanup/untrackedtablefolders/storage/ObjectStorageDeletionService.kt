@@ -128,7 +128,12 @@ class ObjectStorageDeletionService {
     // In hadoop-aws 3.4.1, S3A's recursive delete returns false when the folder is not found, so a false is
     // rechecked. Other filesystems may return false after a partial delete, so for them false leaves the
     // folder's state unknown.
-    private fun isS3AFileSystem(fileSystem: FileSystem): Boolean = runCatching { fileSystem.scheme }.getOrNull() == "s3a"
+    private fun isS3AFileSystem(fileSystem: FileSystem): Boolean =
+        try {
+            fileSystem.scheme == "s3a"
+        } catch (error: UnsupportedOperationException) {
+            false
+        }
 
     private fun unknownStateFailure(location: String): FolderDeletionFailure =
         FolderDeletionFailure(
