@@ -1,5 +1,6 @@
 package com.iomete.cleanup.untrackedtablefolders.candidate
 
+import com.iomete.cleanup.untrackedtablefolders.storage.CandidateFolderStatistics
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageFolder
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -328,8 +329,8 @@ class UntrackedFolderCandidateDetectorTest {
         val result =
             detector.applyAgeCutoff(
                 reconciliation = deletionEligibleFolders("s3a://bucket/db/older", "s3a://bucket/db/at_cutoff"),
-                folderStats =
-                    mapOf(
+                folderStatistics =
+                    statistics(
                         "s3a://bucket/db/older" to stats(newestObjectModificationTimeMillis = 100),
                         "s3a://bucket/db/at_cutoff" to stats(newestObjectModificationTimeMillis = 200),
                     ),
@@ -344,7 +345,7 @@ class UntrackedFolderCandidateDetectorTest {
         val result =
             detector.applyAgeCutoff(
                 reconciliation = deletionEligibleFolders("s3a://bucket/db/fresh"),
-                folderStats = mapOf("s3a://bucket/db/fresh" to stats(newestObjectModificationTimeMillis = 201)),
+                folderStatistics = statistics("s3a://bucket/db/fresh" to stats(newestObjectModificationTimeMillis = 201)),
                 cutoffTimeMillis = 200,
             )
 
@@ -362,8 +363,8 @@ class UntrackedFolderCandidateDetectorTest {
                         "s3a://bucket/db/zero_mtime",
                         "s3a://bucket/db/negative_mtime",
                     ),
-                folderStats =
-                    mapOf(
+                folderStatistics =
+                    statistics(
                         "s3a://bucket/db/empty" to StorageSizeStats(objectCount = 0, totalSizeBytes = 0),
                         "s3a://bucket/db/zero_mtime" to stats(newestObjectModificationTimeMillis = 0),
                         "s3a://bucket/db/negative_mtime" to stats(newestObjectModificationTimeMillis = -1),
@@ -375,6 +376,29 @@ class UntrackedFolderCandidateDetectorTest {
     }
 
     @Test
+    fun `age check never keeps an absent, empty, or unreadable folder, however old`() {
+        val folderStatistics =
+            CandidateFolderStatistics(
+                statsByFolder =
+                    mapOf(
+                        "s3a://bucket/db/empty" to StorageSizeStats(objectCount = 0, totalSizeBytes = 0, newestObjectModificationTimeMillis = 1),
+                        "s3a://bucket/db/old" to stats(newestObjectModificationTimeMillis = 1),
+                    ),
+                absentFolderPaths = setOf("s3a://bucket/db/gone"),
+            )
+
+        val result =
+            detector.applyAgeCutoff(
+                reconciliation =
+                    deletionEligibleFolders("s3a://bucket/db/empty", "s3a://bucket/db/gone", "s3a://bucket/db/old", "s3a://bucket/db/unreadable"),
+                folderStatistics = folderStatistics,
+                cutoffTimeMillis = 200,
+            )
+
+        assertEquals(listOf("s3a://bucket/db/old"), result.folders.map { it.path })
+    }
+
+    @Test
     fun `age check keeps ownership unverified and its unresolved table count`() {
         val result =
             detector.applyAgeCutoff(
@@ -383,8 +407,8 @@ class UntrackedFolderCandidateDetectorTest {
                         folders = listOf(storageFolder("s3a://bucket/db/old"), storageFolder("s3a://bucket/db/fresh")),
                         unresolvedTableCount = 2,
                     ),
-                folderStats =
-                    mapOf(
+                folderStatistics =
+                    statistics(
                         "s3a://bucket/db/old" to stats(newestObjectModificationTimeMillis = 100),
                         "s3a://bucket/db/fresh" to stats(newestObjectModificationTimeMillis = 300),
                     ),
@@ -398,6 +422,9 @@ class UntrackedFolderCandidateDetectorTest {
 
     private fun deletionEligibleFolders(vararg paths: String): StorageFolderReconciliation =
         StorageFolderReconciliation.DeletionEligible(paths.map { storageFolder(it) })
+
+    private fun statistics(vararg statsByFolder: Pair<String, StorageSizeStats>): CandidateFolderStatistics =
+        CandidateFolderStatistics(mapOf(*statsByFolder))
 
     private fun stats(newestObjectModificationTimeMillis: Long): StorageSizeStats =
         StorageSizeStats(objectCount = 1, totalSizeBytes = 1, newestObjectModificationTimeMillis = newestObjectModificationTimeMillis)

@@ -313,6 +313,82 @@ class CatalogScopedStorageOperationsTest {
 
         assertTrue(batch.statsByFolder.isEmpty())
         assertEquals(setOf("s3a://example-bucket/db/unreadable"), batch.failures.keys)
+        assertTrue(batch.absentFolderPaths.isEmpty())
+    }
+
+    @Test
+    fun `a folder that is gone on inspection and on recheck is confirmed absent, not a failure`() {
+        InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/orphan")
+        InMemoryS3FileSystem.putFile(COMPAT, "s3a://example-bucket/db/orphan/part-0.parquet", 5)
+
+        val batch =
+            harness.discoveryService().collectSizeStatsPerFolder(
+                "example_catalog",
+                listOf("s3a://example-bucket/db/gone", "s3a://example-bucket/db/orphan"),
+            )
+
+        assertEquals(setOf("s3a://example-bucket/db/gone"), batch.absentFolderPaths)
+        assertTrue(batch.failures.isEmpty())
+        assertEquals(setOf("s3a://example-bucket/db/orphan"), batch.statsByFolder.keys)
+        assertEquals(1, InMemoryS3FileSystem.getFileStatusCalls["s3a://example-bucket/db/gone"])
+    }
+
+    @Test
+    fun `folders holding only directory markers are empty, not absent`() {
+        InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/marker_only")
+        InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/nested_markers")
+        InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/nested_markers/data")
+
+        val batch =
+            harness.discoveryService().collectSizeStatsPerFolder(
+                "example_catalog",
+                listOf("s3a://example-bucket/db/marker_only", "s3a://example-bucket/db/nested_markers"),
+            )
+
+        assertTrue(batch.absentFolderPaths.isEmpty())
+        assertTrue(batch.failures.isEmpty())
+        batch.statsByFolder.values.forEach { assertEquals(0L, it.objectCount) }
+        assertEquals(2, batch.statsByFolder.size)
+    }
+
+    @Test
+    fun `access denied while collecting statistics is a failure and is not rechecked`() {
+        InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/denied")
+        InMemoryS3FileSystem.listFailures["s3a://example-bucket/db/denied"] =
+            java.nio.file.AccessDeniedException("s3a://example-bucket/db/denied")
+
+        val batch = harness.discoveryService().collectSizeStatsPerFolder("example_catalog", listOf("s3a://example-bucket/db/denied"))
+
+        assertTrue(batch.absentFolderPaths.isEmpty())
+        assertTrue(batch.failures.getValue("s3a://example-bucket/db/denied").cause is java.nio.file.AccessDeniedException)
+        assertEquals(null, InMemoryS3FileSystem.getFileStatusCalls["s3a://example-bucket/db/denied"])
+    }
+
+    @Test
+    fun `a folder not found on inspection but present on recheck stays a failure`() {
+        InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/racing")
+        InMemoryS3FileSystem.listFailures["s3a://example-bucket/db/racing"] =
+            java.io.FileNotFoundException("No such file or directory: s3a://example-bucket/db/racing")
+
+        val batch = harness.discoveryService().collectSizeStatsPerFolder("example_catalog", listOf("s3a://example-bucket/db/racing"))
+
+        assertTrue(batch.absentFolderPaths.isEmpty())
+        val failure = batch.failures.getValue("s3a://example-bucket/db/racing")
+        assertTrue(failure.message!!.contains("exists on recheck"))
+        assertTrue(failure.cause!!.cause is java.io.FileNotFoundException)
+    }
+
+    @Test
+    fun `a folder not found on inspection whose recheck fails stays a failure`() {
+        InMemoryS3FileSystem.statusFailures["s3a://example-bucket/db/flaky"] = java.io.IOException("simulated timeout")
+
+        val batch = harness.discoveryService().collectSizeStatsPerFolder("example_catalog", listOf("s3a://example-bucket/db/flaky"))
+
+        assertTrue(batch.absentFolderPaths.isEmpty())
+        val failure = batch.failures.getValue("s3a://example-bucket/db/flaky")
+        assertTrue(failure is CatalogStorageOperationException)
+        assertTrue(failure.cause is java.io.IOException)
+        assertFalse(failure.cause is java.io.FileNotFoundException)
     }
     @Test
     fun `a failed folder delete reports the confirmed deletions and the failed folder`() {
@@ -349,6 +425,7 @@ class CatalogScopedStorageOperationsTest {
             }
 
         assertEquals(listOf("s3a://example-bucket/db/orphan_a"), error.deletedPaths)
+        assertEquals(listOf("s3a://example-bucket/db/vanished"), error.notFoundPaths)
     }
 
     @Test
@@ -399,4 +476,109 @@ class CatalogScopedStorageOperationsTest {
         assertEquals(null, error.failedPath)
     }
 
+    @Test
+    fun `a folder that vanishes between the existence check and delete is not found, and deletion continues`() {
+        listOf("orphan_a", "racing", "orphan_c").forEach {
+            InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/$it")
+            InMemoryS3FileSystem.putFile(COMPAT, "s3a://example-bucket/db/$it/part-0.parquet", 5)
+        }
+        InMemoryS3FileSystem.beforeDelete = { target ->
+            if (target == "s3a://example-bucket/db/racing") removeTree(target)
+        }
+
+        val results =
+            harness.deletionService().deleteFoldersRecursively(
+                "example_catalog",
+                listOf("s3a://example-bucket/db/orphan_a", "s3a://example-bucket/db/racing", "s3a://example-bucket/db/orphan_c"),
+            )
+
+        assertEquals(
+            listOf(
+                DeletedStorageFolder("s3a://example-bucket/db/orphan_a", deleted = true),
+                DeletedStorageFolder("s3a://example-bucket/db/racing", deleted = false),
+                DeletedStorageFolder("s3a://example-bucket/db/orphan_c", deleted = true),
+            ),
+            results,
+        )
+        assertEquals(2, InMemoryS3FileSystem.getFileStatusCalls["s3a://example-bucket/db/racing"])
+    }
+
+    @Test
+    fun `a refused delete whose recheck fails stays a deletion failure`() {
+        listOf("orphan_a", "racing", "orphan_c").forEach {
+            InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/$it")
+        }
+        InMemoryS3FileSystem.beforeDelete = { target ->
+            if (target == "s3a://example-bucket/db/racing") {
+                removeTree(target)
+                InMemoryS3FileSystem.statusFailures[target] = java.io.IOException("simulated timeout")
+            }
+        }
+
+        val error =
+            assertThrows(PartialDeletionException::class.java) {
+                harness.deletionService().deleteFoldersRecursively(
+                    "example_catalog",
+                    listOf("s3a://example-bucket/db/orphan_a", "s3a://example-bucket/db/racing", "s3a://example-bucket/db/orphan_c"),
+                )
+            }
+
+        assertEquals(listOf("s3a://example-bucket/db/orphan_a"), error.deletedPaths)
+        assertEquals("s3a://example-bucket/db/racing", error.failedPath)
+        assertEquals(emptyList<String>(), error.notFoundPaths)
+        assertTrue(error.cause!!.cause is java.io.IOException)
+        assertTrue(InMemoryS3FileSystem.paths(COMPAT).contains("s3a://example-bucket/db/orphan_c"))
+    }
+
+    @Test
+    fun `a delete that throws after an earlier folder vanished is a failure that keeps the not-found folder separate`() {
+        listOf("racing", "orphan_b").forEach {
+            InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/$it")
+        }
+        InMemoryS3FileSystem.beforeDelete = { target ->
+            if (target == "s3a://example-bucket/db/racing") removeTree(target)
+        }
+        InMemoryS3FileSystem.failDeleteFor = "s3a://example-bucket/db/orphan_b"
+
+        val error =
+            assertThrows(PartialDeletionException::class.java) {
+                harness.deletionService().deleteFoldersRecursively(
+                    "example_catalog",
+                    listOf("s3a://example-bucket/db/racing", "s3a://example-bucket/db/orphan_b"),
+                )
+            }
+
+        assertEquals(emptyList<String>(), error.deletedPaths)
+        assertEquals(listOf("s3a://example-bucket/db/racing"), error.notFoundPaths)
+        assertEquals("s3a://example-bucket/db/orphan_b", error.failedPath)
+    }
+
+    @Test
+    fun `outside S3A a refused delete stays a deletion failure even if the folder is gone on recheck`() {
+        InMemoryS3FileSystem.reportedScheme = "gs"
+        listOf("orphan_a", "racing", "orphan_c").forEach {
+            InMemoryS3FileSystem.putDirectory(COMPAT, "s3a://example-bucket/db/$it")
+        }
+        InMemoryS3FileSystem.beforeDelete = { target ->
+            if (target == "s3a://example-bucket/db/racing") removeTree(target)
+        }
+
+        val error =
+            assertThrows(PartialDeletionException::class.java) {
+                harness.deletionService().deleteFoldersRecursively(
+                    "example_catalog",
+                    listOf("s3a://example-bucket/db/orphan_a", "s3a://example-bucket/db/racing", "s3a://example-bucket/db/orphan_c"),
+                )
+            }
+
+        assertEquals(listOf("s3a://example-bucket/db/orphan_a"), error.deletedPaths)
+        assertEquals("s3a://example-bucket/db/racing", error.failedPath)
+        assertEquals(emptyList<String>(), error.notFoundPaths)
+        assertEquals(1, InMemoryS3FileSystem.getFileStatusCalls["s3a://example-bucket/db/racing"])
+        assertTrue(InMemoryS3FileSystem.paths(COMPAT).contains("s3a://example-bucket/db/orphan_c"))
+    }
+
+    private fun removeTree(path: String) {
+        InMemoryS3FileSystem.store(COMPAT).keys.removeIf { it == path || it.startsWith("$path/") }
+    }
 }

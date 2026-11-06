@@ -31,7 +31,7 @@ class CandidateSizeStatCollectorTest {
 
         val result = collectorFor().collectPerFolder("example_catalog", listOf("s3a://b/a"))
 
-        assertEquals(StorageSizeStats(1, 10), result["s3a://b/a"])
+        assertEquals(StorageSizeStats(1, 10), result.statsByFolder["s3a://b/a"])
         verify(exactly = 1) { objectStorageDiscoveryService.collectSizeStatsPerFolder("example_catalog", listOf("s3a://b/a")) }
     }
 
@@ -74,7 +74,8 @@ class CandidateSizeStatCollectorTest {
 
         val result = collectorFor().collectPerFolder("example_catalog", listOf("s3a://b/a", "s3a://b/c"))
 
-        assertEquals(setOf("s3a://b/c"), result.keys)
+        assertEquals(setOf("s3a://b/c"), result.statsByFolder.keys)
+        assertEquals(CandidateInspectionOutcome.STATISTICS_UNAVAILABLE, result.outcome("s3a://b/a"))
     }
 
     @Test
@@ -84,7 +85,55 @@ class CandidateSizeStatCollectorTest {
 
         val result = collectorFor(collectSizeStatistics = false).collectPerFolder("example_catalog", listOf("s3a://b/a"))
 
-        assertEquals(setOf("s3a://b/a"), result.keys)
+        assertEquals(setOf("s3a://b/a"), result.statsByFolder.keys)
         verify(exactly = 1) { objectStorageDiscoveryService.collectSizeStatsPerFolder("example_catalog", listOf("s3a://b/a")) }
+    }
+
+    @Test
+    fun `does not fail when every candidate folder was confirmed absent`() {
+        every { objectStorageDiscoveryService.collectSizeStatsPerFolder(any(), any()) } returns
+            SizeStatsBatch(emptyMap(), emptyMap(), absentFolderPaths = setOf("s3a://b/a", "s3a://b/c"))
+
+        val result = collectorFor().collectPerFolder("example_catalog", listOf("s3a://b/a", "s3a://b/c"))
+
+        assertEquals(setOf("s3a://b/a", "s3a://b/c"), result.absentFolderPaths)
+        assertEquals(CandidateInspectionOutcome.FOLDER_NOT_FOUND, result.outcome("s3a://b/a"))
+    }
+
+    @Test
+    fun `fails when every candidate folder that still exists fails, even if others were absent`() {
+        every { objectStorageDiscoveryService.collectSizeStatsPerFolder(any(), any()) } returns
+            SizeStatsBatch(
+                emptyMap(),
+                mapOf("s3a://b/c" to IllegalStateException("access denied")),
+                absentFolderPaths = setOf("s3a://b/a"),
+            )
+
+        val error =
+            assertThrows(IllegalStateException::class.java) {
+                collectorFor().collectPerFolder("example_catalog", listOf("s3a://b/a", "s3a://b/c"))
+            }
+
+        assertTrue(error.message!!.contains("all 1 candidate folder(s) that still exist"))
+    }
+
+    @Test
+    fun `continues with mixed absent, failed, and readable folders`() {
+        every { objectStorageDiscoveryService.collectSizeStatsPerFolder(any(), any()) } returns
+            SizeStatsBatch(
+                mapOf("s3a://b/d" to StorageSizeStats(objectCount = 1, totalSizeBytes = 3, newestObjectModificationTimeMillis = 1)),
+                mapOf("s3a://b/c" to IllegalStateException("one bad folder")),
+                absentFolderPaths = setOf("s3a://b/a"),
+            )
+
+        val result = collectorFor().collectPerFolder("example_catalog", listOf("s3a://b/a", "s3a://b/c", "s3a://b/d"))
+
+        assertEquals(
+            mapOf(
+                CandidateInspectionOutcome.FOLDER_NOT_FOUND to listOf("s3a://b/a"),
+                CandidateInspectionOutcome.STATISTICS_UNAVAILABLE to listOf("s3a://b/c"),
+            ),
+            result.folderPathsByOutcome(listOf("s3a://b/a", "s3a://b/c", "s3a://b/d")),
+        )
     }
 }
