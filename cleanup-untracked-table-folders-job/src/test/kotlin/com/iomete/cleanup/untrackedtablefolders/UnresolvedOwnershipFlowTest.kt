@@ -5,6 +5,7 @@ import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredTable
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.logging.NoVerifiedLocationSummary
+import com.iomete.cleanup.untrackedtablefolders.logging.TooManyFoldersSummary
 import com.iomete.cleanup.untrackedtablefolders.storage.InMemoryS3FileSystem
 import io.mockk.every
 import io.mockk.verify
@@ -133,6 +134,131 @@ class UnresolvedOwnershipFlowTest {
         assertEquals(0, record.unresolvedTableCount)
     }
 
+    @Test
+    fun `over the limit with unresolved tables stays skipped and reports both conditions`() {
+        folders("t1", "t2", "orphan_a", "orphan_b")
+        val flow = flow(tables = listOf(verified("t1"), unresolved("t2")), maxCandidateFolders = 1)
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("SKIPPED", record.status)
+        assertEquals("too_many_candidate_folders", record.statusReason)
+        assertEquals(1, record.unresolvedTableCount)
+        assertEquals(3, record.potentiallyUntrackedFolderCount)
+        assertEquals(0, record.candidateFolderCount)
+        assertTrue(record.candidateFolders.isEmpty())
+        assertEquals(1, record.maxCandidateFoldersPerDatabase)
+        assertEquals(
+            "Detected 3 candidate untracked table folder(s), which exceeds max_candidate_folders_per_database=1. " +
+                "1 catalog table(s) also have unresolved storage ownership. Raising the limit will not make these folders deletable.",
+            record.errorMessage,
+        )
+        assertNull(InMemoryS3FileSystem.listStatusCalls["$SALES/t2"])
+        assertNull(InMemoryS3FileSystem.listStatusCalls["$SALES/orphan_a"])
+        assertTrue(flow.objectExists("$SALES/orphan_a/part-0.parquet"))
+        assertTrue(flow.summaries.isEmpty())
+        verify(exactly = 1) {
+            flow.service.cleanupSummaryLogger.logTooManyFoldersReport(
+                TooManyFoldersSummary(
+                    catalog = CATALOG,
+                    database = "sales",
+                    discoveredDatabaseLocation = SALES,
+                    storageScanLocation = SALES,
+                    catalogTableCount = 2,
+                    verifiedTableCount = 1,
+                    unresolvedTableNames = listOf("$CATALOG.sales.t2"),
+                    storageFolderCount = 4,
+                    unmatchedFolderCount = 3,
+                    maxCandidateFolders = 1,
+                    dryRun = false,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `raising the limit with unresolved tables blocks deletion instead of allowing it`() {
+        folders("t1", "t2", "orphan_a", "orphan_b")
+        val flow = flow(tables = listOf(verified("t1"), unresolved("t2")), maxCandidateFolders = 10)
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("unresolved_catalog_ownership", record.statusReason)
+        assertTrue(record.deletedFolders.isEmpty())
+        assertTrue(flow.objectExists("$SALES/orphan_a/part-0.parquet"))
+    }
+
+    @Test
+    fun `over the limit without unresolved tables is unchanged`() {
+        folders("t1", "orphan_a", "orphan_b")
+        val flow = flow(tables = listOf(verified("t1")), maxCandidateFolders = 1)
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("too_many_candidate_folders", record.statusReason)
+        assertEquals(0, record.unresolvedTableCount)
+        assertEquals(0, record.potentiallyUntrackedFolderCount)
+        assertEquals(2, record.candidateFolderCount)
+        assertEquals(listOf("$SALES/orphan_a", "$SALES/orphan_b"), record.candidateFolders)
+        assertEquals("Detected 2 candidate untracked table folder(s), which exceeds max_candidate_folders_per_database=1", record.errorMessage)
+        verify(exactly = 0) { flow.service.cleanupSummaryLogger.logTooManyFoldersReport(any()) }
+    }
+
+    @Test
+    fun `a missing database location keeps its reason and reports the unresolved tables`() {
+        val flow = flow(tables = listOf(verified("t1"), unresolved("t2")), databaseLocation = null)
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("SKIPPED", record.status)
+        assertEquals("database_location_missing", record.statusReason)
+        assertEquals(1, record.unresolvedTableCount)
+        assertEquals("$CATALOG.sales.t2", record.diagnosticDetails["unresolved_tables_sample"])
+    }
+
+    @Test
+    fun `an unsafe scan root keeps its reason and reports the unresolved tables`() {
+        val flow = flow(tables = listOf(verified("t1"), unresolved("t2")), databaseLocation = WAREHOUSE)
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("SKIPPED", record.status)
+        assertEquals("database_location_contains_warehouse_root", record.statusReason)
+        assertEquals(1, record.unresolvedTableCount)
+        assertEquals("$CATALOG.sales.t2", record.diagnosticDetails["unresolved_tables_sample"])
+    }
+
+    @Test
+    fun `a storage failure after discovery keeps its reason and reports the unresolved tables`() {
+        val flow = flow(tables = listOf(verified("t1"), unresolved("t2")))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("FAILED", record.status)
+        assertEquals("unexpected_error", record.statusReason)
+        assertEquals(1, record.unresolvedTableCount)
+        assertEquals("$CATALOG.sales.t2", record.diagnosticDetails["unresolved_tables_sample"])
+    }
+
+    @Test
+    fun `a discovery failure leaves the unresolved count at zero because it is unknown`() {
+        val flow = flow(tables = emptyList())
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "sales") } throws IllegalStateException("catalog unavailable")
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("FAILED", record.status)
+        assertEquals(0, record.unresolvedTableCount)
+    }
+
     private fun folders(vararg children: String) {
         putFolder(SALES)
         children.forEach { putFolder("$SALES/$it", "part-0.parquet") }
@@ -140,6 +266,8 @@ class UnresolvedOwnershipFlowTest {
 
     private fun unresolved(name: String): DiscoveredTable =
         DiscoveredTable(CATALOG, "sales", name, isTemporary = false, location = null, unresolvedReason = "metadata could not be read")
+
+    private fun verified(name: String): DiscoveredTable = DiscoveredTable(CATALOG, "sales", name, isTemporary = false, location = "$SALES/$name")
 
     private fun view(name: String): DiscoveredTable = DiscoveredTable(CATALOG, "sales", name, isTemporary = false, location = null)
 

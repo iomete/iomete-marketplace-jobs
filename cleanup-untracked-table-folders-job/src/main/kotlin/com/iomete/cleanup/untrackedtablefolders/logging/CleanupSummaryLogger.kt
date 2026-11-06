@@ -38,6 +38,20 @@ data class NoVerifiedLocationSummary(
     val dryRun: Boolean,
 )
 
+data class TooManyFoldersSummary(
+    val catalog: String,
+    val database: String,
+    val discoveredDatabaseLocation: String?,
+    val storageScanLocation: String,
+    val catalogTableCount: Int,
+    val verifiedTableCount: Int,
+    val unresolvedTableNames: List<String>,
+    val storageFolderCount: Int,
+    val unmatchedFolderCount: Int,
+    val maxCandidateFolders: Int,
+    val dryRun: Boolean,
+)
+
 @ApplicationScoped
 class CleanupSummaryLogger {
 
@@ -57,6 +71,10 @@ class CleanupSummaryLogger {
 
     fun logNoVerifiedLocationReport(summary: NoVerifiedLocationSummary) {
         buildNoVerifiedLocationReportLines(summary).forEach { logger.info(it) }
+    }
+
+    fun logTooManyFoldersReport(summary: TooManyFoldersSummary) {
+        buildTooManyFoldersReportLines(summary).forEach { logger.info(it) }
     }
 
     internal fun buildScanPlanLines(
@@ -100,6 +118,42 @@ class CleanupSummaryLogger {
             add("")
             add("  Reason:")
             add("  ${summary.unresolvedTableNames.size} catalog table(s) have unresolved storage ownership.")
+            add("  No folder in this database was deleted.")
+
+            add(SEPARATOR)
+            repeat(BLANK_LINES_AROUND_REPORT) { add("") }
+        }
+
+    internal fun buildTooManyFoldersReportLines(summary: TooManyFoldersSummary): List<String> =
+        buildList {
+            addReportStart(
+                summary.catalog,
+                summary.database,
+                summary.dryRun,
+                summary.catalogTableCount,
+                summary.verifiedTableCount,
+                summary.unresolvedTableNames,
+            )
+
+            add("")
+            add("STORAGE")
+            add("")
+            add("  Database location                                ${summary.discoveredDatabaseLocation}")
+            add("  Folders scanned under                            ${summary.storageScanLocation}")
+            add("  Folders discovered                               ${summary.storageFolderCount}")
+            add("  Folders with no verified catalog owner           ${summary.unmatchedFolderCount}")
+            add("")
+            add("  Folder contents were not inspected because the folder limit was exceeded.")
+
+            add("")
+            add("DELETION")
+            add("")
+            add("  SKIPPED")
+            add("")
+            add("  Reason: too_many_candidate_folders")
+            add("  ${summary.unmatchedFolderCount} folder(s) exceed max_candidate_folders_per_database=${summary.maxCandidateFolders}.")
+            add("  ${summary.unresolvedTableNames.size} catalog table(s) also have unresolved storage ownership, so raising")
+            add("  the limit will not make these folders deletable.")
             add("  No folder in this database was deleted.")
 
             add(SEPARATOR)

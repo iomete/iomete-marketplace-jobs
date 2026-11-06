@@ -13,6 +13,7 @@ import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
 import com.iomete.cleanup.untrackedtablefolders.logging.NoVerifiedLocationSummary
+import com.iomete.cleanup.untrackedtablefolders.logging.TooManyFoldersSummary
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
@@ -82,6 +83,7 @@ class CleanupUntrackedTableFoldersService {
             var effectiveExcludedPathsForAudit = excludePathResolver.normalizedConfiguredExcludePaths()
             var unscannedTableLocationsForAudit: List<String>? = null
             var scanPlanForAudit: ScanPlanReport? = null
+            var unresolvedTablesForAudit = emptyList<String>()
             try {
                 val discoveredDatabase =
                     catalogDiscoveryService.discoverDatabase(
@@ -101,6 +103,7 @@ class CleanupUntrackedTableFoldersService {
                 }
 
                 val unresolvedTableNames = discoveredDatabase.unresolvedTables.map { it.qualifiedName }.sorted()
+                unresolvedTablesForAudit = unresolvedTableNames
 
                 if (unresolvedTableNames.isNotEmpty()) {
                     logger.warn(
@@ -186,6 +189,7 @@ class CleanupUntrackedTableFoldersService {
                             errorMessage = "Database location is missing; storage folder discovery was skipped.",
                             excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
                             activeTableCount = discoveredDatabase.tables.size.toLong(),
+                            unresolvedTables = unresolvedTableNames,
                             activeTableLocations =
                                 discoveredDatabase.tables
                                     .mapNotNull { it.location }
@@ -218,6 +222,7 @@ class CleanupUntrackedTableFoldersService {
                                     databaseName = discoveredDatabase.database,
                                     discoveredDatabaseLocation = discoveredDatabase.location,
                                     activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                    unresolvedTables = unresolvedTableNames,
                                     activeTableLocations =
                                         discoveredDatabase.tables
                                             .mapNotNull { it.location }
@@ -328,12 +333,33 @@ class CleanupUntrackedTableFoldersService {
                                 unresolvedTableCount = unresolvedTableNames.size,
                             )
                         } catch (th: TooManyCandidateFoldersException) {
+                            val unresolvedOwnershipNote =
+                                "${unresolvedTableNames.size} catalog table(s) also have unresolved storage ownership. Raising the limit will not make these folders deletable."
+                                    .takeIf { unresolvedTableNames.isNotEmpty() }
 
                             logger.warn(
-                                "Refusing to continue for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}. Narrow the scope or increase the limit explicitly.",
+                                "Refusing to continue for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}. ${unresolvedOwnershipNote ?: "Narrow the scope or increase the limit explicitly."}",
                                 th,
                             )
                             val candidateFolderPaths = th.candidateFolderPaths.sorted()
+
+                            if (unresolvedOwnershipNote != null) {
+                                cleanupSummaryLogger.logTooManyFoldersReport(
+                                    TooManyFoldersSummary(
+                                        catalog = discoveredDatabase.catalog,
+                                        database = discoveredDatabase.database,
+                                        discoveredDatabaseLocation = discoveredDatabase.location,
+                                        storageScanLocation = storageScanLocation,
+                                        catalogTableCount = discoveredDatabase.tables.size,
+                                        verifiedTableCount = activeTableLocations.size,
+                                        unresolvedTableNames = unresolvedTableNames,
+                                        storageFolderCount = storageFolderPaths.size,
+                                        unmatchedFolderCount = candidateFolderPaths.size,
+                                        maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
+                                        dryRun = config.dryRun,
+                                    )
+                                )
+                            }
 
                             recordAudit(database) {
                                 cleanupAuditRecorder.recordTooManyCandidateFolders(
@@ -344,12 +370,13 @@ class CleanupUntrackedTableFoldersService {
                                     discoveredDatabaseLocation = discoveredDatabase.location,
                                     storageScanLocation = storageScanLocation,
                                     activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                    unresolvedTables = unresolvedTableNames,
                                     activeTableLocations = activeTableLocations,
                                     storageFolderPaths = storageFolderPaths,
                                     candidateFolderPaths = candidateFolderPaths,
                                     cutoffTime = cutoffTime,
                                     excludedPaths = effectiveExcludedPaths,
-                                    errorMessage = th.message ?: th::class.java.name,
+                                    errorMessage = listOfNotNull(th.message ?: th::class.java.name, unresolvedOwnershipNote).joinToString(". "),
                                     unscannedTableLocations = unscannedTableLocations,
                                     scanPlan = scanPlan,
                                 )
@@ -589,6 +616,7 @@ class CleanupUntrackedTableFoldersService {
                         excludedPaths = effectiveExcludedPathsForAudit,
                         unscannedTableLocations = unscannedTableLocationsForAudit,
                         scanPlan = scanPlanForAudit,
+                        unresolvedTables = unresolvedTablesForAudit,
                         error = th,
                     )
                 }
