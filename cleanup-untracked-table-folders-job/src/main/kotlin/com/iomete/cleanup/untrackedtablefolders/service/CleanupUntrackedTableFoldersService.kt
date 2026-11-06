@@ -12,6 +12,7 @@ import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
+import com.iomete.cleanup.untrackedtablefolders.logging.NoVerifiedLocationSummary
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
@@ -104,10 +105,49 @@ class CleanupUntrackedTableFoldersService {
                 if (unresolvedTableNames.isNotEmpty()) {
                     logger.warn(
                         "${unresolvedTableNames.size} catalog table(s) could not be resolved to a storage location. " +
-                            "Reconciliation continues, but no folder in this database is eligible for deletion. " +
+                            "No folder in this database is eligible for deletion. " +
                             "catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
                     )
                     unresolvedTableNames.forEach { logger.warn("Unresolved catalog table: $it") }
+                }
+
+                // With no verified location there is nothing to compare folders against, so scanning cannot change the outcome.
+                if (unresolvedTableNames.isNotEmpty() && discoveredDatabase.tables.all { it.location == null }) {
+                    logger.warn(
+                        "Not scanning storage because no table has a verified storage location. " +
+                            "catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, totalCatalogTables=${discoveredDatabase.tables.size}"
+                    )
+
+                    cleanupSummaryLogger.logNoVerifiedLocationReport(
+                        NoVerifiedLocationSummary(
+                            catalog = discoveredDatabase.catalog,
+                            database = discoveredDatabase.database,
+                            discoveredDatabaseLocation = discoveredDatabase.location,
+                            catalogTableCount = discoveredDatabase.tables.size,
+                            unresolvedTableNames = unresolvedTableNames,
+                            dryRun = config.dryRun,
+                        )
+                    )
+
+                    recordAudit(database) {
+                        cleanupAuditRecorder.recordOwnershipUnverified(
+                            runId = runId,
+                            databaseStartTime = databaseStartTime,
+                            catalogName = discoveredDatabase.catalog,
+                            databaseName = discoveredDatabase.database,
+                            discoveredDatabaseLocation = discoveredDatabase.location,
+                            storageScanLocation = "",
+                            activeTableCount = discoveredDatabase.tables.size.toLong(),
+                            unresolvedTables = unresolvedTableNames,
+                            activeTableLocations = emptyList(),
+                            storageFolderPaths = emptyList(),
+                            potentiallyUntrackedFolderPaths = emptyList(),
+                            cutoffTime = null,
+                            excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
+                        )
+                    }
+
+                    return@forEach
                 }
 
                 if (discoveredDatabase.tables.mapNotNull { it.location }.isEmpty()) {

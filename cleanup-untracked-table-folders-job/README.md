@@ -702,7 +702,7 @@ Audit rows include:
 | `status` | High-level outcome: `SUCCESS`, `SKIPPED`, `BLOCKED`, or `FAILED`. |
 | `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, `unresolved_catalog_ownership`, `database_location_contains_warehouse_root`, `partial_scan_coverage`, `deletion_failed`, `audit_integrity_lost`, or `unexpected_error`. See [Object-storage scan root](#object-storage-scan-root) for the scan-root reasons. |
 | `older_than_hours` | Configured age threshold used for candidate detection. |
-| `cutoff_time` | Calculated timestamp used to decide whether a folder is old enough to be considered. |
+| `cutoff_time` | Calculated timestamp used to decide whether a folder is old enough to be considered. Null when no age check ran. |
 | `max_candidate_folders_per_database` | Configured per-database candidate-folder safety limit. |
 | `unresolved_table_count` | Number of catalog tables in this database whose storage location could not be read during discovery. |
 | `candidate_folder_count` | Number of folders confirmed as untracked and eligible for deletion. Reserved for confirmed deletion-eligible candidates, so it stays `0` when table storage ownership could not be fully verified. |
@@ -779,7 +779,7 @@ Its state is unknown: it may be fully present, partly deleted, or gone.
 | Too many candidate folders | `SKIPPED` | Candidate count exceeded configured limit |
 | Configured database does not exist | `SKIPPED` | Logged as a warning with `status_reason=database_not_found` |
 | Database location or scan root is unsafe | `SKIPPED` | Storage is never listed; see [Object-storage scan root](#object-storage-scan-root) for the reasons |
-| One or more table storage locations could not be resolved | `BLOCKED` | Reconciliation is still reported, nothing is deleted, `status_reason=unresolved_catalog_ownership` |
+| One or more table storage locations could not be resolved | `BLOCKED` | Reconciliation is still reported when at least one table has a verified location, nothing is deleted, `status_reason=unresolved_catalog_ownership` |
 | Unexpected catalog, storage, or deletion failure | `FAILED` | Real failure path remains an error |
 | Deletion failed partway through the candidates | `FAILED` | `status_reason=deletion_failed`; see [Partial deletion](#partial-deletion) |
 | An earlier audit write in the same run failed | `BLOCKED` | `status_reason=audit_integrity_lost`; see [Audit write failures](#audit-write-failures) |
@@ -880,9 +880,9 @@ has no scheme and bucket. This says nothing about
 whether the table is wanted or healthy. It only means the job does not currently know which storage
 folder that table owns.
 
-Storage reconciliation still runs. The job lists the database's storage folders and compares them
-against the table locations it could verify, so the operator still gets the full picture of what is
-in storage.
+When at least one table has a verified location, storage reconciliation still runs. The job lists the
+database's storage folders and compares them against the table locations it could verify, so the
+operator still gets the full picture of what is in storage.
 
 What changes is what the job is allowed to conclude. If even one table in the database has an
 unresolved storage location, that table could own any of the unmatched folders. No unmatched folder
@@ -900,6 +900,11 @@ mixes confirmed candidates and unverified folders in the same database.
 The per-database folder limit is still checked first. If the number of unmatched folders exceeds
 `max_candidate_folders_per_database`, the database is reported as `SKIPPED` with
 `status_reason=too_many_candidate_folders` instead. Both outcomes stop deletion for that database.
+
+If no table in the database has a verified location, there is nothing to compare folders against, so
+the job does not access storage and does not check the folder limit. It logs a short report and writes
+a `BLOCKED` row with `status_reason=unresolved_catalog_ownership`. On this row `storage_scan_location`
+is empty, `cutoff_time` is null, and the folder counts are `0` because no folder was listed.
 
 Other configured databases are unaffected and continue to be processed normally.
 

@@ -74,6 +74,31 @@ class CleanupSummaryLoggerTest {
     }
 
     @Test
+    fun `no verified location report names the tables and does not imply a storage scan`() {
+        val lines =
+            logger.buildNoVerifiedLocationReportLines(
+                NoVerifiedLocationSummary(
+                    catalog = "spark_catalog",
+                    database = "analytics",
+                    discoveredDatabaseLocation = "s3a://bucket/db",
+                    catalogTableCount = 2,
+                    unresolvedTableNames = listOf("spark_catalog.analytics.table_a", "spark_catalog.analytics.table_b"),
+                    dryRun = false,
+                ),
+            )
+        val report = lines.joinToString("\n")
+
+        assertTrue(report.contains("Tables with verified storage locations           0"))
+        assertTrue(report.contains("- spark_catalog.analytics.table_a"))
+        assertTrue(report.contains("Storage was not scanned."))
+        assertTrue(report.contains("  BLOCKED"))
+        assertTrue(report.contains("2 catalog table(s) have unresolved storage ownership."))
+        assertFalse(report.contains("Folders discovered"))
+        assertFalse(report.contains("Folders scanned under"))
+        assertTrue(lines.none { it.length > 100 })
+    }
+
+    @Test
     fun `deletion-eligible report does not claim folders are only potentially untracked`() {
         val report = logger.buildReportLines(summary(deletedFolderPaths = listOf("s3a://bucket/db/old_1"))).joinToString("\n")
 

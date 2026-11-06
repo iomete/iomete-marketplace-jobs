@@ -1,0 +1,167 @@
+package com.iomete.cleanup.untrackedtablefolders
+
+import com.iomete.cleanup.untrackedtablefolders.CleanupFlowHarness.Companion.putFolder
+import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
+import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredTable
+import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
+import com.iomete.cleanup.untrackedtablefolders.logging.NoVerifiedLocationSummary
+import com.iomete.cleanup.untrackedtablefolders.storage.InMemoryS3FileSystem
+import io.mockk.every
+import io.mockk.verify
+import org.apache.hadoop.fs.FileSystem
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+
+private const val CATALOG = "example_catalog"
+private const val WAREHOUSE = "s3a://bucket/lake"
+private const val SALES = "s3a://bucket/lake/sales.db"
+
+class UnresolvedOwnershipFlowTest {
+
+    @BeforeEach
+    fun setUp() {
+        InMemoryS3FileSystem.reset()
+    }
+
+    @AfterEach
+    fun tearDown() {
+        InMemoryS3FileSystem.reset()
+        FileSystem.closeAll()
+    }
+
+    @Test
+    fun `a database with only unresolved tables is blocked without touching storage`() {
+        folders("t1", "t2", "orphan")
+        val flow = flow(tables = listOf(unresolved("t1"), unresolved("t2")))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("unresolved_catalog_ownership", record.statusReason)
+        assertEquals(2, record.unresolvedTableCount)
+        assertEquals(2, record.activeTableCount)
+        assertEquals("", record.storageScanLocation)
+        assertNull(record.cutoffTime)
+        assertEquals(0, record.storageFolderCount)
+        assertEquals(0, record.potentiallyUntrackedFolderCount)
+        assertEquals(0, record.candidateFolderCount)
+        assertTrue(record.diagnosticDetails.getValue("unresolved_tables_sample").contains("$CATALOG.sales.t1"))
+        assertTrue(InMemoryS3FileSystem.listStatusCalls.isEmpty())
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+        assertTrue(flow.summaries.isEmpty())
+        verify(exactly = 1) {
+            flow.service.cleanupSummaryLogger.logNoVerifiedLocationReport(
+                NoVerifiedLocationSummary(
+                    catalog = CATALOG,
+                    database = "sales",
+                    discoveredDatabaseLocation = SALES,
+                    catalogTableCount = 2,
+                    unresolvedTableNames = listOf("$CATALOG.sales.t1", "$CATALOG.sales.t2"),
+                    dryRun = false,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `a dry run of a database with only unresolved tables gives the same row`() {
+        folders("t1")
+        val flow = flow(tables = listOf(unresolved("t1")), deleteEnabled = false)
+
+        flow.run()
+
+        assertEquals("unresolved_catalog_ownership", flow.auditRecords.single().statusReason)
+        assertTrue(InMemoryS3FileSystem.listStatusCalls.isEmpty())
+    }
+
+    @Test
+    fun `the folder limit cannot hide a database with only unresolved tables`() {
+        folders(*(1..12).map { "t$it" }.toTypedArray())
+        val flow = flow(tables = listOf(unresolved("t1")), maxCandidateFolders = 1)
+
+        flow.run()
+
+        assertEquals("unresolved_catalog_ownership", flow.auditRecords.single().statusReason)
+    }
+
+    @Test
+    fun `a missing database location cannot hide a database with only unresolved tables`() {
+        val flow = flow(tables = listOf(unresolved("t1")), databaseLocation = null)
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("unresolved_catalog_ownership", record.statusReason)
+        assertEquals(1, record.unresolvedTableCount)
+    }
+
+    @Test
+    fun `an unsafe database location cannot hide a database with only unresolved tables`() {
+        val flow = flow(tables = listOf(unresolved("t1")), databaseLocation = "s3a://bucket")
+
+        flow.run()
+
+        assertEquals("unresolved_catalog_ownership", flow.auditRecords.single().statusReason)
+    }
+
+    @Test
+    fun `a view alongside an unresolved table does not change the outcome`() {
+        val flow = flow(tables = listOf(unresolved("t1"), view("v1")))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("unresolved_catalog_ownership", record.statusReason)
+        assertEquals(1, record.unresolvedTableCount)
+        assertEquals(2, record.activeTableCount)
+    }
+
+    @Test
+    fun `a database with only views is still skipped as having no active tables`() {
+        val flow = flow(tables = listOf(view("v1")))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("SKIPPED", record.status)
+        assertEquals("no_active_tables_in_database", record.statusReason)
+        assertEquals(0, record.unresolvedTableCount)
+    }
+
+    private fun folders(vararg children: String) {
+        putFolder(SALES)
+        children.forEach { putFolder("$SALES/$it", "part-0.parquet") }
+    }
+
+    private fun unresolved(name: String): DiscoveredTable =
+        DiscoveredTable(CATALOG, "sales", name, isTemporary = false, location = null, unresolvedReason = "metadata could not be read")
+
+    private fun view(name: String): DiscoveredTable = DiscoveredTable(CATALOG, "sales", name, isTemporary = false, location = null)
+
+    private fun flow(
+        tables: List<DiscoveredTable>,
+        deleteEnabled: Boolean = true,
+        databaseLocation: String? = SALES,
+        maxCandidateFolders: Int = 10,
+    ): CleanupFlowHarness {
+        val flow =
+            CleanupFlowHarness(
+                ApplicationConfig(
+                    catalog = CATALOG,
+                    databases = listOf("sales"),
+                    dryRun = !deleteEnabled,
+                    deleteEnabled = deleteEnabled,
+                    maxCandidateFoldersPerDatabase = maxCandidateFolders,
+                ),
+            )
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "sales") } returns DiscoveredDatabase(CATALOG, "sales", databaseLocation, tables)
+        every { flow.catalogDiscoveryService.sharedWarehouseRoots(CATALOG) } returns listOf(WAREHOUSE)
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations(CATALOG) } returns mapOf("sales" to SALES)
+        return flow
+    }
+}

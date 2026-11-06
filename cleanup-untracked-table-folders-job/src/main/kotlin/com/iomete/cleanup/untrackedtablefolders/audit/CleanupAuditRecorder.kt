@@ -108,7 +108,7 @@ class CleanupAuditRecorder {
         activeTableLocations: List<String>,
         storageFolderPaths: List<String>,
         potentiallyUntrackedFolderPaths: List<String>,
-        cutoffTime: Instant,
+        cutoffTime: Instant?,
         excludedPaths: List<String>,
         unscannedTableLocations: List<String> = emptyList(),
         scanPlan: ScanPlanReport? = null,
