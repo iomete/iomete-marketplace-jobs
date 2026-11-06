@@ -210,8 +210,9 @@ class CleanupSummaryLogger {
             add("")
             add("STORAGE FOLDERS PROTECTED OR SKIPPED FOR OTHER REASONS")
             add("")
-            add("  These folders are not deleted. They are excluded, belong to another database or to a")
-            add("  table's write path, are framework working folders, or are too new or of unknown age.")
+            add("  These folders are not deleted. They are excluded, belong to another database, to a table's")
+            add("  write path, or to an unresolved table, are framework working folders, or are too new or of")
+            add("  unknown age.")
             add("")
             addListOrNone(otherSkippedFolderPaths)
         }

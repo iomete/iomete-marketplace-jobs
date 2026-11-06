@@ -34,7 +34,14 @@ data class DiscoveredTable(
     val unresolvedReason: String? = null,
     // Iceberg write paths can place this table's files outside its location.
     val writeLocations: List<String> = emptyList(),
+    // The location read before an unresolved table failed a later check. It is not verified, so it only keeps
+    // that folder out of the unmatched list and must never select a scan root or anchor ownership.
+    val knownLocation: String? = null,
 ) {
+    init {
+        require(knownLocation == null || unresolvedReason != null) { "knownLocation is only for unresolved tables" }
+    }
+
     // A null location means the catalog object owns no storage, such as a view. Unresolved means
     // the table owns storage we could not locate, so its folder cannot be identified.
     val isUnresolved: Boolean get() = unresolvedReason != null
@@ -45,6 +52,7 @@ data class DiscoveredTable(
 private class TableLocationUnresolvedException(
     val reason: String,
     cause: Throwable,
+    val knownLocation: String? = null,
 ) : RuntimeException(reason, cause)
 
 class DatabaseNotFoundException(
@@ -274,6 +282,7 @@ class CatalogDiscoveryService {
                     isTemporary = isTemporary,
                     location = null,
                     unresolvedReason = th.reason,
+                    knownLocation = th.knownLocation,
                 )
             }
         }
@@ -409,7 +418,7 @@ class CatalogDiscoveryService {
             try {
                 spark.sql("SHOW TBLPROPERTIES $qualifiedTableName").collectAsList().associate { it.getString(0) to it.getString(1) }
             } catch (th: Throwable) {
-                throw TableLocationUnresolvedException("Table properties could not be read: ${th.message ?: th::class.java.name}", th)
+                throw TableLocationUnresolvedException("Table properties could not be read: ${th.message ?: th::class.java.name}", th, location)
             }
 
         // Both settings let the table use files outside its location and declared write paths. Iceberg reads any
@@ -418,12 +427,14 @@ class CatalogDiscoveryService {
             throw TableLocationUnresolvedException(
                 "gc.enabled is not true, so the table may use files outside its location",
                 IllegalStateException("gc.enabled is not true"),
+                location,
             )
         }
         if (properties.containsKey("write.location-provider.impl")) {
             throw TableLocationUnresolvedException(
                 "write.location-provider.impl is set, so the table may write outside its declared paths",
                 IllegalStateException("write.location-provider.impl"),
+                location,
             )
         }
 
@@ -432,6 +443,7 @@ class CatalogDiscoveryService {
             throw TableLocationUnresolvedException(
                 "A declared write path has no scheme or bucket, so it cannot be matched to storage",
                 IllegalStateException("unqualified write path"),
+                location,
             )
         }
 

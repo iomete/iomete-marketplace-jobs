@@ -327,7 +327,7 @@ class CleanupUntrackedTableFoldersService {
                             untrackedFolderCandidateDetector.detectCandidates(
                                 storageFolders = storageFolders,
                                 activeTableLocations =
-                                    discoveredDatabase.tables.flatMap { listOfNotNull(it.location) + it.writeLocations },
+                                    discoveredDatabase.tables.flatMap { listOfNotNull(it.location, it.knownLocation) + it.writeLocations },
                                 excludedPaths = protectedPaths,
                                 maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
                                 unresolvedTableCount = unresolvedTableNames.size,

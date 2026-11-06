@@ -259,13 +259,108 @@ class UnresolvedOwnershipFlowTest {
         assertEquals(0, record.unresolvedTableCount)
     }
 
+    @Test
+    fun `a known location reduces the unmatched folders but unresolved ownership still blocks deletion`() {
+        folders("t1", "t2", "orphan")
+        val flow = flow(tables = listOf(verified("t1"), unresolved("t2", knownLocation = "$SALES/t2")))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("unresolved_catalog_ownership", record.statusReason)
+        assertEquals(1, record.unresolvedTableCount)
+        assertEquals(1, record.potentiallyUntrackedFolderCount)
+        assertEquals("$SALES/orphan", record.diagnosticDetails["potentially_untracked_folder_paths_sample"])
+        assertEquals(0, record.candidateFolderCount)
+        assertTrue(record.deletedFolders.isEmpty())
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+        assertTrue(flow.objectExists("$SALES/t2/part-0.parquet"))
+        assertTrue(flow.summaryLines().contains("- $SALES/t2"))
+        verify(exactly = 1) { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "sales") }
+    }
+
+    @Test
+    fun `unresolved ownership still blocks when a known location leaves no unmatched folder`() {
+        folders("t1", "t2")
+        val flow = flow(tables = listOf(verified("t1"), unresolved("t2", knownLocation = "$SALES/t2")))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("unresolved_catalog_ownership", record.statusReason)
+        assertEquals(0, record.potentiallyUntrackedFolderCount)
+        assertTrue(record.deletedFolders.isEmpty())
+    }
+
+    @Test
+    fun `a known location that brings the count within the limit still blocks deletion`() {
+        folders("t1", "t2", "orphan")
+        val flow = flow(tables = listOf(verified("t1"), unresolved("t2", knownLocation = "$SALES/t2")), maxCandidateFolders = 1)
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("unresolved_catalog_ownership", record.statusReason)
+        assertEquals(1, record.potentiallyUntrackedFolderCount)
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+    }
+
+    @Test
+    fun `a known location does not anchor a scan when no table is verified`() {
+        folders("t1", "orphan")
+        val flow = flow(tables = listOf(unresolved("t1", knownLocation = "$SALES/t1")))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("unresolved_catalog_ownership", record.statusReason)
+        assertEquals("", record.storageScanLocation)
+        assertTrue(InMemoryS3FileSystem.listStatusCalls.isEmpty())
+    }
+
+    @Test
+    fun `a known location does not select the scan root or count as verified`() {
+        putFolder("$SALES/nested")
+        putFolder("$SALES/nested/t1", "part-0.parquet")
+        putFolder("$SALES/t2", "part-0.parquet")
+        val flow =
+            flow(
+                tables =
+                    listOf(
+                        DiscoveredTable(CATALOG, "sales", "t1", isTemporary = false, location = "$SALES/nested/t1"),
+                        unresolved("t2", knownLocation = "$SALES/t2"),
+                    ),
+            )
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("$SALES/nested", record.storageScanLocation)
+        assertEquals("$SALES/nested/t1", record.diagnosticDetails["active_table_locations_sample"])
+        assertEquals(listOf("$SALES/nested/t1"), flow.summaries.single().activeTableLocations)
+    }
+
     private fun folders(vararg children: String) {
         putFolder(SALES)
         children.forEach { putFolder("$SALES/$it", "part-0.parquet") }
     }
 
-    private fun unresolved(name: String): DiscoveredTable =
-        DiscoveredTable(CATALOG, "sales", name, isTemporary = false, location = null, unresolvedReason = "metadata could not be read")
+    private fun unresolved(
+        name: String,
+        knownLocation: String? = null,
+    ): DiscoveredTable =
+        DiscoveredTable(
+            CATALOG,
+            "sales",
+            name,
+            isTemporary = false,
+            location = null,
+            unresolvedReason = "metadata could not be read",
+            knownLocation = knownLocation,
+        )
 
     private fun verified(name: String): DiscoveredTable = DiscoveredTable(CATALOG, "sales", name, isTemporary = false, location = "$SALES/$name")
 

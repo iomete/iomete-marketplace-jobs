@@ -897,6 +897,11 @@ in that database can be proven untracked. So for that database:
 Ownership certainty is a property of the whole database, not of an individual folder. The job never
 mixes confirmed candidates and unverified folders in the same database.
 
+Some tables become unresolved after their location was read, for example when `gc.enabled` is not
+`true`. The job keeps that location only to leave the table's own folder out of the unmatched list.
+It is not a verified location: it never selects the scan root and never makes a folder deletable,
+and the database stays `BLOCKED` even when no unmatched folder remains.
+
 The per-database folder limit is still checked first. If the number of unmatched folders exceeds
 `max_candidate_folders_per_database`, the database is reported as `SKIPPED` with
 `status_reason=too_many_candidate_folders` instead. Both outcomes stop deletion for that database.
