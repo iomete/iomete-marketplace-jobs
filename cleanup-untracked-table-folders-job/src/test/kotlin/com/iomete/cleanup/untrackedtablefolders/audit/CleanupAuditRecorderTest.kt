@@ -134,6 +134,7 @@ class CleanupAuditRecorderTest {
             databaseName = "default",
             discoveredDatabaseLocation = "s3a://bucket/lake",
             activeTableCount = 1,
+            unresolvedTables = emptyList(),
             activeTableLocations = listOf("s3a://bucket/lake/events"),
             reason = "database_location_contains_warehouse_root",
             errorMessage = "Database location equals or contains the catalog warehouse root",
@@ -201,6 +202,40 @@ class CleanupAuditRecorderTest {
     }
 
     @Test
+    fun `too many folders with unresolved tables reports them as potentially untracked, not candidates`() {
+        val unmatchedFolders = (0..MAX_AUDIT_PATH_SAMPLE_SIZE).map { "s3a://example-bucket/db/folder_$it" }
+
+        recorder.recordTooManyCandidateFolders(
+            runId = "run-5",
+            databaseStartTime = Instant.EPOCH,
+            catalogName = "example_catalog",
+            databaseName = "analytics",
+            discoveredDatabaseLocation = "s3a://example-bucket/db",
+            storageScanLocation = "s3a://example-bucket/db",
+            activeTableCount = 2,
+            unresolvedTables = listOf("example_catalog.analytics.orders"),
+            activeTableLocations = listOf("s3a://example-bucket/db/active_table"),
+            storageFolderPaths = unmatchedFolders,
+            candidateFolderPaths = unmatchedFolders,
+            cutoffTime = Instant.EPOCH,
+            excludedPaths = emptyList(),
+            errorMessage = "limit exceeded",
+        )
+
+        val record = capturedRecord()
+
+        assertEquals("SKIPPED", record.status)
+        assertEquals("too_many_candidate_folders", record.statusReason)
+        assertEquals(1, record.unresolvedTableCount)
+        assertEquals(unmatchedFolders.size.toLong(), record.potentiallyUntrackedFolderCount)
+        assertEquals(0, record.candidateFolderCount)
+        assertEquals(emptyList<String>(), record.candidateFolders)
+        assertEquals("true", record.diagnosticDetails["potentially_untracked_folder_paths_truncated"])
+        assertEquals("example_catalog.analytics.orders", record.diagnosticDetails["unresolved_tables_sample"])
+        assertNull(record.diagnosticDetails["candidate_folder_paths_sample"])
+    }
+
+    @Test
     fun `unexpected failure still records an error message`() {
         every { excludePathResolver.normalizedConfiguredExcludePaths() } returns emptyList()
 
@@ -208,6 +243,7 @@ class CleanupAuditRecorderTest {
             runId = "run-3",
             database = "analytics",
             databaseStartTime = Instant.EPOCH,
+            unresolvedTables = emptyList(),
             error = IllegalStateException("storage listing failed"),
         )
 
@@ -224,6 +260,7 @@ class CleanupAuditRecorderTest {
             database = "analytics",
             databaseStartTime = Instant.EPOCH,
             excludedPaths = emptyList(),
+            unresolvedTables = emptyList(),
             error = IllegalStateException("catalog lookup failed"),
         )
 
@@ -238,6 +275,7 @@ class CleanupAuditRecorderTest {
             databaseStartTime = Instant.EPOCH,
             excludedPaths = emptyList(),
             unscannedTableLocations = emptyList(),
+            unresolvedTables = emptyList(),
             error = IllegalStateException("storage listing failed"),
         )
 

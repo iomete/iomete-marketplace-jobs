@@ -36,10 +36,7 @@ class CleanupAuditDiagnosticDetailsBuilder {
                 isAuditPathSampleTruncated(candidateFolderPaths).toString()
         }
 
-        if (unresolvedTables.isNotEmpty()) {
-            details["unresolved_tables_sample"] = auditPathSample(unresolvedTables)
-            details["unresolved_tables_truncated"] = isAuditPathSampleTruncated(unresolvedTables).toString()
-        }
+        details.putAll(unresolvedTableDetails(unresolvedTables))
 
         if (potentiallyUntrackedFolderPaths.isNotEmpty()) {
             details["potentially_untracked_folder_paths_sample"] = auditPathSample(potentiallyUntrackedFolderPaths)
@@ -62,6 +59,16 @@ class CleanupAuditDiagnosticDetailsBuilder {
 
         return details
     }
+
+    fun unresolvedTableDetails(unresolvedTables: List<String>): Map<String, String> =
+        if (unresolvedTables.isEmpty()) {
+            emptyMap()
+        } else {
+            mapOf(
+                "unresolved_tables_sample" to auditPathSample(unresolvedTables),
+                "unresolved_tables_truncated" to isAuditPathSampleTruncated(unresolvedTables).toString(),
+            )
+        }
 
     // Failure rows report a complete scan as a zero count, so a missing count means coverage was never evaluated.
     fun scanCoverageDetails(

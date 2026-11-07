@@ -23,6 +23,7 @@ class CleanupAuditRecorder {
         databaseName: String,
         discoveredDatabaseLocation: String?,
         activeTableCount: Long,
+        unresolvedTables: List<String>,
         activeTableLocations: List<String>,
         errorMessage: String,
         excludedPaths: List<String>,
@@ -37,9 +38,10 @@ class CleanupAuditRecorder {
             errorMessage = errorMessage,
             discoveredDatabaseLocation = discoveredDatabaseLocation,
             activeTableCount = activeTableCount,
+            unresolvedTableCount = unresolvedTables.size.toLong(),
             excludedPaths = excludedPaths,
             diagnosticDetails =
-                auditDiagnosticDetailsBuilder.build(activeTableLocations = activeTableLocations),
+                auditDiagnosticDetailsBuilder.build(activeTableLocations = activeTableLocations, unresolvedTables = unresolvedTables),
         )
     }
 
@@ -50,6 +52,7 @@ class CleanupAuditRecorder {
         databaseName: String,
         discoveredDatabaseLocation: String?,
         activeTableCount: Long,
+        unresolvedTables: List<String>,
         activeTableLocations: List<String>,
         reason: String,
         errorMessage: String,
@@ -66,9 +69,10 @@ class CleanupAuditRecorder {
             errorMessage = errorMessage,
             discoveredDatabaseLocation = discoveredDatabaseLocation,
             activeTableCount = activeTableCount,
+            unresolvedTableCount = unresolvedTables.size.toLong(),
             excludedPaths = excludedPaths,
             diagnosticDetails =
-                auditDiagnosticDetailsBuilder.build(activeTableLocations = activeTableLocations) +
+                auditDiagnosticDetailsBuilder.build(activeTableLocations = activeTableLocations, unresolvedTables = unresolvedTables) +
                     auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan),
         )
     }
@@ -108,7 +112,7 @@ class CleanupAuditRecorder {
         activeTableLocations: List<String>,
         storageFolderPaths: List<String>,
         potentiallyUntrackedFolderPaths: List<String>,
-        cutoffTime: Instant,
+        cutoffTime: Instant?,
         excludedPaths: List<String>,
         unscannedTableLocations: List<String> = emptyList(),
         scanPlan: ScanPlanReport? = null,
@@ -148,6 +152,7 @@ class CleanupAuditRecorder {
         discoveredDatabaseLocation: String?,
         storageScanLocation: String,
         activeTableCount: Long,
+        unresolvedTables: List<String>,
         activeTableLocations: List<String>,
         storageFolderPaths: List<String>,
         candidateFolderPaths: List<String>,
@@ -157,6 +162,14 @@ class CleanupAuditRecorder {
         unscannedTableLocations: List<String> = emptyList(),
         scanPlan: ScanPlanReport? = null,
     ) {
+        // With unresolved tables no folder is a confirmed candidate, but the count that exceeded the limit stays visible.
+        val (confirmedFolderPaths, unverifiedFolderPaths) =
+            if (unresolvedTables.isEmpty()) {
+                candidateFolderPaths to emptyList()
+            } else {
+                emptyList<String>() to candidateFolderPaths
+            }
+
         writeAuditRecord(
             runId = runId,
             databaseStartTime = databaseStartTime,
@@ -168,16 +181,20 @@ class CleanupAuditRecorder {
             discoveredDatabaseLocation = discoveredDatabaseLocation,
             storageScanLocation = storageScanLocation,
             activeTableCount = activeTableCount,
+            unresolvedTableCount = unresolvedTables.size.toLong(),
+            potentiallyUntrackedFolderCount = unverifiedFolderPaths.size.toLong(),
             storageFolderCount = storageFolderPaths.size.toLong(),
-            candidateFolderCount = candidateFolderPaths.size.toLong(),
-            candidateFolders = candidateFolderPaths.take(MAX_AUDIT_PATH_SAMPLE_SIZE),
+            candidateFolderCount = confirmedFolderPaths.size.toLong(),
+            candidateFolders = confirmedFolderPaths.take(MAX_AUDIT_PATH_SAMPLE_SIZE),
             cutoffTime = cutoffTime,
             excludedPaths = excludedPaths,
             diagnosticDetails =
                 auditDiagnosticDetailsBuilder.build(
                     activeTableLocations = activeTableLocations,
                     storageFolderPaths = storageFolderPaths,
-                    candidateFolderPaths = candidateFolderPaths,
+                    candidateFolderPaths = confirmedFolderPaths,
+                    unresolvedTables = unresolvedTables,
+                    potentiallyUntrackedFolderPaths = unverifiedFolderPaths,
                     unscannedTableLocations = unscannedTableLocations,
                 ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan),
         )
@@ -363,6 +380,7 @@ class CleanupAuditRecorder {
         excludedPaths: List<String> = excludePathResolver.normalizedConfiguredExcludePaths(),
         unscannedTableLocations: List<String>? = null,
         scanPlan: ScanPlanReport? = null,
+        unresolvedTables: List<String>,
         error: Throwable,
     ) {
         writeAuditRecord(
@@ -373,11 +391,13 @@ class CleanupAuditRecorder {
             status = STATUS_FAILED,
             statusReason = "unexpected_error",
             errorMessage = error.message ?: error::class.java.name,
+            unresolvedTableCount = unresolvedTables.size.toLong(),
             excludedPaths = excludedPaths,
             diagnosticDetails =
                 unscannedTableLocations
                     ?.let { auditDiagnosticDetailsBuilder.scanCoverageDetails(it, reportCompleteScanCoverage = true) }
-                    .orEmpty() + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan),
+                    .orEmpty() + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan) +
+                    auditDiagnosticDetailsBuilder.unresolvedTableDetails(unresolvedTables),
         )
     }
 
