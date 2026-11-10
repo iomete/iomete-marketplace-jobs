@@ -23,10 +23,11 @@ RUN --mount=type=secret,id=maven-settings,target=/run/secrets/maven-settings.xml
       repo="$(sed -n 's:.*<url>\(.*\)</url>.*:\1:p' /run/secrets/maven-settings.xml | head -n 1)"; \
       repo="${repo%/}"; \
     fi; \
+    [ -n "$repo" ] || repo="${MAVEN_REPO}"; \
     cd /opt/spark/jars; \
     while read -r sha path; do \
       file="$(basename "$path")"; \
-      curl -fsSL --retry 5 --retry-all-errors -o "$file" "${repo}/${path}"; \
+      curl -fsSL --retry 5 -o "$file" "${repo}/${path}"; \
       echo "${sha}  ${file}" | sha256sum -c -; \
     done <<EOF
 184f8bd4a3cd22299c49090d88b894f81fd7546b4ee64879519a0d76a685dbb8 org/apache/spark/spark-sql-kafka-0-10_2.12/${SPARK_VERSION}/spark-sql-kafka-0-10_2.12-${SPARK_VERSION}.jar
