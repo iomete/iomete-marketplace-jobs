@@ -1,4 +1,4 @@
-FROM iomete.azurecr.io/iomete/spark-py:3.5.5-v6
+FROM iomete.azurecr.io/iomete/spark-py:3.5.7-v7
 
 WORKDIR "/app"
 
@@ -11,6 +11,6 @@ COPY data_compaction_job ./data_compaction_job
 
 RUN pip install .  --break-system-packages
 
-# Specify the User that the actual main process will run as
-ARG spark_uid=185
+# Specify the User that the actual main process will run as (the base image's spark user)
+ARG spark_uid=1001
 USER ${spark_uid}
