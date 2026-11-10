@@ -20,7 +20,7 @@ Currently, JSON deserialization format supported.
 
 Specify the following parameters (these are examples, you can change them based on your preference):
 - **Name:** `kafka-iceberg-stream`
-- **Docker Image:** `iomete/kafka-iceberg-stream:1.0.0`
+- **Docker Image:** `iomete.azurecr.io/iomete/kafka-iceberg-stream:1.3.0`
 - **Main application file:** `local:///app/job.py`
 - **Java options:** `-Dlog4j.configurationFile=/opt/spark/iomete/log4j2.properties` (optional - specify logging configuration file)
 - **Config file:**

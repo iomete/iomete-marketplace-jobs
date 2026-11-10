@@ -1,38 +1,43 @@
-# Choose the IOMETE managed Spark image as the base image
-FROM iomete/spark-py:3.5.3-v7
+# Choose the IOMETE managed Spark image as the base image.
+# It already ships Hadoop, Scala, snappy, lz4, zstd and slf4j, so only the Kafka connector is added below.
+FROM iomete.azurecr.io/iomete/spark-py:3.5.7-v7
 
+# Keep SPARK_VERSION in step with the base image.
+ARG SPARK_VERSION=3.5.7
+# Spark 3.5.7 pins kafka-clients 3.4.1, which has known CVEs; override with a patched release.
+ARG KAFKA_CLIENTS_VERSION=3.9.2
+ARG COMMONS_POOL2_VERSION=2.12.1
+ARG MAVEN_REPO=https://repo1.maven.org/maven2
 
-# Set the working directory to /app
 WORKDIR "/app"
 
 # Reset to root to run installation tasks
 USER 0
 
+# Download the Kafka connector jars and verify their checksums
+RUN set -eux; \
+    cd /opt/spark/jars; \
+    while read -r sha path; do \
+      file="$(basename "$path")"; \
+      curl -fsSL -o "$file" "${MAVEN_REPO}/${path}"; \
+      echo "${sha}  ${file}" | sha256sum -c -; \
+    done <<EOF
+184f8bd4a3cd22299c49090d88b894f81fd7546b4ee64879519a0d76a685dbb8 org/apache/spark/spark-sql-kafka-0-10_2.12/${SPARK_VERSION}/spark-sql-kafka-0-10_2.12-${SPARK_VERSION}.jar
+9701914db5c6d09628b58d2d2c1ccd2c9ea28f32f83dd6cb21f98b8237531ff4 org/apache/spark/spark-token-provider-kafka-0-10_2.12/${SPARK_VERSION}/spark-token-provider-kafka-0-10_2.12-${SPARK_VERSION}.jar
+014b4ef36884478a932641818b080c36a8f8e2e92dc771e800c9d2694f4f83d8 org/apache/kafka/kafka-clients/${KAFKA_CLIENTS_VERSION}/kafka-clients-${KAFKA_CLIENTS_VERSION}.jar
+5273c8bc8c0dca2211175c0d27efbd7228efae99689aac001a8e1ef8e872e9ef org/apache/commons/commons-pool2/${COMMONS_POOL2_VERSION}/commons-pool2-${COMMONS_POOL2_VERSION}.jar
+EOF
+
 # add requirements.txt first to leverage Docker cache
 COPY infra/requirements.txt ./
-RUN pip install -r requirements.txt --break-system-packages
+RUN pip install --no-cache-dir -r requirements.txt --break-system-packages
 
 # Copy the application files
 COPY config.py job.py ./
 
-COPY jars/commons-logging-1.1.3.jar /opt/spark/jars/commons-logging-1.1.3.jar
-COPY jars/commons-pool2-2.11.1.jar /opt/spark/jars/commons-pool2-2.11.1.jar
-COPY jars/hadoop-client-api-3.3.2.jar /opt/spark/jars/hadoop-client-api-3.3.2.jar
-COPY jars/hadoop-client-runtime-3.3.2.jar /opt/spark/jars/hadoop-client-runtime-3.3.2.jar
-COPY jars/jsr305-3.0.0.jar /opt/spark/jars/jsr305-3.0.0.jar
-COPY jars/kafka-clients-2.8.1.jar /opt/spark/jars/kafka-clients-2.8.1.jar
-COPY jars/lz4-java-1.7.1.jar /opt/spark/jars/lz4-java-1.7.1.jar
-COPY jars/scala-library-2.12.15.jar /opt/spark/jars/scala-library-2.12.15.jar
-COPY jars/slf4j-api-1.7.30.jar /opt/spark/jars/slf4j-api-1.7.30.jar
-COPY jars/snappy-java-1.1.8.1.jar /opt/spark/jars/snappy-java-1.1.8.1.jar
-COPY jars/spark-sql-kafka-0-10_2.12-3.5.3.jar /opt/spark/jars/spark-sql-kafka-0-10_2.12-3.5.3.jar
-COPY jars/spark-tags_2.12-3.5.3.jar /opt/spark/jars/spark-tags_2.12-3.5.3.jar
-COPY jars/spark-token-provider-kafka-0-10_2.12-3.5.3.jar /opt/spark/jars/spark-token-provider-kafka-0-10_2.12-3.5.3.jar
-COPY jars/unused-1.0.0.jar /opt/spark/jars/unused-1.0.0.jar
-
 # Copy log4j confgiration. To use this log4j configuration, set JAVA options: -Dlog4j.configurationFile=/opt/spark/iomete/log4j2.properties
 COPY spark_conf/log4j2.properties /opt/spark/iomete/log4j2.properties
 
-# Specify the User that the actual main process will run as
-ARG spark_uid=185
+# Specify the User that the actual main process will run as (the base image's spark user)
+ARG spark_uid=1001
 USER ${spark_uid}
