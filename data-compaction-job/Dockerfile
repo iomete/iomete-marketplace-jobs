@@ -11,12 +11,11 @@ COPY data_compaction_job ./data_compaction_job
 
 RUN pip install .  --break-system-packages
 
-# Reduce base-image CVEs:
-# - upgrade OS packages that have security fixes not yet in the base image
+# Reduce base-image CVEs until the spark-py base image ships these fixes:
+# - apply pending Ubuntu security updates (Java is not apt-managed, so it is unaffected)
 # - purge linux-libc-dev (kernel headers) and the C/C++ build toolchain that depends on it; not needed at runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends --only-upgrade \
-        openssl libssl3t64 apt libapt-pkg6.0t64 libbrotli1 \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
     && apt-get purge -y linux-libc-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
