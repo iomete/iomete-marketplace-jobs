@@ -14,12 +14,20 @@ WORKDIR "/app"
 # Reset to root to run installation tasks
 USER 0
 
-# Download the Kafka connector jars and verify their checksums
-RUN set -eux; \
+# Download the Kafka connector jars and verify their checksums.
+# CI offers a maven-settings secret pointing at the in-cluster Nexus; without it, MAVEN_REPO is used.
+RUN --mount=type=secret,id=maven-settings,target=/run/secrets/maven-settings.xml \
+    set -eux; \
+    repo="${MAVEN_REPO}"; \
+    if [ -s /run/secrets/maven-settings.xml ]; then \
+      repo="$(sed -n 's:.*<url>\(.*\)</url>.*:\1:p' /run/secrets/maven-settings.xml | head -n 1)"; \
+      repo="${repo%/}"; \
+    fi; \
+    [ -n "$repo" ] || repo="${MAVEN_REPO}"; \
     cd /opt/spark/jars; \
     while read -r sha path; do \
       file="$(basename "$path")"; \
-      curl -fsSL -o "$file" "${MAVEN_REPO}/${path}"; \
+      curl -fsSL --retry 5 -o "$file" "${repo}/${path}"; \
       echo "${sha}  ${file}" | sha256sum -c -; \
     done <<EOF
 184f8bd4a3cd22299c49090d88b894f81fd7546b4ee64879519a0d76a685dbb8 org/apache/spark/spark-sql-kafka-0-10_2.12/${SPARK_VERSION}/spark-sql-kafka-0-10_2.12-${SPARK_VERSION}.jar
