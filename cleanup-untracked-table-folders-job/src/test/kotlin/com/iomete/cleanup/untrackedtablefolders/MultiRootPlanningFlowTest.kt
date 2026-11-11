@@ -158,7 +158,25 @@ class MultiRootPlanningFlowTest {
         assertEquals(listOf("$databaseLocation/orphan_hive"), record.deletedFolders)
         assertTrue(flow.objectExists("$REST_ROOT/orphan_rest/part-0.parquet"))
         assertEquals(listOf("$REST_ROOT/orphan_rest"), reportOnlyFolders(record))
+        assertEquals("partial_scan_coverage", record.statusReason)
+        assertEquals("partial", record.diagnosticDetails["scan_plan_coverage"])
+    }
+
+    @Test
+    fun `a database folder that exists only as a marker is shown as scanned with no folders`() {
+        putFolder(DATABASE_LOCATION)
+        folders(REST_ROOT, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$REST_ROOT/t_rest"), restNamespaceRoot = REST_ROOT)
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals(REST_ROOT, record.storageScanLocation)
         assertEquals("complete", record.diagnosticDetails["scan_plan_coverage"])
+        assertTrue("$DATABASE_LOCATION=report_only:scanned:visible_tables=0" in rootLines(record))
+        val summary = flow.summaryLines()
+        assertTrue("- $DATABASE_LOCATION  report_only  scanned, no folders  visible tables at any depth: 0" in summary)
+        assertTrue("- $REST_ROOT  cleanup  scanned  visible tables at any depth: 1" in summary)
     }
 
     @Test
@@ -262,7 +280,8 @@ class MultiRootPlanningFlowTest {
         assertEquals(listOf("s3a://bucket2/ext/a/orphan_ext"), reportOnlyFolders(record))
         assertTrue(flow.objectExists("s3a://bucket2/ext/a/orphan_ext/part-0.parquet"))
         assertNull(InMemoryS3FileSystem.listStatusCalls["s3a://bucket2/ext/a/orphan_ext"])
-        assertEquals("complete", record.diagnosticDetails["scan_plan_coverage"])
+        assertEquals("partial_scan_coverage", record.statusReason)
+        assertEquals("partial", record.diagnosticDetails["scan_plan_coverage"])
     }
 
     @Test

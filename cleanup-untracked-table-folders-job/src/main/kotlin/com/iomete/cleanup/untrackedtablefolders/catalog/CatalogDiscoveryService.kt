@@ -34,8 +34,9 @@ data class DiscoveredTable(
     val unresolvedReason: String? = null,
     // Iceberg write paths can place this table's files outside its location.
     val writeLocations: List<String> = emptyList(),
-    // The location read before an unresolved table failed a later check. It is not verified, so it only keeps
-    // that folder out of the unmatched list and must never select a scan root or anchor ownership.
+    // The location read before an unresolved table failed a later check, or the folder named by its missing metadata
+    // file. It is not verified, so it only keeps that folder out of the unmatched list and must never select a scan
+    // root or anchor ownership.
     val knownLocation: String? = null,
 ) {
     init {
@@ -108,6 +109,31 @@ internal fun isMetadataNotFoundError(error: Throwable): Boolean {
 
     return false
 }
+
+// For a missing <folder>/metadata/<file>.metadata.json, <folder> is where the table normally lives. It is evidence
+// only: write.metadata.path can place metadata elsewhere, so it may protect a folder but never proves one unowned.
+internal fun missingMetadataTableFolder(error: Throwable): String? {
+    val missingPath =
+        generateSequence(error) { it.cause }
+            .mapNotNull { it.message?.substringAfter(MISSING_METADATA_MESSAGE, missingDelimiterValue = "")?.trim() }
+            .firstOrNull { it.isNotEmpty() }
+            ?.split(Regex("\\s+"))
+            ?.first()
+            ?: return null
+    val folder = missingPath.substringBeforeLast("/$METADATA_FOLDER/", missingDelimiterValue = "")
+    val fileName = missingPath.substringAfterLast("/$METADATA_FOLDER/")
+
+    if (folder.isEmpty() || '/' in fileName || !fileName.endsWith(METADATA_FILE_SUFFIX)) {
+        return null
+    }
+
+    return folder.takeIf {
+        runCatching { StoragePathUtils.isQualifiedLocation(it) && !StoragePathUtils.isStorageRoot(it) }.getOrDefault(false)
+    }
+}
+
+private const val METADATA_FOLDER = "metadata"
+private const val METADATA_FILE_SUFFIX = ".metadata.json"
 
 private val ICEBERG_WRITE_PATH_PROPERTIES =
     listOf("write.data.path", "write.metadata.path", "write.object-storage.path", "write.folder-storage.path")
@@ -380,7 +406,7 @@ class CatalogDiscoveryService {
                 spark.sql("DESCRIBE EXTENDED $qualifiedTableName").collectAsList()
             } catch (th: Throwable) {
                 if (isMetadataNotFoundError(th)) {
-                    throw TableLocationUnresolvedException(th.message ?: th::class.java.name, th)
+                    throw TableLocationUnresolvedException(th.message ?: th::class.java.name, th, missingMetadataTableFolder(th))
                 }
 
                 throw IllegalStateException(

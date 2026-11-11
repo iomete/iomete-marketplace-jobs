@@ -346,7 +346,7 @@ This setting limits **candidate folders**, not individual files.
 
 It is a **blast-radius guardrail**. It does not prove deletion is safe. It forces manual review when the number of candidates is larger than expected.
 
-If the job finds more candidates than this limit, it skips cleanup for that database and writes a `SKIPPED` audit row with `status_reason=too_many_candidate_folders`.
+If the job finds more candidates than this limit, it skips cleanup for that database and writes a `SKIPPED` audit row with `status_reason=too_many_candidate_folders`. The log report lists the folders that went over the limit, so they can be reviewed before the limit is raised.
 
 For example, with this setting:
 
@@ -446,6 +446,42 @@ The main safety principle is **fail closed**: if the job cannot prove that a fol
 | Empty-database guard | Deleting every folder in a database whose catalog has no active table locations (likely misconfiguration) |
 | Catalog-scoped storage access | Reading or deleting in the platform's storage instead of the catalog's, and vice versa |
 | Framework sentinel folder protection | Deleting `_temporary`, `.spark-staging-*`, `.hive-staging_*`, `__magic`, and similar working folders left by in-flight Hadoop, Spark, or Hive writes |
+
+---
+
+## What deletion mode can and cannot prove
+
+Before a folder is deleted, the job checks it against what it can see. A folder is deleted only when
+none of these claims it:
+
+- a table of this database that the job can see, including its Iceberg write paths;
+- the storage of another database that the job can see, as described in
+  [Storage of other databases and Iceberg write paths](#storage-of-other-databases-and-iceberg-write-paths);
+- `exclude_paths` and `exclude_database_folders`.
+
+A deleted folder therefore means "no table or database visible to this job, in the places checked,
+claims this folder". It does not prove that nothing else uses the folder. The job does not check:
+
+| Not checked | Example | What to do |
+|---|---|---|
+| Tables of other databases stored inside the cleanup root | A table renamed into another database keeps its folder. A table created or registered with an explicit `LOCATION` can point into this database's folder. | Review the dry-run candidates. Protect the folder with `exclude_paths`. |
+| Tables of other catalogs | Two catalogs that use the same warehouse folder | Give each catalog its own warehouse. Protect shared folders with `exclude_paths`. |
+| Tables the job cannot see | Tables the job's run-as user is not allowed to see | Run the job as a user who can see every table in the catalog. |
+| Files a table uses outside its own folder | After `ALTER TABLE ... SET LOCATION`, the existing files stay in the old folder and the table still reads them. Files added with `add_files`, or used by a table made with `snapshot` or `migrate`, stay where they were. | Protect the old or source folder with `exclude_paths` while any table still uses it. |
+
+Deletion mode is only as safe as these preconditions:
+
+- The job's run-as user can see every database and table in the catalog.
+- No other catalog, data plane or tool writes tables into this database's folders.
+- Tables keep their files inside their own folder or their declared Iceberg write paths.
+
+If any of these may not hold, run in dry-run, review the candidates, and protect what must stay with
+`exclude_paths`.
+
+Every audit row states the same thing in `diagnostic_details`. `ownership_checks` lists what the job
+checks, and `ownership_not_checked` lists what it does not. Both are written on every row, whether or
+not the database reached the folder checks. Each `CLEANUP REPORT` in the log starts with an
+`OWNERSHIP CHECKS` section that says the same.
 
 ---
 
@@ -655,7 +691,13 @@ uncovered:
 | `root_limit_reached` | More than 25 additional roots were found; the rest are not listed |
 
 A listed root is `scanned`, `absent` (it does not exist yet) or `listing_failed`. A failed listing never
-changes what is deleted. Folders in these roots that do not belong to a table the job can see are listed
+changes what is deleted. In the log report, a root that exists but holds no child folders, such as a
+database folder kept only as a marker object, is shown as `scanned, no folders`. The audit status stays
+`scanned`.
+
+The log report also shows `visible tables at any depth` for each listed root. It counts this database's
+visible tables stored anywhere under that root, not only its direct children. Roots that are not scanned
+show no count, because a broad root such as a bucket root would count every table of the database. Folders in these roots that do not belong to a table the job can see are listed
 under `FOLDERS IN REPORT-ONLY ROOTS NOT MATCHED TO A VISIBLE TABLE`. A table the job cannot see may
 still own them, so treat them as items to review, not as orphans.
 
@@ -747,6 +789,8 @@ Stable audit values such as `status_reason`, `older_than_hours`, `cutoff_time`, 
 It may include values such as:
 
 ```text
+ownership_checks
+ownership_not_checked
 active_table_locations_sample
 storage_folder_paths_sample
 candidate_folder_paths_sample
@@ -799,8 +843,14 @@ Storage root keys follow `scan_plan_status`:
 - `scan_roots_sample` has one line per root: `<location>=<role>:<status>:visible_tables=<n>`, where
   role is `cleanup`, `report_only`, `report_only_approved` or `not_scanned`. The cleanup root comes first,
   then listed roots, then not-scanned roots with the most visible tables first.
-- `scan_plan_coverage` is `complete` when every table the job can see sits under a listed root and every
-  listing worked. It says nothing about tables the job cannot see.
+- `scan_plan_coverage` is `complete` when every table the job can see is stored under the cleanup root and
+  every listing worked. Otherwise it is `partial`. A table under a report-only root still makes it
+  `partial`, because folders there are never deleted. An unresolved table also makes it `partial`,
+  because its location is unknown, even when a known folder is shown for it. So a `SUCCESS` row with
+  `status_reason=partial_scan_coverage` always has `scan_plan_coverage=partial`. Job versions up to 0.1.5
+  also counted tables under report-only roots as covered, and did not count unresolved tables.
+- Coverage counts only tables the job can see. It is not an ownership check. See
+  [What deletion mode can and cannot prove](#what-deletion-mode-can-and-cannot-prove).
 - `ownership_basis=visible_catalog_tables` records that ownership was checked only against the tables the
   job can see in the catalog.
 
@@ -945,6 +995,14 @@ It is used only when it is inside the scan root, so it can leave out at most one
 It is not a verified location: it never selects the scan root and never makes a folder deletable,
 and the database stays `BLOCKED` even when no unmatched folder remains.
 
+A table whose metadata file is missing is handled the same way when the catalog error names that file.
+For a missing `<folder>/metadata/<file>.metadata.json`, the job keeps `<folder>` as the table's known
+folder. This is evidence only. The table may keep metadata or data elsewhere, so the folder is never
+treated as its verified location. Any other error leaves the table with no known folder.
+
+The log report lists each unresolved table with the reason it could not be resolved and, when there is
+one, its known folder.
+
 The per-database folder limit is still checked first. If the number of unmatched folders exceeds
 `max_candidate_folders_per_database`, the database is reported as `SKIPPED` with
 `status_reason=too_many_candidate_folders` instead. Both outcomes stop deletion for that database.
@@ -992,6 +1050,29 @@ The missing database is logged as a warning, not as a cleanup failure. Unexpecte
 
 ---
 
+## Versioned buckets
+
+On a bucket with versioning enabled or suspended, the job deletes folders the same way as on any other
+bucket. It does not pass object version IDs. The effect depends on the bucket:
+
+- **Versioning enabled:** each deleted object gets a delete marker. Its earlier versions stay as
+  noncurrent versions and still use storage.
+- **Versioning suspended:** the current `null` version is removed and a delete marker is added. Versions
+  written while versioning was enabled stay and still use storage.
+
+So a deleted folder disappears from listings, but storage use may not go down. To free the space, add
+bucket lifecycle rules:
+
+- expire noncurrent versions after a set number of days (`NoncurrentVersionExpiration`);
+- remove delete markers that have no versions left (`ExpiredObjectDeleteMarker`).
+
+With versioning enabled, the noncurrent-version window is also the recovery window for anything the
+job deletes. Before it expires, a deleted folder can be restored from its earlier versions. With
+versioning suspended, objects written while it was suspended have no earlier version, so they cannot be
+restored this way. The job does not delete old versions itself.
+
+---
+
 ## Recommended workflow
 
 ### 1. Start with dry-run
@@ -1011,7 +1092,7 @@ The missing database is logged as a warning, not as a cleanup failure. Unexpecte
 
 Review:
 
-- Summary logs
+- Summary logs. Each database's report is written as one log entry.
 - Candidate folders
 - Candidate object count and size
 - Audit rows
@@ -1196,6 +1277,9 @@ Any old unreferenced files inside that active table folder should be handled by 
   outside the database's own storage are not listed at all.
 - Ownership is checked against the tables and databases the job can see in the catalog. A table or
   database the job cannot see does not protect its folder, and neither does another database's table
-  stored inside the cleanup root or a Hive partition stored outside its table's folder.
+  stored inside the cleanup root or a Hive partition stored outside its table's folder. Tables of other
+  catalogs, and files a table uses outside its own folder, are not checked either. See
+  [What deletion mode can and cannot prove](#what-deletion-mode-can-and-cannot-prove).
+- On a versioned bucket, deleting a folder may not free storage. See [Versioned buckets](#versioned-buckets).
 - The job is intended for controlled cleanup workflows, not blind automatic deletion.
 - Folder age and size require recursively listing objects under each candidate folder, for at most `max_candidate_folders_per_database` folders per database. This can take time for folders with many objects and cannot be turned off, because it is needed to establish folder age.

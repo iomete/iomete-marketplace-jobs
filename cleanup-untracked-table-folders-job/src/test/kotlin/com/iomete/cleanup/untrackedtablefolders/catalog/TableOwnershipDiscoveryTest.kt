@@ -231,17 +231,34 @@ class TableOwnershipDiscoveryTest {
 
     @Test
     fun `a location that was never read or cannot be matched is not known`() {
-        listsTables("no_location", "unqualified", "no_details", "missing_metadata")
+        listsTables("no_location", "unqualified", "no_details", "missing_file", "missing_other_file")
         describes("`c`.`sales`.`no_location`", details("Type" to "MANAGED", "Provider" to "iceberg"))
         describes("`c`.`sales`.`unqualified`", details("Location" to "/lake/sales.db/unqualified", "Provider" to "iceberg"))
         describes("`c`.`sales`.`no_details`", listOf(column("id", "bigint")))
-        every { spark.sql("DESCRIBE EXTENDED `c`.`sales`.`missing_metadata`") } throws
-            IllegalStateException("Location does not exist: s3a://b/lake/sales.db/missing_metadata/metadata/1.metadata.json")
+        every { spark.sql("DESCRIBE EXTENDED `c`.`sales`.`missing_file`") } throws
+            java.io.FileNotFoundException("No such file or directory: s3a://b/lake/sales.db/missing_file/metadata/1.metadata.json")
+        every { spark.sql("DESCRIBE EXTENDED `c`.`sales`.`missing_other_file`") } throws
+            IllegalStateException("Location does not exist: s3a://b/lake/sales.db/missing_other_file/metadata/snap-1.avro")
 
         val tables = discovery.discoverTables("c", "sales")
 
-        assertEquals(listOf(true, true, true, true), tables.map { it.isUnresolved })
-        assertEquals(listOf(null, null, null, null), tables.map { it.knownLocation })
+        assertEquals(listOf(true, true, true, true, true), tables.map { it.isUnresolved })
+        assertEquals(listOf(null, null, null, null, null), tables.map { it.knownLocation })
+    }
+
+    @Test
+    fun `a table whose metadata file is missing keeps that file's table folder as known, never as verified`() {
+        listsTables("missing_metadata")
+        val message =
+            "Server error: NotFoundException: Location does not exist: s3a://b/lake/sales/missing_metadata-abc/metadata/00003-x.metadata.json"
+        every { spark.sql("DESCRIBE EXTENDED `c`.`sales`.`missing_metadata`") } throws IllegalStateException(message)
+
+        val table = discovery.discoverTables("c", "sales").single()
+
+        assertEquals(true, table.isUnresolved)
+        assertNull(table.location)
+        assertEquals("s3a://b/lake/sales/missing_metadata-abc", table.knownLocation)
+        assertEquals(message, table.unresolvedReason)
     }
 
     @Test

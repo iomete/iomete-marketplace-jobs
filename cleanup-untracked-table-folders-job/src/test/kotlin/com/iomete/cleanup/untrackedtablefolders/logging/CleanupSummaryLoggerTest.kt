@@ -5,8 +5,15 @@ import com.iomete.cleanup.untrackedtablefolders.storage.PlannedScanRoot
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootResult
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootRejection
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootSource
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkStatic
+import io.mockk.verify
+import org.jboss.logging.Logger
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -112,7 +119,7 @@ class CleanupSummaryLoggerTest {
                     verifiedTableCount = 1,
                     unresolvedTableNames = listOf("spark_catalog.analytics.table_b", "spark_catalog.analytics.table_c"),
                     storageFolderCount = 13,
-                    unmatchedFolderCount = 12,
+                    unmatchedFolderPaths = (1..12).map { "s3a://bucket/db/orphan_$it" },
                     maxCandidateFolders = 10,
                     dryRun = false,
                 ),
@@ -251,7 +258,7 @@ class CleanupSummaryLoggerTest {
         val lines = logger.buildReportLines(summary().copy(scanPlan = plan))
 
         assertTrue(lines.contains("STORAGE ROOTS"))
-        assertTrue(lines.contains("- s3a://bucket/rest/db  report_only  scanned  visible tables: 0"))
+        assertTrue(lines.contains("- s3a://bucket/rest/db  report_only  scanned  visible tables at any depth: 0"))
         assertTrue(lines.contains("  These folders are not deleted. A table this job cannot see may still own them."))
         assertTrue(lines.contains("- s3a://bucket/rest/db/x"))
     }
@@ -330,4 +337,181 @@ class CleanupSummaryLoggerTest {
         assertFalse(report.contains("not found at deletion"))
         assertFalse(report.contains("folder_not_found_at_deletion"))
     }
+
+    @Test
+    fun `every report states what ownership was and was not checked`() {
+        val reports =
+            listOf(
+                logger.buildReportLines(summary()),
+                logger.buildReportLines(summary(dryRun = true)),
+                logger.buildNoVerifiedLocationReportLines(
+                    NoVerifiedLocationSummary("spark_catalog", "analytics", "s3a://bucket/db", 1, listOf("spark_catalog.analytics.t"), dryRun = true),
+                ),
+                logger.buildTooManyFoldersReportLines(tooManySummary(unresolvedTableNames = emptyList())),
+            )
+
+        reports.forEach { lines ->
+            val checks = lines.joinToString("\n").substringAfter("OWNERSHIP CHECKS").substringBefore("CATALOG")
+            assertTrue(checks.contains("  Checked      tables of this database the job can see, their Iceberg write paths,"))
+            assertTrue(checks.contains("  Not checked  tables of other databases, tables of other catalogs, tables the job"))
+            assertTrue(checks.contains("files a table uses outside its own folder"))
+            assertTrue(lines.none { it.length > 100 })
+        }
+    }
+
+    @Test
+    fun `unresolved tables are listed with their reason and any known folder`() {
+        val report =
+            logger.buildReportLines(
+                summary(
+                    unresolvedTableNames = listOf("spark_catalog.analytics.table_b", "spark_catalog.analytics.table_c"),
+                    deletionEligible = false,
+                ).copy(
+                    unresolvedTableDetails =
+                        mapOf(
+                            "spark_catalog.analytics.table_b" to
+                                UnresolvedTableDetail(
+                                    "Location does not exist: s3a://bucket/db/table_b/metadata/1.metadata.json\n\tat stack frame",
+                                    "s3a://bucket/db/table_b",
+                                ),
+                            "spark_catalog.analytics.table_c" to UnresolvedTableDetail("gc.enabled is not true", null),
+                        ),
+                ),
+            ).joinToString("\n")
+
+        assertTrue(
+            report.contains(
+                "- spark_catalog.analytics.table_b\n" +
+                    "    reason: Location does not exist: s3a://bucket/db/table_b/metadata/1.metadata.json\n" +
+                    "    known folder: s3a://bucket/db/table_b\n" +
+                    "- spark_catalog.analytics.table_c\n" +
+                    "    reason: gc.enabled is not true\n",
+            ),
+        )
+        assertFalse(report.contains("stack frame"))
+    }
+
+    @Test
+    fun `too many folders without unresolved tables lists the folders and does not mention unresolved tables`() {
+        val lines = logger.buildTooManyFoldersReportLines(tooManySummary(unresolvedTableNames = emptyList()))
+        val report = lines.joinToString("\n")
+
+        assertTrue(report.contains("FOLDERS WITH NO VERIFIED CATALOG OWNER (NOT INSPECTED)"))
+        assertTrue(report.contains("- s3a://bucket/db/orphan_1\n- s3a://bucket/db/orphan_10"))
+        assertTrue(report.contains("Reason: too_many_candidate_folders"))
+        assertTrue(report.contains("12 folder(s) exceed max_candidate_folders_per_database=10."))
+        assertTrue(report.contains("Protect folders to keep with exclude_paths, or raise the limit."))
+        assertFalse(report.contains("unresolved"))
+        assertTrue(report.contains("No folder in this database was deleted."))
+    }
+
+    @Test
+    fun `a location shared by several tables is listed once`() {
+        val report =
+            logger.buildReportLines(
+                summary().copy(
+                    activeTableLocations = listOf("s3a://bucket/db/table_a", "s3a://bucket/db/table_a"),
+                    excludedPaths = listOf("s3a://bucket/db/keep", "s3a://bucket/db/keep"),
+                    unscannedTableLocations = listOf("s3a://bucket/other/events", "s3a://bucket/other/events"),
+                ),
+            )
+
+        assertEquals(1, report.count { it == "- s3a://bucket/db/table_a" })
+        assertEquals(1, report.count { it == "- s3a://bucket/db/keep" })
+        assertEquals(1, report.count { it == "- s3a://bucket/other/events" })
+        assertTrue("  Table locations outside the scanned root         1" in report)
+        assertTrue("  Tables with verified storage locations           2" in report)
+    }
+
+    @Test
+    fun `a listed root with no child folders says so and a rejected root shows no table count`() {
+        val plan =
+            ScanPlanReport(
+                roots =
+                    listOf(
+                        ScanRootResult(cleanupRoot("s3a://bucket/data/db"), ScanRootOutcome.SCANNED, 1, listedFolderCount = 3),
+                        ScanRootResult(
+                            PlannedScanRoot("s3a://bucket/db.db", setOf(ScanRootSource.DATABASE_LOCATION), cleanupRoot = false),
+                            ScanRootOutcome.SCANNED,
+                            0,
+                            listedFolderCount = 0,
+                        ),
+                        ScanRootResult(
+                            PlannedScanRoot("s3a://bucket", setOf(ScanRootSource.TABLE_PARENT), cleanupRoot = false, rejection = ScanRootRejection.BUCKET_ROOT),
+                            ScanRootOutcome.NOT_SCANNED,
+                            70,
+                        ),
+                    ),
+                uncoveredTableLocations = listOf("s3a://bucket/t", "s3a://bucket/t"),
+                visibleTablesOutsideCleanupRoot = 1,
+            )
+
+        val lines = logger.buildReportLines(summary().copy(scanPlan = plan))
+
+        assertTrue("- s3a://bucket/data/db  cleanup  scanned  visible tables at any depth: 1" in lines)
+        assertTrue("- s3a://bucket/db.db  report_only  scanned, no folders  visible tables at any depth: 0" in lines)
+        assertTrue("- s3a://bucket  not_scanned  bucket_root" in lines)
+        assertEquals(1, lines.count { it == "- s3a://bucket/t" })
+    }
+
+    @Test
+    fun `coverage is complete only when every visible table is under the cleanup root`() {
+        fun coverageLines(outsideCleanupRoot: Int, unresolvedTables: Int = 0) =
+            logger.buildReportLines(
+                summary().copy(
+                    scanPlan =
+                        ScanPlanReport(
+                            roots = listOf(ScanRootResult(cleanupRoot("s3a://bucket/db"), ScanRootOutcome.SCANNED, 1)),
+                            uncoveredTableLocations = emptyList(),
+                            visibleTablesOutsideCleanupRoot = outsideCleanupRoot,
+                            unresolvedTableCount = unresolvedTables,
+                        ),
+                ),
+            )
+        val partial = "  Coverage is partial: a table this job can see is outside the cleanup root or has an"
+
+        assertTrue("  Coverage is complete: every table this job can see is under the cleanup root." in coverageLines(0))
+        assertTrue(partial in coverageLines(1))
+        assertTrue(partial in coverageLines(0, unresolvedTables = 1))
+        assertTrue("  Coverage counts only tables this job can see. It is not an ownership check." in coverageLines(0))
+    }
+
+    @Test
+    fun `each report is written as one log statement`() {
+        val jbossLogger = mockk<Logger>(relaxed = true)
+        mockkStatic(Logger::class)
+        try {
+            every { Logger.getLogger(CleanupSummaryLogger::class.java) } returns jbossLogger
+            val reportLogger = CleanupSummaryLogger()
+
+            reportLogger.logCleanupSummary(summary())
+            reportLogger.logTooManyFoldersReport(tooManySummary())
+            reportLogger.logNoVerifiedLocationReport(
+                NoVerifiedLocationSummary("spark_catalog", "analytics", "s3a://bucket/db", 1, listOf("spark_catalog.analytics.t"), dryRun = true),
+            )
+            reportLogger.logScanPlan("spark_catalog", "analytics", ScanPlanReport(roots = emptyList(), uncoveredTableLocations = emptyList()))
+        } finally {
+            unmockkStatic(Logger::class)
+        }
+
+        verify(exactly = 1) { jbossLogger.info(logger.buildReportLines(summary()).joinToString("\n")) }
+        verify(exactly = 4) { jbossLogger.info(any<Any>()) }
+    }
+
+    private fun cleanupRoot(location: String) = PlannedScanRoot(location, setOf(ScanRootSource.DATABASE_LOCATION), cleanupRoot = true)
+
+    private fun tooManySummary(unresolvedTableNames: List<String> = listOf("spark_catalog.analytics.table_b")) =
+        TooManyFoldersSummary(
+            catalog = "spark_catalog",
+            database = "analytics",
+            discoveredDatabaseLocation = "s3a://bucket/db",
+            storageScanLocation = "s3a://bucket/db",
+            catalogTableCount = 3,
+            verifiedTableCount = 1,
+            unresolvedTableNames = unresolvedTableNames,
+            storageFolderCount = 13,
+            unmatchedFolderPaths = (1..12).map { "s3a://bucket/db/orphan_$it" }.sorted(),
+            maxCandidateFolders = 10,
+            dryRun = false,
+        )
 }

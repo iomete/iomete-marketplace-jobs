@@ -476,7 +476,7 @@ class CleanupAuditRecorder {
                 deletedTotalSizeBytes = deletedTotalSizeBytes,
                 candidateFolders = candidateFolders,
                 deletedFolders = deletedFolders,
-                diagnosticDetails = diagnosticDetails,
+                diagnosticDetails = auditDiagnosticDetailsBuilder.ownershipCheckDetails() + diagnosticDetails,
                 startTime = databaseStartTime,
                 endTime = Instant.now(),
             )

@@ -6,6 +6,7 @@ import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredTable
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.logging.NoVerifiedLocationSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.TooManyFoldersSummary
+import com.iomete.cleanup.untrackedtablefolders.logging.UnresolvedTableDetail
 import com.iomete.cleanup.untrackedtablefolders.storage.InMemoryS3FileSystem
 import io.mockk.every
 import io.mockk.verify
@@ -64,6 +65,11 @@ class UnresolvedOwnershipFlowTest {
                     catalogTableCount = 2,
                     unresolvedTableNames = listOf("$CATALOG.sales.t1", "$CATALOG.sales.t2"),
                     dryRun = false,
+                    unresolvedTableDetails =
+                        mapOf(
+                            "$CATALOG.sales.t1" to UnresolvedTableDetail("metadata could not be read", null),
+                            "$CATALOG.sales.t2" to UnresolvedTableDetail("metadata could not be read", null),
+                        ),
                 ),
             )
         }
@@ -169,9 +175,10 @@ class UnresolvedOwnershipFlowTest {
                     verifiedTableCount = 1,
                     unresolvedTableNames = listOf("$CATALOG.sales.t2"),
                     storageFolderCount = 4,
-                    unmatchedFolderCount = 3,
+                    unmatchedFolderPaths = listOf("$SALES/orphan_a", "$SALES/orphan_b", "$SALES/t2"),
                     maxCandidateFolders = 1,
                     dryRun = false,
+                    unresolvedTableDetails = mapOf("$CATALOG.sales.t2" to UnresolvedTableDetail("metadata could not be read", null)),
                 ),
             )
         }
@@ -205,7 +212,23 @@ class UnresolvedOwnershipFlowTest {
         assertEquals(2, record.candidateFolderCount)
         assertEquals(listOf("$SALES/orphan_a", "$SALES/orphan_b"), record.candidateFolders)
         assertEquals("Detected 2 candidate untracked table folder(s), which exceeds max_candidate_folders_per_database=1", record.errorMessage)
-        verify(exactly = 0) { flow.service.cleanupSummaryLogger.logTooManyFoldersReport(any()) }
+        verify(exactly = 1) {
+            flow.service.cleanupSummaryLogger.logTooManyFoldersReport(
+                TooManyFoldersSummary(
+                    catalog = CATALOG,
+                    database = "sales",
+                    discoveredDatabaseLocation = SALES,
+                    storageScanLocation = SALES,
+                    catalogTableCount = 1,
+                    verifiedTableCount = 1,
+                    unresolvedTableNames = emptyList(),
+                    storageFolderCount = 3,
+                    unmatchedFolderPaths = listOf("$SALES/orphan_a", "$SALES/orphan_b"),
+                    maxCandidateFolders = 1,
+                    dryRun = false,
+                ),
+            )
+        }
     }
 
     @Test
@@ -280,6 +303,10 @@ class UnresolvedOwnershipFlowTest {
         assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
         assertTrue(flow.objectExists("$SALES/t2/part-0.parquet"))
         assertTrue(flow.summaryLines().contains("- $SALES/t2"))
+        assertTrue(
+            flow.summaryLines().joinToString("\n")
+                .contains("- $CATALOG.sales.t2\n    reason: metadata could not be read\n    known folder: $SALES/t2"),
+        )
         verify(exactly = 1) { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "sales") }
     }
 
@@ -295,6 +322,21 @@ class UnresolvedOwnershipFlowTest {
         assertEquals("unresolved_catalog_ownership", record.statusReason)
         assertEquals(0, record.potentiallyUntrackedFolderCount)
         assertTrue(record.deletedFolders.isEmpty())
+    }
+
+    @Test
+    fun `an unresolved table leaves scan coverage partial even when its known folder is under the cleanup root`() {
+        folders("t1", "t2", "orphan")
+        val flow = flow(tables = listOf(verified("t1"), unresolved("t2", knownLocation = "$SALES/t2")))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("partial", record.diagnosticDetails["scan_plan_coverage"])
+        assertEquals("BLOCKED", record.status)
+        assertEquals("unresolved_catalog_ownership", record.statusReason)
+        assertTrue(record.deletedFolders.isEmpty())
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
     }
 
     @Test

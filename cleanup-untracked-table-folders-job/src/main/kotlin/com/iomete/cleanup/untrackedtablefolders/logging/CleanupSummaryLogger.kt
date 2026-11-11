@@ -30,6 +30,7 @@ data class CleanupSummary(
     val scanPlan: ScanPlanReport? = null,
     val inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>> = emptyMap(),
     val notFoundAtDeletionPaths: List<String> = emptyList(),
+    val unresolvedTableDetails: Map<String, UnresolvedTableDetail> = emptyMap(),
 )
 
 data class NoVerifiedLocationSummary(
@@ -39,6 +40,7 @@ data class NoVerifiedLocationSummary(
     val catalogTableCount: Int,
     val unresolvedTableNames: List<String>,
     val dryRun: Boolean,
+    val unresolvedTableDetails: Map<String, UnresolvedTableDetail> = emptyMap(),
 )
 
 data class TooManyFoldersSummary(
@@ -50,18 +52,26 @@ data class TooManyFoldersSummary(
     val verifiedTableCount: Int,
     val unresolvedTableNames: List<String>,
     val storageFolderCount: Int,
-    val unmatchedFolderCount: Int,
+    val unmatchedFolderPaths: List<String>,
     val maxCandidateFolders: Int,
     val dryRun: Boolean,
+    val unresolvedTableDetails: Map<String, UnresolvedTableDetail> = emptyMap(),
+)
+
+// knownLocation is evidence only. It is never a verified table location.
+data class UnresolvedTableDetail(
+    val reason: String,
+    val knownLocation: String?,
 )
 
 @ApplicationScoped
 class CleanupSummaryLogger {
 
+    // One statement per report, so log viewers that sort by timestamp cannot interleave its lines.
     private val logger = Logger.getLogger(CleanupSummaryLogger::class.java)
 
     fun logCleanupSummary(summary: CleanupSummary) {
-        buildReportLines(summary).forEach { logger.info(it) }
+        logger.info(buildReportLines(summary).joinToString("\n"))
     }
 
     fun logScanPlan(
@@ -69,15 +79,15 @@ class CleanupSummaryLogger {
         database: String,
         scanPlan: ScanPlanReport,
     ) {
-        buildScanPlanLines(catalog, database, scanPlan).forEach { logger.info(it) }
+        logger.info(buildScanPlanLines(catalog, database, scanPlan).joinToString("\n"))
     }
 
     fun logNoVerifiedLocationReport(summary: NoVerifiedLocationSummary) {
-        buildNoVerifiedLocationReportLines(summary).forEach { logger.info(it) }
+        logger.info(buildNoVerifiedLocationReportLines(summary).joinToString("\n"))
     }
 
     fun logTooManyFoldersReport(summary: TooManyFoldersSummary) {
-        buildTooManyFoldersReportLines(summary).forEach { logger.info(it) }
+        logger.info(buildTooManyFoldersReportLines(summary).joinToString("\n"))
     }
 
     internal fun buildScanPlanLines(
@@ -104,6 +114,7 @@ class CleanupSummaryLogger {
                 summary.catalogTableCount,
                 verifiedTableCount = 0,
                 summary.unresolvedTableNames,
+                summary.unresolvedTableDetails,
             )
 
             add("")
@@ -136,6 +147,7 @@ class CleanupSummaryLogger {
                 summary.catalogTableCount,
                 summary.verifiedTableCount,
                 summary.unresolvedTableNames,
+                summary.unresolvedTableDetails,
             )
 
             add("")
@@ -144,9 +156,16 @@ class CleanupSummaryLogger {
             add("  Database location                                ${summary.discoveredDatabaseLocation}")
             add("  Folders scanned under                            ${summary.storageScanLocation}")
             add("  Folders discovered                               ${summary.storageFolderCount}")
-            add("  Folders with no verified catalog owner           ${summary.unmatchedFolderCount}")
+            add("  Folders with no verified catalog owner           ${summary.unmatchedFolderPaths.size}")
             add("")
             add("  Folder contents were not inspected because the folder limit was exceeded.")
+
+            add("")
+            add("FOLDERS WITH NO VERIFIED CATALOG OWNER (NOT INSPECTED)")
+            add("")
+            add("  Their age and size were not checked, and none of them was deleted.")
+            add("")
+            addListOrNone(summary.unmatchedFolderPaths)
 
             add("")
             add("DELETION")
@@ -154,9 +173,13 @@ class CleanupSummaryLogger {
             add("  SKIPPED")
             add("")
             add("  Reason: too_many_candidate_folders")
-            add("  ${summary.unmatchedFolderCount} folder(s) exceed max_candidate_folders_per_database=${summary.maxCandidateFolders}.")
-            add("  ${summary.unresolvedTableNames.size} catalog table(s) also have unresolved storage ownership, so raising")
-            add("  the limit will not make these folders deletable.")
+            add("  ${summary.unmatchedFolderPaths.size} folder(s) exceed max_candidate_folders_per_database=${summary.maxCandidateFolders}.")
+            if (summary.unresolvedTableNames.isNotEmpty()) {
+                add("  ${summary.unresolvedTableNames.size} catalog table(s) also have unresolved storage ownership, so raising")
+                add("  the limit will not make these folders deletable.")
+            } else {
+                add("  Review the folders above. Protect folders to keep with exclude_paths, or raise the limit.")
+            }
             add("  No folder in this database was deleted.")
 
             add(SEPARATOR)
@@ -173,6 +196,8 @@ class CleanupSummaryLogger {
         val inspectedFolderPaths = summary.inspectionOutcomes.values.flatten().toSet()
         val otherSkippedFolderPaths =
             summary.storageFolderPaths - tableFolderPaths.toSet() - unmatchedFolderSet - inspectedFolderPaths
+        // Several tables can share one location, so path lists are shown once each.
+        val unscannedTableLocations = summary.unscannedTableLocations.distinct()
 
         addReportStart(
             summary.catalog,
@@ -181,6 +206,7 @@ class CleanupSummaryLogger {
             summary.catalogTableCount,
             summary.activeTableLocations.size,
             summary.unresolvedTableNames,
+            summary.unresolvedTableDetails,
         )
 
         add("")
@@ -195,7 +221,7 @@ class CleanupSummaryLogger {
             add("  ${inspectionOutcomeLabel(outcome).padEnd(STORAGE_LABEL_WIDTH)}${paths.size}")
         }
         add("  Folders with no verified catalog owner           ${summary.unmatchedFolderPaths.size}")
-        add("  Table locations outside the scanned root         ${summary.unscannedTableLocations.size}")
+        add("  Table locations outside the scanned root         ${unscannedTableLocations.size}")
         add(
             if (summary.unmatchedSizeStats != null) {
                 "  Size of folders with no verified owner           ${formatBytes(summary.unmatchedSizeStats.totalSizeBytes)} across ${summary.unmatchedSizeStats.objectCount} object(s)"
@@ -207,12 +233,12 @@ class CleanupSummaryLogger {
         add("")
         add("STORAGE FOLDERS PROTECTED BY A VERIFIED CATALOG TABLE")
         add("")
-        addListOrNone(summary.activeTableLocations.sorted())
+        addListOrNone(summary.activeTableLocations.distinct().sorted())
 
         add("")
         add("STORAGE FOLDERS EXCLUDED BY CONFIGURATION")
         add("")
-        addListOrNone(summary.excludedPaths.sorted())
+        addListOrNone(summary.excludedPaths.distinct().sorted())
 
         if (otherSkippedFolderPaths.isNotEmpty()) {
             add("")
@@ -239,13 +265,13 @@ class CleanupSummaryLogger {
             }
         }
 
-        if (summary.unscannedTableLocations.isNotEmpty()) {
+        if (unscannedTableLocations.isNotEmpty()) {
             add("")
             add("TABLE LOCATIONS OUTSIDE THE SCANNED ROOT")
             add("")
             add("  Storage around these table locations was not checked in this run.")
             add("")
-            addListOrNone(summary.unscannedTableLocations)
+            addListOrNone(unscannedTableLocations)
         }
 
         summary.scanPlan?.let { addScanPlan(it) }
@@ -324,6 +350,7 @@ class CleanupSummaryLogger {
         catalogTableCount: Int,
         verifiedTableCount: Int,
         unresolvedTableNames: List<String>,
+        unresolvedTableDetails: Map<String, UnresolvedTableDetail>,
     ) {
         repeat(BLANK_LINES_AROUND_REPORT) { add("") }
 
@@ -331,6 +358,14 @@ class CleanupSummaryLogger {
         add(" CLEANUP REPORT - $catalog.$database")
         add(if (dryRun) " Mode: dry run, nothing is deleted" else " Mode: deletion enabled")
         add(SEPARATOR)
+        add("")
+        add("OWNERSHIP CHECKS")
+        add("")
+        add("  Checked      tables of this database the job can see, their Iceberg write paths,")
+        add("               default folders of other databases the job can see, configured exclusions")
+        add("  Not checked  tables of other databases, tables of other catalogs, tables the job")
+        add("               cannot see, files a table uses outside its own folder")
+        add("  See \"What deletion mode can and cannot prove\" in the job README.")
         add("")
         add("CATALOG")
         add("")
@@ -343,9 +378,19 @@ class CleanupSummaryLogger {
             add("TABLES WHOSE STORAGE LOCATION COULD NOT BE RESOLVED")
             add("")
             add("  These tables exist in the catalog, but their Iceberg metadata or storage")
-            add("  location could not be read.")
+            add("  location could not be read. A known folder inside the scanned root is not listed as")
+            add("  unmatched. It is evidence only, not a verified location.")
             add("")
-            addListOrNone(unresolvedTableNames)
+            unresolvedTableNames.take(MAX_LOG_PATH_SAMPLE_SIZE).forEach { name ->
+                add("- $name")
+                unresolvedTableDetails[name]?.let { detail ->
+                    add("    reason: ${detail.reason.lineSequence().first().trim().take(MAX_REASON_LENGTH)}")
+                    detail.knownLocation?.let { add("    known folder: $it") }
+                }
+            }
+            if (unresolvedTableNames.size > MAX_LOG_PATH_SAMPLE_SIZE) {
+                add("- ... truncated ${unresolvedTableNames.size - MAX_LOG_PATH_SAMPLE_SIZE} additional table(s)")
+            }
         }
     }
 
@@ -361,14 +406,23 @@ class CleanupSummaryLogger {
         }
 
         add("  Folders are deleted only under the cleanup root. Other roots are listed for review only.")
-        add("  Coverage is ${if (scanPlan.complete) "complete" else "partial"} for the tables visible to this job.")
+        if (scanPlan.complete) {
+            add("  Coverage is complete: every table this job can see is under the cleanup root.")
+        } else {
+            add("  Coverage is partial: a table this job can see is outside the cleanup root or has an")
+            add("  unknown location, or a root could not be listed.")
+        }
+        add("  Coverage counts only tables this job can see. It is not an ownership check.")
         if (scanPlan.restNamespaceRootStatus != null && scanPlan.restNamespaceRootStatus != "derived") {
             add("  The REST namespace root was not derived: ${scanPlan.restNamespaceRootStatus}.")
         }
         add("")
         val (notScanned, listed) = scanPlan.roots.partition { it.outcome == ScanRootOutcome.NOT_SCANNED }
         (listed + notScanned.take(MAX_LOGGED_NOT_SCANNED_ROOTS)).forEach { root ->
-            add("- ${root.root.location}  ${root.role}  ${root.status}  visible tables: ${root.visibleTableCount}")
+            val status = if (root.outcome == ScanRootOutcome.SCANNED && root.listedFolderCount == 0) "scanned, no folders" else root.status
+            // Tables at any depth, so a broad rejected root such as a bucket root would show a misleading count.
+            val tableCount = if (root.root.rejection == null) "  visible tables at any depth: ${root.visibleTableCount}" else ""
+            add("- ${root.root.location}  ${root.role}  $status$tableCount")
         }
         if (notScanned.size > MAX_LOGGED_NOT_SCANNED_ROOTS) {
             add("- ... ${notScanned.size - MAX_LOGGED_NOT_SCANNED_ROOTS} more root(s) not scanned")
@@ -378,7 +432,7 @@ class CleanupSummaryLogger {
             add("")
             add("TABLE LOCATIONS OUTSIDE EVERY LISTED ROOT")
             add("")
-            addListOrNone(scanPlan.uncoveredTableLocations)
+            addListOrNone(scanPlan.uncoveredTableLocations.distinct())
         }
 
         add("")
@@ -458,6 +512,7 @@ class CleanupSummaryLogger {
         const val MAX_LOGGED_NOT_SCANNED_ROOTS = 25
         const val BLANK_LINES_AROUND_REPORT = 3
         const val STORAGE_LABEL_WIDTH = 49
+        const val MAX_REASON_LENGTH = 300
         const val SEPARATOR = "================================================================"
     }
 }

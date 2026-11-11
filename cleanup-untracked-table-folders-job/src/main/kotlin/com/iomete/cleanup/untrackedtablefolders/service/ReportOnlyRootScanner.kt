@@ -26,8 +26,10 @@ class ReportOnlyRootScanner {
         database: String,
         roots: List<PlannedScanRoot>,
         activeTableLocations: List<String>,
+        cleanupRootFolderCount: Int? = null,
     ): ScanPlanReport {
         val acceptedRootLocations = roots.filter { it.cleanupRoot || it.reportOnly }.map { it.location }
+        val cleanupRoot = roots.firstOrNull { it.cleanupRoot }?.location
 
         val results =
             roots.map { root ->
@@ -39,7 +41,7 @@ class ReportOnlyRootScanner {
                         activeTableLocations.count { StoragePathUtils.isSameOrChildLocation(it, root.location) }
                     }
                 when {
-                    root.cleanupRoot -> ScanRootResult(root, ScanRootOutcome.SCANNED, visibleTableCount)
+                    root.cleanupRoot -> ScanRootResult(root, ScanRootOutcome.SCANNED, visibleTableCount, listedFolderCount = cleanupRootFolderCount)
                     !root.reportOnly -> ScanRootResult(root, ScanRootOutcome.NOT_SCANNED, visibleTableCount)
                     else -> scanReportOnlyRoot(catalog, database, root, visibleTableCount, acceptedRootLocations, activeTableLocations)
                 }
@@ -59,6 +61,10 @@ class ReportOnlyRootScanner {
                 ),
             uncoveredTableLocations =
                 activeTableLocations.filterNot { StoragePathUtils.isInsideAnyRoot(it, coveringRoots) }.sorted(),
+            visibleTablesOutsideCleanupRoot =
+                cleanupRoot?.let { root ->
+                    activeTableLocations.count { !runCatching { StoragePathUtils.isSameOrChildLocation(it, root) }.getOrDefault(false) }
+                },
         )
     }
 
@@ -96,6 +102,7 @@ class ReportOnlyRootScanner {
             outcome = ScanRootOutcome.SCANNED,
             visibleTableCount = visibleTableCount,
             unmatchedFolderPaths = unmatchedFolders.map { it.path }.sorted(),
+            listedFolderCount = folders.size,
         )
     }
 }

@@ -3,7 +3,9 @@ package com.iomete.cleanup.untrackedtablefolders.audit
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
+import io.mockk.Runs
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
@@ -12,6 +14,8 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 import java.time.Instant
+
+private val OWNERSHIP_CHECK_KEYS = setOf("ownership_checks", "ownership_not_checked")
 
 class CleanupAuditRecorderTest {
 
@@ -264,7 +268,7 @@ class CleanupAuditRecorderTest {
             error = IllegalStateException("catalog lookup failed"),
         )
 
-        assertEquals(emptyMap<String, String>(), capturedRecord().diagnosticDetails)
+        assertEquals(emptyMap<String, String>(), capturedRecord().diagnosticDetails - OWNERSHIP_CHECK_KEYS)
     }
 
     @Test
@@ -279,7 +283,7 @@ class CleanupAuditRecorderTest {
             error = IllegalStateException("storage listing failed"),
         )
 
-        assertEquals(mapOf("unscanned_table_location_count" to "0"), capturedRecord().diagnosticDetails)
+        assertEquals(mapOf("unscanned_table_location_count" to "0"), capturedRecord().diagnosticDetails - OWNERSHIP_CHECK_KEYS)
     }
 
     @Test
@@ -363,5 +367,64 @@ class CleanupAuditRecorderTest {
 
         assertNull(record.statusReason)
         assertNull(record.diagnosticDetails["unscanned_table_location_count"])
+    }
+
+    @Test
+    fun `every row type states which ownership checks ran and which did not`() {
+        val records = mutableListOf<CleanupAuditRecord>()
+        every { cleanupAuditTableService.writeAuditRecord(capture(records)) } just Runs
+        val db = "s3a://example-bucket/db"
+        val tables = listOf("$db/orders")
+        val folders = listOf("$db/orders", "$db/a")
+        val candidates = listOf("$db/a")
+
+        recorder.recordSuccess(
+            "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, tables, folders, candidates, null, emptyList(), null,
+            Instant.EPOCH, emptyList(),
+        )
+        DeletionBlockReason.entries.forEach { reason ->
+            recorder.recordDeletionBlocked(
+                reason, "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, tables, folders, candidates, null,
+                Instant.EPOCH, emptyList(), emptyList(), null,
+            )
+        }
+        recorder.recordOwnershipUnverified(
+            "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 2, listOf("example_catalog.analytics.t2"), tables, folders,
+            candidates, Instant.EPOCH, emptyList(),
+        )
+        recorder.recordTooManyCandidateFolders(
+            "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, emptyList(), tables, folders, candidates, Instant.EPOCH,
+            emptyList(), "too many",
+        )
+        recorder.recordDeletionFailed(
+            "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, tables, folders, candidates, null, emptyList(), null,
+            "$db/a", Instant.EPOCH, emptyList(), emptyList(), error = IllegalStateException("delete failed"),
+        )
+        recorder.recordFailed("run", "analytics", Instant.EPOCH, unresolvedTables = emptyList(), error = IllegalStateException("boom"))
+        recorder.recordDatabaseNotFound("run", "analytics", Instant.EPOCH, IllegalStateException("missing"))
+        recorder.recordNoActiveTables("run", Instant.EPOCH, "example_catalog", "analytics", db, emptyList())
+        recorder.recordDatabaseLocationMissing("run", Instant.EPOCH, "example_catalog", "analytics", null, 1, emptyList(), tables, "missing", emptyList())
+        recorder.recordUnsafeScanRoot("run", Instant.EPOCH, "example_catalog", "analytics", db, 1, emptyList(), tables, "unsafe", "unsafe", emptyList())
+
+        assertEquals(
+            listOf(
+                "SUCCESS", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "SKIPPED", "FAILED", "FAILED", "SKIPPED", "SKIPPED", "SKIPPED",
+                "SKIPPED",
+            ),
+            records.map { it.status },
+        )
+        records.forEach { record ->
+            assertEquals(
+                "visible_tables_of_this_database,write_paths_of_visible_tables_of_this_database," +
+                    "default_folders_of_visible_other_databases,configured_exclusions",
+                record.diagnosticDetails["ownership_checks"],
+                record.statusReason,
+            )
+            assertEquals(
+                "other_database_tables,other_catalogs,hidden_tables,files_outside_table_folders",
+                record.diagnosticDetails["ownership_not_checked"],
+                record.statusReason,
+            )
+        }
     }
 }
