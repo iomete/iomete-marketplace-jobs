@@ -1,5 +1,6 @@
 package com.iomete.cleanup.untrackedtablefolders.audit
 
+import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
 import jakarta.enterprise.context.ApplicationScoped
@@ -132,6 +133,28 @@ class CleanupAuditDiagnosticDetailsBuilder {
 
         return details
     }
+
+    fun inspectionOutcomeDetails(inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>>): Map<String, String> =
+        CandidateInspectionOutcome.entries
+            .flatMap { outcome -> countedPathSample(outcome.code, inspectionOutcomes[outcome].orEmpty()) }
+            .toMap()
+
+    fun notFoundAtDeletionDetails(notFoundAtDeletionPaths: List<String>): Map<String, String> =
+        countedPathSample("folder_not_found_at_deletion", notFoundAtDeletionPaths).toMap()
+
+    private fun countedPathSample(
+        key: String,
+        paths: List<String>,
+    ): List<Pair<String, String>> =
+        if (paths.isEmpty()) {
+            emptyList()
+        } else {
+            listOf(
+                "${key}_count" to paths.size.toString(),
+                "${key}_paths_sample" to auditPathSample(paths),
+                "${key}_paths_truncated" to isAuditPathSampleTruncated(paths).toString(),
+            )
+        }
 
     private fun auditPathSample(paths: List<String>): String =
         paths.take(MAX_AUDIT_PATH_SAMPLE_SIZE).joinToString("\n")

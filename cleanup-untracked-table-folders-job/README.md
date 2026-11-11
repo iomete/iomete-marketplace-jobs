@@ -280,7 +280,16 @@ A folder's age is the modification time of the newest object anywhere under it. 
 
 This gives a safety buffer so folders with recently written objects are not selected immediately.
 
-Object storage does not keep a reliable modification time for folders themselves, so the job never uses folder timestamps. A folder whose age cannot be established is skipped: one that is empty or holds only directory markers, one that cannot be listed completely, or one whose objects report an invalid modification time.
+Object storage does not keep a reliable modification time for folders themselves, so the job never uses folder timestamps. A folder is skipped and never deleted when it is missing at inspection, cannot be read, is empty, or its age cannot be established. The job records why:
+
+| Reason | Meaning |
+|---|---|
+| `folder_not_found` | The folder was listed under the cleanup root, but listing its contents and a second lookup both found nothing. It no longer exists, so there is nothing to delete. |
+| `statistics_unavailable` | The folder's contents could not be listed, for example because access was denied or the request failed. |
+| `empty_folder` | The folder exists but holds no objects, only directory markers or nothing. Empty folders, including their directory markers, are not deleted. |
+| `unknown_age` | The folder holds objects, but at least one reports an invalid modification time. |
+
+The job only examines immediate child folders of the cleanup root, so a folder nested inside a candidate is never classified on its own.
 
 ---
 
@@ -448,12 +457,26 @@ For example, if the job cannot list storage folders or cannot discover catalog m
 
 The same rule covers storage configuration. A catalog whose storage configuration cannot be
 resolved fails the database instead of falling back to the platform's storage. A candidate folder
-that cannot be listed completely has an unknown age, so it is skipped and never deleted. If every
-candidate folder fails to list, the database fails rather than producing a run that looks
-successful.
+that cannot be listed completely is skipped as `statistics_unavailable` and never deleted. If every
+candidate folder that still exists fails to list, the database fails rather than producing a run
+that looks successful.
 
-If a recursive delete reports that an existing folder was not deleted, the folder's state is
-unknown. The job stops deleting for that database and records `FAILED`.
+A folder is treated as absent (`folder_not_found`) only when Hadoop reports it as not found and a
+second lookup confirms it. Any other error, including access denied, stays a listing failure. If
+the second lookup finds the folder, it also stays a failure. Absent folders do not count toward
+the "every candidate folder failed" check, so a database whose candidate folders were all deleted
+since they were listed does not fail; with no other block, it records `SUCCESS` with no candidates.
+
+If a recursive delete on S3-compatible storage (S3A) reports that an existing folder was not
+deleted, the job checks the folder again. In hadoop-aws 3.4.1, the S3A version this job was
+checked against, a folder that is not found produces this result. If the second check confirms the
+folder is gone, it is recorded as `folder_not_found_at_deletion` and deletion continues. If it still
+exists, or the second check fails, the folder's state is unknown. On Google Cloud Storage and Azure
+the job does not rely on this behavior: a refused delete always leaves the folder's state unknown.
+In both unknown cases the job stops deleting for that database and records `FAILED`. A folder
+already gone when deletion starts is also recorded as `folder_not_found_at_deletion`. These folders
+stay counted as candidates, not as deleted. A delete that throws an error is never treated as a
+missing folder.
 
 Outcome meanings:
 
@@ -744,8 +767,27 @@ scan_plan_uncovered_table_locations_sample
 report_only_folder_count
 report_only_folders_sample
 rest_namespace_root
+folder_not_found_count
+folder_not_found_paths_sample
+statistics_unavailable_count
+statistics_unavailable_paths_sample
+empty_folder_count
+empty_folder_paths_sample
+unknown_age_count
+unknown_age_paths_sample
+folder_not_found_at_deletion_count
+folder_not_found_at_deletion_paths_sample
 *_truncated
 ```
+
+The `folder_not_found`, `statistics_unavailable`, `empty_folder` and `unknown_age` keys appear only
+when at least one candidate folder was skipped for that reason. They are written on `SUCCESS`,
+`BLOCKED` and `deletion_failed` rows. Folders skipped for these reasons are never listed as
+candidates or as potentially untracked folders.
+
+The `folder_not_found_at_deletion` keys are separate. They name candidate folders that passed
+inspection but were gone when deletion reached them. They appear on `SUCCESS` and
+`deletion_failed` rows.
 
 Storage root keys follow `scan_plan_status`:
 
@@ -1041,6 +1083,10 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T24 | A database rejected with `scan_root_outside_database_boundary` | Still `SKIPPED` with the same reason; report-only roots appear in `diagnostic_details`; nothing is deleted |
 | T25 | Another database is stored inside the cleanup root | That database's folder is never a candidate; unrelated orphans are still deleted |
 | T26 | An Iceberg table sets `write.data.path` to a folder under the cleanup root | That folder is never a candidate |
+| T27 | A candidate folder is deleted between listing and inspection | Skipped as `folder_not_found`; if every candidate was deleted, the database does not fail; with no other block, it records `SUCCESS` with no candidates |
+| T28 | A candidate folder holds only directory markers | Skipped as `empty_folder` on every run; never deleted |
+| T29 | Listing a candidate folder is denied | Skipped as `statistics_unavailable`; if every existing candidate is denied, `FAILED` |
+| T30 | A candidate folder is deleted by someone else after inspection, before the job deletes it (S3A) | Recorded as `folder_not_found_at_deletion`; still a candidate, not deleted; other folders are still deleted |
 
 ---
 

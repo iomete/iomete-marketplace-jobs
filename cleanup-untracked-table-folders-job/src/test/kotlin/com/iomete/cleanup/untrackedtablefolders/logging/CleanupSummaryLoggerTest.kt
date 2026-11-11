@@ -1,5 +1,6 @@
 package com.iomete.cleanup.untrackedtablefolders.logging
 
+import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.PlannedScanRoot
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
@@ -253,5 +254,80 @@ class CleanupSummaryLoggerTest {
         assertTrue(lines.contains("- s3a://bucket/rest/db  report_only  scanned  visible tables: 0"))
         assertTrue(lines.contains("  These folders are not deleted. A table this job cannot see may still own them."))
         assertTrue(lines.contains("- s3a://bucket/rest/db/x"))
+    }
+
+    @Test
+    fun `folders skipped after inspection are counted and listed by outcome, not as other reasons`() {
+        val report =
+            logger.buildReportLines(
+                summary().copy(
+                    storageFolderPaths =
+                        listOf(
+                            "s3a://bucket/db/table_a", "s3a://bucket/db/old_1", "s3a://bucket/db/gone",
+                            "s3a://bucket/db/empty", "s3a://bucket/db/unreadable", "s3a://bucket/db/too_new",
+                        ),
+                    inspectionOutcomes =
+                        mapOf(
+                            CandidateInspectionOutcome.EMPTY_FOLDER to listOf("s3a://bucket/db/empty"),
+                            CandidateInspectionOutcome.FOLDER_NOT_FOUND to listOf("s3a://bucket/db/gone"),
+                            CandidateInspectionOutcome.STATISTICS_UNAVAILABLE to listOf("s3a://bucket/db/unreadable"),
+                        ),
+                ),
+            ).joinToString("\n")
+
+        assertTrue(report.contains("Folders discovered                               6"))
+        assertTrue(report.contains("Folders protected or skipped for other reasons   1"))
+        assertTrue(report.contains("Folders no longer present when inspected         1"))
+        assertTrue(report.contains("Folders whose contents could not be listed       1"))
+        assertTrue(report.contains("Empty folders                                    1"))
+        assertFalse(report.contains("Folders of unknown age"))
+        assertTrue(report.contains("STORAGE FOLDERS SKIPPED AFTER INSPECTION"))
+        assertTrue(report.contains("  folder_not_found: listed under the cleanup root, but not found when inspected.\n\n- s3a://bucket/db/gone"))
+        assertTrue(report.contains("  empty_folder: no objects. Empty folders, including their directory markers, are not deleted.\n\n- s3a://bucket/db/empty"))
+        assertTrue(
+            report.indexOf("folder_not_found:") < report.indexOf("statistics_unavailable:") &&
+                report.indexOf("statistics_unavailable:") < report.indexOf("empty_folder:"),
+        )
+        val otherReasons = report.substringAfter("STORAGE FOLDERS PROTECTED OR SKIPPED FOR OTHER REASONS").substringBefore("STORAGE FOLDERS SKIPPED AFTER INSPECTION")
+        assertTrue(otherReasons.contains("- s3a://bucket/db/too_new"))
+        assertFalse(otherReasons.contains("s3a://bucket/db/gone"))
+    }
+
+    @Test
+    fun `report omits the inspection section when every candidate was readable`() {
+        val report = logger.buildReportLines(summary()).joinToString("\n")
+
+        assertFalse(report.contains("STORAGE FOLDERS SKIPPED AFTER INSPECTION"))
+        assertFalse(report.contains("Empty folders"))
+    }
+
+    @Test
+    fun `a folder gone at deletion is reported separately and is not counted as deleted`() {
+        val report =
+            logger.buildReportLines(
+                summary(
+                    unmatchedFolderPaths = listOf("s3a://bucket/db/gone", "s3a://bucket/db/old_1"),
+                    deletedFolderPaths = listOf("s3a://bucket/db/old_1"),
+                ).copy(
+                    storageFolderPaths = listOf("s3a://bucket/db/table_a", "s3a://bucket/db/old_1", "s3a://bucket/db/gone"),
+                    notFoundAtDeletionPaths = listOf("s3a://bucket/db/gone"),
+                ),
+            ).joinToString("\n")
+
+        assertTrue(report.contains("Folders with no verified catalog owner           2"))
+        assertTrue(report.contains("Folders deleted                                  1"))
+        assertTrue(report.contains("Folders not found at deletion                    1"))
+        val deletion = report.substringAfter("\nDELETION\n")
+        assertTrue(deletion.contains("- s3a://bucket/db/old_1\n\n  folder_not_found_at_deletion:"))
+        assertTrue(deletion.substringAfter("folder_not_found_at_deletion:").contains("- s3a://bucket/db/gone"))
+        assertFalse(report.contains("STORAGE FOLDERS SKIPPED AFTER INSPECTION"))
+    }
+
+    @Test
+    fun `report omits deletion-time not-found lines when every folder was deleted`() {
+        val report = logger.buildReportLines(summary(deletedFolderPaths = listOf("s3a://bucket/db/old_1"))).joinToString("\n")
+
+        assertFalse(report.contains("not found at deletion"))
+        assertFalse(report.contains("folder_not_found_at_deletion"))
     }
 }
