@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.audit
 
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
+import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
@@ -112,6 +113,7 @@ class CleanupAuditRecorder {
         excludedPaths: List<String>,
         unscannedTableLocations: List<String> = emptyList(),
         scanPlan: ScanPlanReport? = null,
+        inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>> = emptyMap(),
     ) {
         writeAuditRecord(
             runId = runId,
@@ -136,7 +138,8 @@ class CleanupAuditRecorder {
                     unresolvedTables = unresolvedTables,
                     potentiallyUntrackedFolderPaths = potentiallyUntrackedFolderPaths,
                     unscannedTableLocations = unscannedTableLocations,
-                ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan),
+                ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan) +
+                    auditDiagnosticDetailsBuilder.inspectionOutcomeDetails(inspectionOutcomes),
         )
     }
 
@@ -201,6 +204,8 @@ class CleanupAuditRecorder {
         excludedPaths: List<String>,
         unscannedTableLocations: List<String> = emptyList(),
         scanPlan: ScanPlanReport? = null,
+        inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>> = emptyMap(),
+        notFoundAtDeletionPaths: List<String> = emptyList(),
     ) {
         val candidateFolderPathSet = candidateFolderPaths.toSet()
 
@@ -234,7 +239,9 @@ class CleanupAuditRecorder {
                     nonCandidateStorageFolderPaths =
                         storageFolderPaths.filter { it !in candidateFolderPathSet }.sorted(),
                     unscannedTableLocations = unscannedTableLocations,
-                ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan),
+                ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan) +
+                    auditDiagnosticDetailsBuilder.inspectionOutcomeDetails(inspectionOutcomes) +
+                    auditDiagnosticDetailsBuilder.notFoundAtDeletionDetails(notFoundAtDeletionPaths),
         )
     }
 
@@ -257,6 +264,8 @@ class CleanupAuditRecorder {
         excludedPaths: List<String>,
         unscannedTableLocations: List<String>,
         scanPlan: ScanPlanReport? = null,
+        inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>> = emptyMap(),
+        notFoundAtDeletionPaths: List<String> = emptyList(),
         error: Throwable,
     ) {
         writeAuditRecord(
@@ -289,7 +298,9 @@ class CleanupAuditRecorder {
                     unscannedTableLocations = unscannedTableLocations,
                     reportCompleteScanCoverage = true,
                     deletionFailedFolderPath = failedFolderPath,
-                ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan),
+                ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan) +
+                    auditDiagnosticDetailsBuilder.inspectionOutcomeDetails(inspectionOutcomes) +
+                    auditDiagnosticDetailsBuilder.notFoundAtDeletionDetails(notFoundAtDeletionPaths),
         )
     }
 
@@ -310,6 +321,7 @@ class CleanupAuditRecorder {
         excludedPaths: List<String>,
         unscannedTableLocations: List<String>,
         scanPlan: ScanPlanReport?,
+        inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>> = emptyMap(),
     ) {
         writeAuditRecord(
             runId = runId,
@@ -335,7 +347,8 @@ class CleanupAuditRecorder {
                     storageFolderPaths = storageFolderPaths,
                     candidateFolderPaths = candidateFolderPaths,
                     unscannedTableLocations = unscannedTableLocations,
-                ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan),
+                ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan) +
+                    auditDiagnosticDetailsBuilder.inspectionOutcomeDetails(inspectionOutcomes),
         )
     }
 

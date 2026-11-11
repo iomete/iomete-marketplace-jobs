@@ -15,6 +15,7 @@ class PartialDeletionException(
     val deletedPaths: List<String>,
     val failedPath: String?,
     cause: Throwable,
+    val notFoundPaths: List<String> = emptyList(),
 ) : IllegalStateException(
     "Folder deletion stopped after ${deletedPaths.size} confirmed deletion(s)" +
         (failedPath?.let { "; the state of $it is unknown" } ?: "") +
@@ -72,6 +73,7 @@ class ObjectStorageDeletionService {
                 deletedPaths = results.filter { result -> result.deleted }.map { result -> result.path },
                 failedPath = it.path,
                 cause = it.cause,
+                notFoundPaths = results.filterNot { result -> result.deleted }.map { result -> result.path },
             )
         }
 
@@ -115,10 +117,51 @@ class ObjectStorageDeletionService {
             }
 
             false ->
-                FolderDeletionFailure(
-                    path = location,
-                    cause = IllegalStateException("Recursive delete returned false for an existing folder; its state is unknown: location=$location"),
-                )
+                if (isS3AFileSystem(fileSystem)) {
+                    recheckAfterRefusedDelete(catalog, fileSystem, location, results)
+                } else {
+                    unknownStateFailure(location)
+                }
         }
+    }
+
+    // In hadoop-aws 3.4.1, S3A's recursive delete returns false when the folder is not found, so a false is
+    // rechecked. Other filesystems may return false after a partial delete, so for them false leaves the
+    // folder's state unknown.
+    private fun isS3AFileSystem(fileSystem: FileSystem): Boolean =
+        try {
+            fileSystem.scheme == "s3a"
+        } catch (error: UnsupportedOperationException) {
+            false
+        }
+
+    private fun unknownStateFailure(location: String): FolderDeletionFailure =
+        FolderDeletionFailure(
+            path = location,
+            cause = IllegalStateException("Recursive delete returned false for an existing folder; its state is unknown: location=$location"),
+        )
+
+    private fun recheckAfterRefusedDelete(
+        catalog: String,
+        fileSystem: FileSystem,
+        location: String,
+        results: MutableList<DeletedStorageFolder>,
+    ): FolderDeletionFailure? {
+        val stillExists =
+            try {
+                catalogFileSystemProvider.runOperation(catalog, "recheck storage folder after delete", location) {
+                    fileSystem.exists(Path(location))
+                }
+            } catch (th: CatalogStorageOperationException) {
+                return FolderDeletionFailure(path = location, cause = th)
+            }
+
+        if (stillExists) {
+            return unknownStateFailure(location)
+        }
+
+        logger.warn("Storage folder disappeared before it could be deleted: location=$location")
+        results += DeletedStorageFolder(path = location, deleted = false)
+        return null
     }
 }

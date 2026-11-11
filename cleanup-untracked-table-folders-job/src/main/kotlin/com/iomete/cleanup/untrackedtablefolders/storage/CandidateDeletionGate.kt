@@ -7,6 +7,11 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import org.jboss.logging.Logger
 
+data class CandidateDeletionResult(
+    val deletedPaths: List<String> = emptyList(),
+    val notFoundPaths: List<String> = emptyList(),
+)
+
 @ApplicationScoped
 class CandidateDeletionGate {
 
@@ -21,9 +26,9 @@ class CandidateDeletionGate {
         database: String,
         reconciliation: StorageFolderReconciliation.DeletionEligible,
         excludedPaths: List<String>,
-    ): List<String> {
+    ): CandidateDeletionResult {
         if (config.dryRun) {
-            return emptyList()
+            return CandidateDeletionResult()
         }
 
         check(config.deleteEnabled) {
@@ -31,7 +36,7 @@ class CandidateDeletionGate {
         }
 
         if (reconciliation.folders.isEmpty()) {
-            return emptyList()
+            return CandidateDeletionResult()
         }
 
         val currentActiveTableLocations = currentActiveTableLocations(catalog, database)
@@ -43,11 +48,15 @@ class CandidateDeletionGate {
                     overlapsExcludedPath(candidateFolder, normalizedExcludedPaths)
             }
 
-        return objectStorageDeletionService
-            .deleteFoldersRecursively(catalog, deletableFolders.map { it.path }.sorted())
-            .filter { it.deleted }
-            .map { it.path }
-            .sorted()
+        val (deleted, notFound) =
+            objectStorageDeletionService
+                .deleteFoldersRecursively(catalog, deletableFolders.map { it.path }.sorted())
+                .partition { it.deleted }
+
+        return CandidateDeletionResult(
+            deletedPaths = deleted.map { it.path }.sorted(),
+            notFoundPaths = notFound.map { it.path }.sorted(),
+        )
     }
 
     private fun currentActiveTableLocations(catalog: String, database: String): List<String> {

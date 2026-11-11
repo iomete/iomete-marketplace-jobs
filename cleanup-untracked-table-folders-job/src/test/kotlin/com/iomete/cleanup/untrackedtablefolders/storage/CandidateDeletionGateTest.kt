@@ -31,7 +31,7 @@ class CandidateDeletionGateTest {
             excludedPaths = emptyList(),
         )
 
-        assertEquals(emptyList<String>(), result)
+        assertEquals(CandidateDeletionResult(), result)
         verify(exactly = 0) { catalogDiscoveryService.discoverDatabase(any(), any()) }
         verify(exactly = 0) { objectStorageDeletionService.deleteFoldersRecursively(any(), any()) }
     }
@@ -72,7 +72,7 @@ class CandidateDeletionGateTest {
             excludedPaths = emptyList(),
         )
 
-        assertEquals(emptyList<String>(), result)
+        assertEquals(CandidateDeletionResult(), result)
         verify(exactly = 0) { catalogDiscoveryService.discoverDatabase(any(), any()) }
         verify(exactly = 0) { objectStorageDeletionService.deleteFoldersRecursively(any(), any()) }
     }
@@ -98,7 +98,7 @@ class CandidateDeletionGateTest {
 
         assertEquals(
             listOf("s3a://bucket/db/orphan_a", "s3a://bucket/db/orphan_b"),
-            result,
+            result.deletedPaths,
         )
         verify(exactly = 1) {
             objectStorageDeletionService.deleteFoldersRecursively(
@@ -132,7 +132,7 @@ class CandidateDeletionGateTest {
             excludedPaths = emptyList(),
         )
 
-        assertEquals(listOf("s3a://bucket/db/still_orphan"), result)
+        assertEquals(listOf("s3a://bucket/db/still_orphan"), result.deletedPaths)
         verify(exactly = 1) {
             objectStorageDeletionService.deleteFoldersRecursively("spark_catalog", listOf("s3a://bucket/db/still_orphan"))
         }
@@ -159,14 +159,14 @@ class CandidateDeletionGateTest {
             excludedPaths = emptyList(),
         )
 
-        assertEquals(listOf("s3a://bucket/db/abandoned"), result)
+        assertEquals(listOf("s3a://bucket/db/abandoned"), result.deletedPaths)
         verify(exactly = 1) {
             objectStorageDeletionService.deleteFoldersRecursively("spark_catalog", listOf("s3a://bucket/db/abandoned"))
         }
     }
 
     @Test
-    fun `excludes folder from returned list when deletion service reports not deleted`() {
+    fun `reports a folder the deletion service did not find separately from deleted folders`() {
         every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
             discoveredDatabase(activeTableLocations = emptyList())
         every { objectStorageDeletionService.deleteFoldersRecursively("spark_catalog", any()) } returns
@@ -186,7 +186,10 @@ class CandidateDeletionGateTest {
             excludedPaths = emptyList(),
         )
 
-        assertEquals(listOf("s3a://bucket/db/present"), result)
+        assertEquals(
+            CandidateDeletionResult(deletedPaths = listOf("s3a://bucket/db/present"), notFoundPaths = listOf("s3a://bucket/db/missing")),
+            result,
+        )
     }
 
     @Test
@@ -236,7 +239,7 @@ class CandidateDeletionGateTest {
             excludedPaths = emptyList(),
         )
 
-        assertEquals(listOf("s3a://bucket/db/orphan"), result)
+        assertEquals(listOf("s3a://bucket/db/orphan"), result.deletedPaths)
         verify(exactly = 1) {
             objectStorageDeletionService.deleteFoldersRecursively("spark_catalog", listOf("s3a://bucket/db/orphan"))
         }
@@ -269,7 +272,7 @@ class CandidateDeletionGateTest {
                 excludedPaths = emptyList(),
             )
 
-        assertEquals(listOf("s3a://bucket/db/orphan"), result)
+        assertEquals(listOf("s3a://bucket/db/orphan"), result.deletedPaths)
     }
 
     @Test
@@ -302,7 +305,7 @@ class CandidateDeletionGateTest {
                 ),
         )
 
-        assertEquals(listOf("s3a://bucket/db/orphan"), result)
+        assertEquals(listOf("s3a://bucket/db/orphan"), result.deletedPaths)
         verify(exactly = 1) {
             objectStorageDeletionService.deleteFoldersRecursively("spark_catalog", listOf("s3a://bucket/db/orphan"))
         }

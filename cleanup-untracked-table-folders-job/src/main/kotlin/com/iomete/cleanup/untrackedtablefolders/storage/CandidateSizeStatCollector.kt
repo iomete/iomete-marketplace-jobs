@@ -16,9 +16,9 @@ class CandidateSizeStatCollector {
     fun collectPerFolder(
         catalog: String,
         candidateFolderPaths: List<String>,
-    ): Map<String, StorageSizeStats> {
+    ): CandidateFolderStatistics {
         if (candidateFolderPaths.isEmpty()) {
-            return emptyMap()
+            return CandidateFolderStatistics.EMPTY
         }
 
         logger.info(
@@ -28,15 +28,21 @@ class CandidateSizeStatCollector {
         val batch = objectStorageDiscoveryService.collectSizeStatsPerFolder(catalog, candidateFolderPaths)
 
         batch.failures.forEach { (candidateFolderPath, th) ->
-            logger.warn(
-                "Failed to collect size statistics for candidate folder; recording unknown size and continuing without aborting cleanup: path=$candidateFolderPath",
-                th,
+            logger.warn("Failed to collect size statistics for candidate folder: path=$candidateFolderPath", th)
+        }
+
+        if (batch.absentFolderPaths.isNotEmpty()) {
+            logger.info(
+                "${batch.absentFolderPaths.size} of ${candidateFolderPaths.size} candidate folder(s) no longer exist and are not cleanup candidates."
             )
         }
 
-        if (batch.failures.size == candidateFolderPaths.size) {
+        // Confirmed absence is not an access failure, so only folders that still exist count toward the all-failed check.
+        val existingFolderCount = candidateFolderPaths.size - batch.absentFolderPaths.size
+
+        if (batch.failures.isNotEmpty() && batch.failures.size == existingFolderCount) {
             throw IllegalStateException(
-                "Failed to collect size statistics for all ${candidateFolderPaths.size} candidate folder(s) of catalog=$catalog. " +
+                "Failed to collect size statistics for all $existingFolderCount candidate folder(s) that still exist for catalog=$catalog. " +
                     "Treating this as a storage access failure rather than unknown sizes.",
                 batch.failures.values.first(),
             )
@@ -44,11 +50,12 @@ class CandidateSizeStatCollector {
 
         if (batch.failures.isNotEmpty()) {
             logger.warn(
-                "Size statistics collection failed for ${batch.failures.size} of ${candidateFolderPaths.size} candidate folder(s). Candidate and deleted size audit fields exclude the failed folders."
+                "Size statistics collection failed for ${batch.failures.size} of $existingFolderCount existing candidate folder(s). " +
+                    "Continuing: these folders are skipped as statistics_unavailable and excluded from the candidate and deleted size audit fields."
             )
         }
 
-        return batch.statsByFolder
+        return CandidateFolderStatistics(batch.statsByFolder, batch.absentFolderPaths)
     }
 
     fun sum(stats: Iterable<StorageSizeStats>): StorageSizeStats =

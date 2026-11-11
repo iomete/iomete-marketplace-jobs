@@ -48,7 +48,22 @@ class InMemoryS3FileSystem : FileSystem() {
         @Volatile
         var failListFor: String? = null
 
+        /** path -> error thrown by listStatus, whether or not the path exists */
+        val listFailures = ConcurrentHashMap<String, IOException>()
+
+        /** path -> error thrown by getFileStatus, whether or not the path exists */
+        val statusFailures = ConcurrentHashMap<String, IOException>()
+
+        /** Runs at the start of delete with the target path, to simulate a change between exists() and delete(). */
+        @Volatile
+        var beforeDelete: ((String) -> Unit)? = null
+
+        /** Scheme the filesystem reports, to stand in for a non-S3A implementation. */
+        @Volatile
+        var reportedScheme: String = "s3a"
+
         val listStatusCalls = ConcurrentHashMap<String, Int>()
+        val getFileStatusCalls = ConcurrentHashMap<String, Int>()
 
         @Volatile
         var failCloseFor: String? = null
@@ -60,7 +75,12 @@ class InMemoryS3FileSystem : FileSystem() {
             failDeleteFor = null
             refuseDeleteFor = null
             failListFor = null
+            listFailures.clear()
+            statusFailures.clear()
+            beforeDelete = null
+            reportedScheme = "s3a"
             listStatusCalls.clear()
+            getFileStatusCalls.clear()
             failCloseFor = null
         }
 
@@ -119,7 +139,7 @@ class InMemoryS3FileSystem : FileSystem() {
         }
     }
 
-    override fun getScheme(): String = "s3a"
+    override fun getScheme(): String = reportedScheme
 
     override fun getUri(): URI = fsUri
 
@@ -135,6 +155,8 @@ class InMemoryS3FileSystem : FileSystem() {
 
     override fun getFileStatus(path: Path): FileStatus {
         val target = key(path)
+        getFileStatusCalls.merge(target, 1, Int::plus)
+        statusFailures[target]?.let { throw it }
         val entry = entries()[target] ?: throw FileNotFoundException("No such path: $target")
         return toStatus(target, entry)
     }
@@ -145,6 +167,7 @@ class InMemoryS3FileSystem : FileSystem() {
         if (parent == failListFor) {
             throw java.io.IOException("simulated listing failure: $parent")
         }
+        listFailures[parent]?.let { throw it }
         entries()[parent] ?: throw FileNotFoundException("No such path: $parent")
 
         return entries()
@@ -159,6 +182,7 @@ class InMemoryS3FileSystem : FileSystem() {
         recursive: Boolean,
     ): Boolean {
         val target = key(path)
+        beforeDelete?.invoke(target)
         if (target == failDeleteFor) {
             throw java.io.IOException("simulated delete failure: $target")
         }

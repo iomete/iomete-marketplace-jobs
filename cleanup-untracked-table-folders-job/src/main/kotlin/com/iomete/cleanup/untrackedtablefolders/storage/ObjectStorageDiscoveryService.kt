@@ -5,6 +5,7 @@ import jakarta.inject.Inject
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
 import org.jboss.logging.Logger
+import java.io.FileNotFoundException
 
 data class StorageFolder(
     val path: String,
@@ -23,6 +24,7 @@ data class StorageSizeStats(
 data class SizeStatsBatch(
     val statsByFolder: Map<String, StorageSizeStats>,
     val failures: Map<String, Throwable>,
+    val absentFolderPaths: Set<String> = emptySet(),
 )
 
 @ApplicationScoped
@@ -90,6 +92,7 @@ class ObjectStorageDiscoveryService {
         ) { fileSystem ->
             val statsByFolder = linkedMapOf<String, StorageSizeStats>()
             val failures = linkedMapOf<String, Throwable>()
+            val absentFolderPaths = linkedSetOf<String>()
 
             sortedFolderPaths.forEach { folderPath ->
                 logger.info("Collecting size statistics for candidate folder: $folderPath")
@@ -105,13 +108,39 @@ class ObjectStorageDiscoveryService {
                     )
                     statsByFolder[folderPath] = folderStats
                 } catch (th: CatalogStorageOperationException) {
-                    failures[folderPath] = th
+                    val failure = if (th.cause is FileNotFoundException) recheckNotFound(catalog, fileSystem, folderPath, th) else th
+
+                    if (failure == null) {
+                        logger.info("Candidate folder was listed but no longer exists: path=$folderPath")
+                        absentFolderPaths += folderPath
+                    } else {
+                        failures[folderPath] = failure
+                    }
                 }
             }
 
-            SizeStatsBatch(statsByFolder, failures)
+            SizeStatsBatch(statsByFolder, failures, absentFolderPaths)
         }
     }
+
+    // Returns null only when a second lookup also finds nothing; any other answer keeps the folder a failure.
+    private fun recheckNotFound(
+        catalog: String,
+        fileSystem: FileSystem,
+        folderPath: String,
+        notFound: CatalogStorageOperationException,
+    ): Throwable? =
+        try {
+            catalogFileSystemProvider.runOperation(catalog, "recheck candidate folder", folderPath) {
+                fileSystem.getFileStatus(Path(folderPath))
+            }
+            IllegalStateException(
+                "Candidate folder was not found while collecting statistics but exists on recheck: location=$folderPath",
+                notFound,
+            )
+        } catch (recheck: CatalogStorageOperationException) {
+            if (recheck.cause is FileNotFoundException) null else recheck
+        }
 
     fun collectSizeStats(
         catalog: String,

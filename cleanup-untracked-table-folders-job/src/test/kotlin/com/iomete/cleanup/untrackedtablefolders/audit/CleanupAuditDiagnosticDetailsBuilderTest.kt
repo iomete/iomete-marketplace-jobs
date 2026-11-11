@@ -1,5 +1,6 @@
 package com.iomete.cleanup.untrackedtablefolders.audit
 
+import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.PlannedScanRoot
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
@@ -196,5 +197,38 @@ class CleanupAuditDiagnosticDetailsBuilderTest {
         assertEquals("s3a://o/t/t2", details["scan_plan_uncovered_table_locations_sample"])
         assertEquals("1", details["report_only_folder_count"])
         assertEquals("s3a://b/lake/sales/x", details["report_only_folders_sample"])
+    }
+
+    @Test
+    fun `inspection outcome details carry a count and a bounded sample per outcome`() {
+        val emptyFolders = (1..101).map { "s3a://b/db/empty_$it" }
+
+        val details =
+            builder.inspectionOutcomeDetails(
+                mapOf(
+                    CandidateInspectionOutcome.FOLDER_NOT_FOUND to listOf("s3a://b/db/gone"),
+                    CandidateInspectionOutcome.EMPTY_FOLDER to emptyFolders,
+                    CandidateInspectionOutcome.UNKNOWN_AGE to emptyList(),
+                ),
+            )
+
+        assertEquals("1", details["folder_not_found_count"])
+        assertEquals("s3a://b/db/gone", details["folder_not_found_paths_sample"])
+        assertEquals("false", details["folder_not_found_paths_truncated"])
+        assertEquals("101", details["empty_folder_count"])
+        assertEquals(emptyFolders.take(100).joinToString("\n"), details["empty_folder_paths_sample"])
+        assertEquals("true", details["empty_folder_paths_truncated"])
+        assertFalse(details.keys.any { it.startsWith("unknown_age") || it.startsWith("statistics_unavailable") })
+    }
+
+    @Test
+    fun `deletion-time not-found details are separate from inspection outcomes and appear only when present`() {
+        val details = builder.notFoundAtDeletionDetails(listOf("s3a://b/db/gone"))
+
+        assertEquals("1", details["folder_not_found_at_deletion_count"])
+        assertEquals("s3a://b/db/gone", details["folder_not_found_at_deletion_paths_sample"])
+        assertEquals("false", details["folder_not_found_at_deletion_paths_truncated"])
+        assertFalse(details.containsKey("folder_not_found_count"))
+        assertEquals(emptyMap<String, String>(), builder.notFoundAtDeletionDetails(emptyList()))
     }
 }
