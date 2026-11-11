@@ -12,6 +12,8 @@ import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
+import com.iomete.cleanup.untrackedtablefolders.logging.NoVerifiedLocationSummary
+import com.iomete.cleanup.untrackedtablefolders.logging.TooManyFoldersSummary
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionResult
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
@@ -82,6 +84,7 @@ class CleanupUntrackedTableFoldersService {
             var effectiveExcludedPathsForAudit = excludePathResolver.normalizedConfiguredExcludePaths()
             var unscannedTableLocationsForAudit: List<String>? = null
             var scanPlanForAudit: ScanPlanReport? = null
+            var unresolvedTablesForAudit = emptyList<String>()
             try {
                 val discoveredDatabase =
                     catalogDiscoveryService.discoverDatabase(
@@ -101,14 +104,54 @@ class CleanupUntrackedTableFoldersService {
                 }
 
                 val unresolvedTableNames = discoveredDatabase.unresolvedTables.map { it.qualifiedName }.sorted()
+                unresolvedTablesForAudit = unresolvedTableNames
 
                 if (unresolvedTableNames.isNotEmpty()) {
                     logger.warn(
                         "${unresolvedTableNames.size} catalog table(s) could not be resolved to a storage location. " +
-                            "Reconciliation continues, but no folder in this database is eligible for deletion. " +
+                            "No folder in this database is eligible for deletion. " +
                             "catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
                     )
                     unresolvedTableNames.forEach { logger.warn("Unresolved catalog table: $it") }
+                }
+
+                // With no verified location there is nothing to compare folders against, so scanning cannot change the outcome.
+                if (unresolvedTableNames.isNotEmpty() && discoveredDatabase.tables.all { it.location == null }) {
+                    logger.warn(
+                        "Not scanning storage because no table has a verified storage location. " +
+                            "catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, totalCatalogTables=${discoveredDatabase.tables.size}"
+                    )
+
+                    cleanupSummaryLogger.logNoVerifiedLocationReport(
+                        NoVerifiedLocationSummary(
+                            catalog = discoveredDatabase.catalog,
+                            database = discoveredDatabase.database,
+                            discoveredDatabaseLocation = discoveredDatabase.location,
+                            catalogTableCount = discoveredDatabase.tables.size,
+                            unresolvedTableNames = unresolvedTableNames,
+                            dryRun = config.dryRun,
+                        )
+                    )
+
+                    recordAudit(database) {
+                        cleanupAuditRecorder.recordOwnershipUnverified(
+                            runId = runId,
+                            databaseStartTime = databaseStartTime,
+                            catalogName = discoveredDatabase.catalog,
+                            databaseName = discoveredDatabase.database,
+                            discoveredDatabaseLocation = discoveredDatabase.location,
+                            storageScanLocation = "",
+                            activeTableCount = discoveredDatabase.tables.size.toLong(),
+                            unresolvedTables = unresolvedTableNames,
+                            activeTableLocations = emptyList(),
+                            storageFolderPaths = emptyList(),
+                            potentiallyUntrackedFolderPaths = emptyList(),
+                            cutoffTime = null,
+                            excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
+                        )
+                    }
+
+                    return@forEach
                 }
 
                 if (discoveredDatabase.tables.mapNotNull { it.location }.isEmpty()) {
@@ -147,6 +190,7 @@ class CleanupUntrackedTableFoldersService {
                             errorMessage = "Database location is missing; storage folder discovery was skipped.",
                             excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
                             activeTableCount = discoveredDatabase.tables.size.toLong(),
+                            unresolvedTables = unresolvedTableNames,
                             activeTableLocations =
                                 discoveredDatabase.tables
                                     .mapNotNull { it.location }
@@ -179,6 +223,7 @@ class CleanupUntrackedTableFoldersService {
                                     databaseName = discoveredDatabase.database,
                                     discoveredDatabaseLocation = discoveredDatabase.location,
                                     activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                    unresolvedTables = unresolvedTableNames,
                                     activeTableLocations =
                                         discoveredDatabase.tables
                                             .mapNotNull { it.location }
@@ -278,23 +323,59 @@ class CleanupUntrackedTableFoldersService {
                     }
                     val protectedPaths = effectiveExcludedPaths + otherDatabaseStorage.orEmpty()
 
+                    // A known location strictly inside the scan root covers at most one listed folder. A broader one would
+                    // hide every folder, so it is not used for matching.
+                    val (matchableKnownLocations, ignoredKnownLocations) =
+                        discoveredDatabase.tables.mapNotNull { it.knownLocation }.partition { knownLocation ->
+                            runCatching {
+                                StoragePathUtils.isSameOrChildLocation(knownLocation, storageScanLocation) &&
+                                    StoragePathUtils.normalizeLocation(knownLocation) != StoragePathUtils.normalizeLocation(storageScanLocation)
+                            }.getOrDefault(false)
+                        }
+                    if (ignoredKnownLocations.isNotEmpty()) {
+                        logger.warn(
+                            "Not using ${ignoredKnownLocations.size} unresolved table location(s) for folder matching because they are not inside storage scan location=$storageScanLocation: $ignoredKnownLocations"
+                        )
+                    }
+
                     val detectedReconciliation =
                         try {
                             untrackedFolderCandidateDetector.detectCandidates(
                                 storageFolders = storageFolders,
                                 activeTableLocations =
-                                    discoveredDatabase.tables.flatMap { listOfNotNull(it.location) + it.writeLocations },
+                                    discoveredDatabase.tables.flatMap { listOfNotNull(it.location) + it.writeLocations } + matchableKnownLocations,
                                 excludedPaths = protectedPaths,
                                 maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
                                 unresolvedTableCount = unresolvedTableNames.size,
                             )
                         } catch (th: TooManyCandidateFoldersException) {
+                            val unresolvedOwnershipNote =
+                                "${unresolvedTableNames.size} catalog table(s) also have unresolved storage ownership. Raising the limit will not make these folders deletable."
+                                    .takeIf { unresolvedTableNames.isNotEmpty() }
 
                             logger.warn(
-                                "Refusing to continue for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}. Narrow the scope or increase the limit explicitly.",
+                                "Refusing to continue for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}. ${unresolvedOwnershipNote ?: "Narrow the scope or increase the limit explicitly."}",
                                 th,
                             )
                             val candidateFolderPaths = th.candidateFolderPaths.sorted()
+
+                            if (unresolvedOwnershipNote != null) {
+                                cleanupSummaryLogger.logTooManyFoldersReport(
+                                    TooManyFoldersSummary(
+                                        catalog = discoveredDatabase.catalog,
+                                        database = discoveredDatabase.database,
+                                        discoveredDatabaseLocation = discoveredDatabase.location,
+                                        storageScanLocation = storageScanLocation,
+                                        catalogTableCount = discoveredDatabase.tables.size,
+                                        verifiedTableCount = activeTableLocations.size,
+                                        unresolvedTableNames = unresolvedTableNames,
+                                        storageFolderCount = storageFolderPaths.size,
+                                        unmatchedFolderCount = candidateFolderPaths.size,
+                                        maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
+                                        dryRun = config.dryRun,
+                                    )
+                                )
+                            }
 
                             recordAudit(database) {
                                 cleanupAuditRecorder.recordTooManyCandidateFolders(
@@ -305,12 +386,13 @@ class CleanupUntrackedTableFoldersService {
                                     discoveredDatabaseLocation = discoveredDatabase.location,
                                     storageScanLocation = storageScanLocation,
                                     activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                    unresolvedTables = unresolvedTableNames,
                                     activeTableLocations = activeTableLocations,
                                     storageFolderPaths = storageFolderPaths,
                                     candidateFolderPaths = candidateFolderPaths,
                                     cutoffTime = cutoffTime,
                                     excludedPaths = effectiveExcludedPaths,
-                                    errorMessage = th.message ?: th::class.java.name,
+                                    errorMessage = listOfNotNull(th.message ?: th::class.java.name, unresolvedOwnershipNote).joinToString(". "),
                                     unscannedTableLocations = unscannedTableLocations,
                                     scanPlan = scanPlan,
                                 )
@@ -563,6 +645,7 @@ class CleanupUntrackedTableFoldersService {
                         excludedPaths = effectiveExcludedPathsForAudit,
                         unscannedTableLocations = unscannedTableLocationsForAudit,
                         scanPlan = scanPlanForAudit,
+                        unresolvedTables = unresolvedTablesForAudit,
                         error = th,
                     )
                 }

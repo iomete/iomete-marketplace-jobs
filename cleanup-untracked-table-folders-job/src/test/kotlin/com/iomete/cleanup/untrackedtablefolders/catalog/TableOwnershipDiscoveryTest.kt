@@ -211,6 +211,50 @@ class TableOwnershipDiscoveryTest {
     }
 
     @Test
+    fun `a table that fails a check after its location was read keeps it as known, never as verified`() {
+        listsTables("gc_off", "custom_provider", "bad_write_path", "unreadable")
+        val names = listOf("gc_off", "custom_provider", "bad_write_path", "unreadable")
+        names.forEach { name ->
+            describes("`c`.`sales`.`$name`", details("Location" to "s3a://b/lake/sales.db/$name", "Provider" to "iceberg"))
+        }
+        rows("SHOW TBLPROPERTIES `c`.`sales`.`gc_off`", "gc.enabled" to "false")
+        rows("SHOW TBLPROPERTIES `c`.`sales`.`custom_provider`", "write.location-provider.impl" to "com.example.Provider")
+        rows("SHOW TBLPROPERTIES `c`.`sales`.`bad_write_path`", "write.data.path" to "/lake/sales.db/data")
+        every { spark.sql("SHOW TBLPROPERTIES `c`.`sales`.`unreadable`") } throws IllegalStateException("denied")
+
+        val tables = discovery.discoverTables("c", "sales")
+
+        assertEquals(names.map { "s3a://b/lake/sales.db/$it" }, tables.map { it.knownLocation })
+        assertEquals(listOf(null, null, null, null), tables.map { it.location })
+        assertEquals(listOf(true, true, true, true), tables.map { it.isUnresolved })
+    }
+
+    @Test
+    fun `a location that was never read or cannot be matched is not known`() {
+        listsTables("no_location", "unqualified", "no_details", "missing_metadata")
+        describes("`c`.`sales`.`no_location`", details("Type" to "MANAGED", "Provider" to "iceberg"))
+        describes("`c`.`sales`.`unqualified`", details("Location" to "/lake/sales.db/unqualified", "Provider" to "iceberg"))
+        describes("`c`.`sales`.`no_details`", listOf(column("id", "bigint")))
+        every { spark.sql("DESCRIBE EXTENDED `c`.`sales`.`missing_metadata`") } throws
+            IllegalStateException("Location does not exist: s3a://b/lake/sales.db/missing_metadata/metadata/1.metadata.json")
+
+        val tables = discovery.discoverTables("c", "sales")
+
+        assertEquals(listOf(true, true, true, true), tables.map { it.isUnresolved })
+        assertEquals(listOf(null, null, null, null), tables.map { it.knownLocation })
+    }
+
+    @Test
+    fun `a resolved table or a view cannot carry a known location`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DiscoveredTable("c", "sales", "events", isTemporary = false, location = LOCATION, knownLocation = LOCATION)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DiscoveredTable("c", "sales", "events", isTemporary = false, location = null, knownLocation = LOCATION)
+        }
+    }
+
+    @Test
     fun `database locations map an unreadable database to null`() {
         rows("SHOW NAMESPACES IN `c`", "sales" to null, "broken" to null)
         rows("DESCRIBE DATABASE EXTENDED `c`.`sales`", "Location" to "s3a://b/lake/sales.db")

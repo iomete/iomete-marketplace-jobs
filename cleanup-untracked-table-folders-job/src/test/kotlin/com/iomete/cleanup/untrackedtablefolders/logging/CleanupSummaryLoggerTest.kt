@@ -75,6 +75,62 @@ class CleanupSummaryLoggerTest {
     }
 
     @Test
+    fun `no verified location report names the tables and does not imply a storage scan`() {
+        val lines =
+            logger.buildNoVerifiedLocationReportLines(
+                NoVerifiedLocationSummary(
+                    catalog = "spark_catalog",
+                    database = "analytics",
+                    discoveredDatabaseLocation = "s3a://bucket/db",
+                    catalogTableCount = 2,
+                    unresolvedTableNames = listOf("spark_catalog.analytics.table_a", "spark_catalog.analytics.table_b"),
+                    dryRun = false,
+                ),
+            )
+        val report = lines.joinToString("\n")
+
+        assertTrue(report.contains("Tables with verified storage locations           0"))
+        assertTrue(report.contains("- spark_catalog.analytics.table_a"))
+        assertTrue(report.contains("Storage was not scanned."))
+        assertTrue(report.contains("  BLOCKED"))
+        assertTrue(report.contains("2 catalog table(s) have unresolved storage ownership."))
+        assertFalse(report.contains("Folders discovered"))
+        assertFalse(report.contains("Folders scanned under"))
+        assertTrue(lines.none { it.length > 100 })
+    }
+
+    @Test
+    fun `too many folders report states both conditions and does not say blocked`() {
+        val lines =
+            logger.buildTooManyFoldersReportLines(
+                TooManyFoldersSummary(
+                    catalog = "spark_catalog",
+                    database = "analytics",
+                    discoveredDatabaseLocation = "s3a://bucket/db",
+                    storageScanLocation = "s3a://bucket/db",
+                    catalogTableCount = 3,
+                    verifiedTableCount = 1,
+                    unresolvedTableNames = listOf("spark_catalog.analytics.table_b", "spark_catalog.analytics.table_c"),
+                    storageFolderCount = 13,
+                    unmatchedFolderCount = 12,
+                    maxCandidateFolders = 10,
+                    dryRun = false,
+                ),
+            )
+        val report = lines.joinToString("\n")
+
+        assertTrue(report.contains("- spark_catalog.analytics.table_b"))
+        assertTrue(report.contains("Folder contents were not inspected"))
+        assertTrue(report.contains("  SKIPPED"))
+        assertTrue(report.contains("Reason: too_many_candidate_folders"))
+        assertTrue(report.contains("12 folder(s) exceed max_candidate_folders_per_database=10."))
+        assertTrue(report.contains("2 catalog table(s) also have unresolved storage ownership"))
+        assertFalse(report.contains("BLOCKED"))
+        assertFalse(report.contains("Size of folders"))
+        assertTrue(lines.none { it.length > 100 })
+    }
+
+    @Test
     fun `deletion-eligible report does not claim folders are only potentially untracked`() {
         val report = logger.buildReportLines(summary(deletedFolderPaths = listOf("s3a://bucket/db/old_1"))).joinToString("\n")
 

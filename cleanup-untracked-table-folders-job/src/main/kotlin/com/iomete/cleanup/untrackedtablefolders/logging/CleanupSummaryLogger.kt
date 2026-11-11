@@ -32,6 +32,29 @@ data class CleanupSummary(
     val notFoundAtDeletionPaths: List<String> = emptyList(),
 )
 
+data class NoVerifiedLocationSummary(
+    val catalog: String,
+    val database: String,
+    val discoveredDatabaseLocation: String?,
+    val catalogTableCount: Int,
+    val unresolvedTableNames: List<String>,
+    val dryRun: Boolean,
+)
+
+data class TooManyFoldersSummary(
+    val catalog: String,
+    val database: String,
+    val discoveredDatabaseLocation: String?,
+    val storageScanLocation: String,
+    val catalogTableCount: Int,
+    val verifiedTableCount: Int,
+    val unresolvedTableNames: List<String>,
+    val storageFolderCount: Int,
+    val unmatchedFolderCount: Int,
+    val maxCandidateFolders: Int,
+    val dryRun: Boolean,
+)
+
 @ApplicationScoped
 class CleanupSummaryLogger {
 
@@ -49,6 +72,14 @@ class CleanupSummaryLogger {
         buildScanPlanLines(catalog, database, scanPlan).forEach { logger.info(it) }
     }
 
+    fun logNoVerifiedLocationReport(summary: NoVerifiedLocationSummary) {
+        buildNoVerifiedLocationReportLines(summary).forEach { logger.info(it) }
+    }
+
+    fun logTooManyFoldersReport(summary: TooManyFoldersSummary) {
+        buildTooManyFoldersReportLines(summary).forEach { logger.info(it) }
+    }
+
     internal fun buildScanPlanLines(
         catalog: String,
         database: String,
@@ -64,6 +95,74 @@ class CleanupSummaryLogger {
             add(SEPARATOR)
         }
 
+    internal fun buildNoVerifiedLocationReportLines(summary: NoVerifiedLocationSummary): List<String> =
+        buildList {
+            addReportStart(
+                summary.catalog,
+                summary.database,
+                summary.dryRun,
+                summary.catalogTableCount,
+                verifiedTableCount = 0,
+                summary.unresolvedTableNames,
+            )
+
+            add("")
+            add("STORAGE")
+            add("")
+            add("  Database location                                ${summary.discoveredDatabaseLocation}")
+            add("")
+            add("  Storage was not scanned. No table has a verified location, so storage folders")
+            add("  cannot be compared with the catalog.")
+
+            add("")
+            add("DELETION")
+            add("")
+            add("  BLOCKED")
+            add("")
+            add("  Reason:")
+            add("  ${summary.unresolvedTableNames.size} catalog table(s) have unresolved storage ownership.")
+            add("  No folder in this database was deleted.")
+
+            add(SEPARATOR)
+            repeat(BLANK_LINES_AROUND_REPORT) { add("") }
+        }
+
+    internal fun buildTooManyFoldersReportLines(summary: TooManyFoldersSummary): List<String> =
+        buildList {
+            addReportStart(
+                summary.catalog,
+                summary.database,
+                summary.dryRun,
+                summary.catalogTableCount,
+                summary.verifiedTableCount,
+                summary.unresolvedTableNames,
+            )
+
+            add("")
+            add("STORAGE")
+            add("")
+            add("  Database location                                ${summary.discoveredDatabaseLocation}")
+            add("  Folders scanned under                            ${summary.storageScanLocation}")
+            add("  Folders discovered                               ${summary.storageFolderCount}")
+            add("  Folders with no verified catalog owner           ${summary.unmatchedFolderCount}")
+            add("")
+            add("  Folder contents were not inspected because the folder limit was exceeded.")
+
+            add("")
+            add("DELETION")
+            add("")
+            add("  SKIPPED")
+            add("")
+            add("  Reason: too_many_candidate_folders")
+            add("  ${summary.unmatchedFolderCount} folder(s) exceed max_candidate_folders_per_database=${summary.maxCandidateFolders}.")
+            add("  ${summary.unresolvedTableNames.size} catalog table(s) also have unresolved storage ownership, so raising")
+            add("  the limit will not make these folders deletable.")
+            add("  No folder in this database was deleted.")
+
+            add(SEPARATOR)
+            repeat(BLANK_LINES_AROUND_REPORT) { add("") }
+        }
+
     internal fun buildReportLines(summary: CleanupSummary): List<String> = buildList {
         val unmatchedFolderSet = summary.unmatchedFolderPaths.toSet()
         // The report is written after deletion, so a path it cannot compare must not make it throw.
@@ -75,28 +174,14 @@ class CleanupSummaryLogger {
         val otherSkippedFolderPaths =
             summary.storageFolderPaths - tableFolderPaths.toSet() - unmatchedFolderSet - inspectedFolderPaths
 
-        repeat(BLANK_LINES_AROUND_REPORT) { add("") }
-
-        add(SEPARATOR)
-        add(" CLEANUP REPORT - ${summary.catalog}.${summary.database}")
-        add(if (summary.dryRun) " Mode: dry run, nothing is deleted" else " Mode: deletion enabled")
-        add(SEPARATOR)
-        add("")
-        add("CATALOG")
-        add("")
-        add("  Tables found                                     ${summary.catalogTableCount}")
-        add("  Tables with verified storage locations           ${summary.activeTableLocations.size}")
-        add("  Tables whose storage location could not be read  ${summary.unresolvedTableNames.size}")
-
-        if (summary.unresolvedTableNames.isNotEmpty()) {
-            add("")
-            add("TABLES WHOSE STORAGE LOCATION COULD NOT BE RESOLVED")
-            add("")
-            add("  These tables exist in the catalog, but their Iceberg metadata or storage")
-            add("  location could not be read.")
-            add("")
-            addListOrNone(summary.unresolvedTableNames)
-        }
+        addReportStart(
+            summary.catalog,
+            summary.database,
+            summary.dryRun,
+            summary.catalogTableCount,
+            summary.activeTableLocations.size,
+            summary.unresolvedTableNames,
+        )
 
         add("")
         add("STORAGE")
@@ -133,8 +218,8 @@ class CleanupSummaryLogger {
             add("")
             add("STORAGE FOLDERS PROTECTED OR SKIPPED FOR OTHER REASONS")
             add("")
-            add("  These folders are not deleted. They are excluded, belong to another database or to a")
-            add("  table's write path, are framework working folders, or are too new.")
+            add("  These folders are not deleted. They are excluded, belong to another database, to a table's")
+            add("  write path, or to an unresolved table, are framework working folders, or are too new.")
             add("")
             addListOrNone(otherSkippedFolderPaths)
         }
@@ -230,6 +315,38 @@ class CleanupSummaryLogger {
 
         add(SEPARATOR)
         repeat(BLANK_LINES_AROUND_REPORT) { add("") }
+    }
+
+    private fun MutableList<String>.addReportStart(
+        catalog: String,
+        database: String,
+        dryRun: Boolean,
+        catalogTableCount: Int,
+        verifiedTableCount: Int,
+        unresolvedTableNames: List<String>,
+    ) {
+        repeat(BLANK_LINES_AROUND_REPORT) { add("") }
+
+        add(SEPARATOR)
+        add(" CLEANUP REPORT - $catalog.$database")
+        add(if (dryRun) " Mode: dry run, nothing is deleted" else " Mode: deletion enabled")
+        add(SEPARATOR)
+        add("")
+        add("CATALOG")
+        add("")
+        add("  Tables found                                     $catalogTableCount")
+        add("  Tables with verified storage locations           $verifiedTableCount")
+        add("  Tables whose storage location could not be read  ${unresolvedTableNames.size}")
+
+        if (unresolvedTableNames.isNotEmpty()) {
+            add("")
+            add("TABLES WHOSE STORAGE LOCATION COULD NOT BE RESOLVED")
+            add("")
+            add("  These tables exist in the catalog, but their Iceberg metadata or storage")
+            add("  location could not be read.")
+            add("")
+            addListOrNone(unresolvedTableNames)
+        }
     }
 
     private fun MutableList<String>.addScanPlan(scanPlan: ScanPlanReport) {

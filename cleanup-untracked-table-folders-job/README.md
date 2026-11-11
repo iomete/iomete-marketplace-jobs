@@ -725,11 +725,11 @@ Audit rows include:
 | `status` | High-level outcome: `SUCCESS`, `SKIPPED`, `BLOCKED`, or `FAILED`. |
 | `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, `unresolved_catalog_ownership`, `database_location_contains_warehouse_root`, `partial_scan_coverage`, `deletion_failed`, `audit_integrity_lost`, or `unexpected_error`. See [Object-storage scan root](#object-storage-scan-root) for the scan-root reasons. |
 | `older_than_hours` | Configured age threshold used for candidate detection. |
-| `cutoff_time` | Calculated timestamp used to decide whether a folder is old enough to be considered. |
+| `cutoff_time` | Calculated timestamp used to decide whether a folder is old enough to be considered. Null when no age check ran. |
 | `max_candidate_folders_per_database` | Configured per-database candidate-folder safety limit. |
-| `unresolved_table_count` | Number of catalog tables in this database whose storage location could not be read during discovery. |
+| `unresolved_table_count` | Number of catalog tables in this database whose storage location could not be read during discovery. Reported whatever the row's `status_reason` is, so filter on `unresolved_table_count > 0` to find affected databases. It is `0` when the count is unknown: when discovery itself failed, or when the pre-delete recheck found new unresolved tables, in which case the number is in `error_message`. Both are `FAILED` rows, so check `FAILED` rows as well. |
 | `candidate_folder_count` | Number of folders confirmed as untracked and eligible for deletion. Reserved for confirmed deletion-eligible candidates, so it stays `0` when table storage ownership could not be fully verified. |
-| `potentially_untracked_folder_count` | Number of storage folders that matched no verified table location while at least one table's storage location was unresolved. These folders are reported for review only. They are not confirmed untracked and are never deletion candidates, which is why they are counted separately from `candidate_folder_count`. |
+| `potentially_untracked_folder_count` | Number of storage folders that matched no verified table location while at least one table's storage location was unresolved. These folders are reported for review only. They are not confirmed untracked and are never deletion candidates, which is why they are counted separately from `candidate_folder_count`. On a `too_many_candidate_folders` row this is the count that exceeded the limit, before any age check. |
 | `candidate_object_count` | Number of objects found under candidate folders. |
 | `candidate_total_size_bytes` | Total size in bytes under candidate folders. |
 | `deleted_object_count` | Number of objects under folders that were actually deleted. |
@@ -818,10 +818,10 @@ Its state is unknown: it may be fully present, partly deleted, or gone.
 | Database processed successfully | `SUCCESS` | Includes dry-run runs with zero candidates |
 | Database processed, but some table locations are outside the scanned root | `SUCCESS` | `status_reason=partial_scan_coverage` |
 | Database location is missing | `SKIPPED` | Storage discovery is skipped |
-| Too many candidate folders | `SKIPPED` | Candidate count exceeded configured limit |
+| Too many candidate folders | `SKIPPED` | Candidate count exceeded configured limit. Unresolved tables are reported on the same row |
 | Configured database does not exist | `SKIPPED` | Logged as a warning with `status_reason=database_not_found` |
 | Database location or scan root is unsafe | `SKIPPED` | Storage is never listed; see [Object-storage scan root](#object-storage-scan-root) for the reasons |
-| One or more table storage locations could not be resolved | `BLOCKED` | Reconciliation is still reported, nothing is deleted, `status_reason=unresolved_catalog_ownership` |
+| One or more table storage locations could not be resolved | `BLOCKED` | Reconciliation is still reported when at least one table has a verified location, nothing is deleted, `status_reason=unresolved_catalog_ownership` |
 | Unexpected catalog, storage, or deletion failure | `FAILED` | Real failure path remains an error |
 | Deletion failed partway through the candidates | `FAILED` | `status_reason=deletion_failed`; see [Partial deletion](#partial-deletion) |
 | An earlier audit write in the same run failed | `BLOCKED` | `status_reason=audit_integrity_lost`; see [Audit write failures](#audit-write-failures) |
@@ -922,9 +922,9 @@ has no scheme and bucket. This says nothing about
 whether the table is wanted or healthy. It only means the job does not currently know which storage
 folder that table owns.
 
-Storage reconciliation still runs. The job lists the database's storage folders and compares them
-against the table locations it could verify, so the operator still gets the full picture of what is
-in storage.
+When at least one table has a verified location, storage reconciliation still runs. The job lists the
+database's storage folders and compares them against the table locations it could verify, so the
+operator still gets the full picture of what is in storage.
 
 What changes is what the job is allowed to conclude. If even one table in the database has an
 unresolved storage location, that table could own any of the unmatched folders. No unmatched folder
@@ -939,9 +939,24 @@ in that database can be proven untracked. So for that database:
 Ownership certainty is a property of the whole database, not of an individual folder. The job never
 mixes confirmed candidates and unverified folders in the same database.
 
+Some tables become unresolved after their location was read, for example when `gc.enabled` is not
+`true`. The job keeps that location only to leave the table's own folder out of the unmatched list.
+It is used only when it is inside the scan root, so it can leave out at most one listed folder.
+It is not a verified location: it never selects the scan root and never makes a folder deletable,
+and the database stays `BLOCKED` even when no unmatched folder remains.
+
 The per-database folder limit is still checked first. If the number of unmatched folders exceeds
 `max_candidate_folders_per_database`, the database is reported as `SKIPPED` with
 `status_reason=too_many_candidate_folders` instead. Both outcomes stop deletion for that database.
+This row still reports both conditions: `unresolved_table_count` carries the unresolved tables,
+`potentially_untracked_folder_count` carries the folders that exceeded the limit, and
+`candidate_folder_count` stays `0`. Folder contents are not inspected. Raising the limit will not
+make these folders deletable, because the database then becomes `BLOCKED`.
+
+If no table in the database has a verified location, there is nothing to compare folders against, so
+the job does not access storage and does not check the folder limit. It logs a short report and writes
+a `BLOCKED` row with `status_reason=unresolved_catalog_ownership`. On this row `storage_scan_location`
+is empty, `cutoff_time` is null, and the folder counts are `0` because no folder was listed.
 
 Other configured databases are unaffected and continue to be processed normally.
 

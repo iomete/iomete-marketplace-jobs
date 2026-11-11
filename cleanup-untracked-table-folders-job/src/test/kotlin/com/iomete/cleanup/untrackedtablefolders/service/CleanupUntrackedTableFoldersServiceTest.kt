@@ -228,6 +228,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 databaseName = "analytics",
                 discoveredDatabaseLocation = null,
                 activeTableCount = 1,
+                unresolvedTables = emptyList(),
                 activeTableLocations = listOf("s3a://bucket/db/active_table"),
                 errorMessage = any(),
                 excludedPaths = any(),
@@ -284,6 +285,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 excludedPaths = any(),
                 unscannedTableLocations = null,
                 scanPlan = null,
+                unresolvedTables = emptyList(),
                 error = any(),
             )
         }
@@ -502,6 +504,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 databaseName = "analytics",
                 discoveredDatabaseLocation = "s3a://bucket/db",
                 activeTableCount = 1,
+                unresolvedTables = emptyList(),
                 activeTableLocations = listOf("s3a://bucket/db/active_table"),
                 reason = "database_location_contains_warehouse_root",
                 errorMessage = any(),
@@ -603,7 +606,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 scanPlan = any(),
             )
         }
-        verify(exactly = 0) { cleanupAuditRecorder.recordFailed(any(), any(), any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { cleanupAuditRecorder.recordFailed(any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -816,6 +819,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 excludedPaths = any(),
                 unscannedTableLocations = any(),
                 scanPlan = any(),
+                unresolvedTables = emptyList(),
                 error = match { it.message!!.contains("all 1 candidate folder(s) that still exist") },
             )
         }
@@ -981,7 +985,7 @@ class CleanupUntrackedTableFoldersServiceTest {
     private fun verifyNoOtherAuditCalls(except: String = "recordSuccess") {
         if (except != "recordUnsafeScanRoot") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordUnsafeScanRoot(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+                cleanupAuditRecorder.recordUnsafeScanRoot(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
             }
         }
         if (except != "recordNoActiveTables") {
@@ -991,7 +995,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         }
         if (except != "recordDatabaseLocationMissing") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordDatabaseLocationMissing(any(), any(), any(), any(), any(), any(), any(), any(), any())
+                cleanupAuditRecorder.recordDatabaseLocationMissing(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
             }
         }
         if (except != "recordOwnershipUnverified") {
@@ -1001,7 +1005,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         }
         if (except != "recordTooManyCandidateFolders") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordTooManyCandidateFolders(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+                cleanupAuditRecorder.recordTooManyCandidateFolders(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
             }
         }
         if (except != "recordDatabaseNotFound") {
@@ -1016,7 +1020,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         }
         if (except != "recordFailed") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordFailed(any(), any(), any(), any(), any(), any(), any())
+                cleanupAuditRecorder.recordFailed(any(), any(), any(), any(), any(), any(), any(), any())
             }
         }
         if (except != "recordSuccess") {
