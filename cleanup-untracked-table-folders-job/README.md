@@ -845,9 +845,10 @@ Storage root keys follow `scan_plan_status`:
   then listed roots, then not-scanned roots with the most visible tables first.
 - `scan_plan_coverage` is `complete` when every table the job can see is stored under the cleanup root and
   every listing worked. Otherwise it is `partial`. A table under a report-only root still makes it
-  `partial`, because folders there are never deleted. So a `SUCCESS` row with
+  `partial`, because folders there are never deleted. An unresolved table also makes it `partial`,
+  because its location is unknown, even when a known folder is shown for it. So a `SUCCESS` row with
   `status_reason=partial_scan_coverage` always has `scan_plan_coverage=partial`. Job versions up to 0.1.5
-  also counted tables under report-only roots as covered.
+  also counted tables under report-only roots as covered, and did not count unresolved tables.
 - Coverage counts only tables the job can see. It is not an ownership check. See
   [What deletion mode can and cannot prove](#what-deletion-mode-can-and-cannot-prove).
 - `ownership_basis=visible_catalog_tables` records that ownership was checked only against the tables the

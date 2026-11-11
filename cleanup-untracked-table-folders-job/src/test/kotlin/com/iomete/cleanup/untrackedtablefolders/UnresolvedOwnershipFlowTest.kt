@@ -325,6 +325,21 @@ class UnresolvedOwnershipFlowTest {
     }
 
     @Test
+    fun `an unresolved table leaves scan coverage partial even when its known folder is under the cleanup root`() {
+        folders("t1", "t2", "orphan")
+        val flow = flow(tables = listOf(verified("t1"), unresolved("t2", knownLocation = "$SALES/t2")))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("partial", record.diagnosticDetails["scan_plan_coverage"])
+        assertEquals("BLOCKED", record.status)
+        assertEquals("unresolved_catalog_ownership", record.statusReason)
+        assertTrue(record.deletedFolders.isEmpty())
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+    }
+
+    @Test
     fun `a known location that brings the count within the limit still blocks deletion`() {
         folders("t1", "t2", "orphan")
         val flow = flow(tables = listOf(verified("t1"), unresolved("t2", knownLocation = "$SALES/t2")), maxCandidateFolders = 1)

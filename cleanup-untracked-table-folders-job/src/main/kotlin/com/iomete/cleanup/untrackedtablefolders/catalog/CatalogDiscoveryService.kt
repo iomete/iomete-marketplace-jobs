@@ -123,7 +123,7 @@ internal fun missingMetadataTableFolder(error: Throwable): String? {
     val folder = missingPath.substringBeforeLast("/$METADATA_FOLDER/", missingDelimiterValue = "")
     val fileName = missingPath.substringAfterLast("/$METADATA_FOLDER/")
 
-    if (folder.isEmpty() || '/' in fileName || !fileName.contains(METADATA_FILE_SUFFIX)) {
+    if (folder.isEmpty() || '/' in fileName || !fileName.endsWith(METADATA_FILE_SUFFIX)) {
         return null
     }
 

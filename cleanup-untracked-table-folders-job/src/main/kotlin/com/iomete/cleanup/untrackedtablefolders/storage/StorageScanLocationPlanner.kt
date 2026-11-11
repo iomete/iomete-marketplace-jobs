@@ -65,16 +65,19 @@ data class ScanPlanReport(
     val restNamespaceRootStatus: String? = null,
     // Null when there is no cleanup root to measure against.
     val visibleTablesOutsideCleanupRoot: Int? = null,
+    val unresolvedTableCount: Int = 0,
 ) {
     val reportOnlyFolderPaths: List<String>
         get() = roots.flatMap { it.unmatchedFolderPaths }.distinct().sorted()
 
     // Coverage is measured against visible tables only, so "complete" never proves every table was seen. Report-only
     // roots never delete, so a table outside the cleanup root leaves coverage partial, as partial_scan_coverage does.
+    // An unresolved table's location is unknown, and a folder guessed from its error is not a verified location.
     val complete: Boolean
         get() =
             planningError == null &&
                 visibleTablesOutsideCleanupRoot == 0 &&
+                unresolvedTableCount == 0 &&
                 uncoveredTableLocations.isEmpty() &&
                 roots.none {
                     it.outcome == ScanRootOutcome.LISTING_FAILED ||

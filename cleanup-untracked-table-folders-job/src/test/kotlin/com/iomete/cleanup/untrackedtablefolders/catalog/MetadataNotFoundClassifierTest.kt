@@ -109,12 +109,18 @@ class MetadataNotFoundClassifierTest {
 
         assertEquals("s3a://bucket/data/db/orders-abc", missingMetadataTableFolder(rest))
         assertEquals("s3://bucket/db/orders", missingMetadataTableFolder(nested))
+        assertEquals(
+            "s3a://bucket/db/orders",
+            missingMetadataTableFolder(RuntimeException("Location does not exist: s3a://bucket/db/orders/metadata/00001-abc.gz.metadata.json")),
+        )
     }
 
     @Test
     fun `a missing path that does not name a table's metadata file gives no folder`() {
         listOf(
             "Location does not exist: s3a://bucket/db/orders/metadata/snap-1.avro",
+            "Location does not exist: s3a://bucket/db/orders/metadata/v3.metadata.json.bak",
+            "Location does not exist: s3a://bucket/db/orders/metadata/v3.metadata.json.crc",
             "Location does not exist: s3a://bucket/db/orders/v1.metadata.json",
             "Location does not exist: s3a://bucket/metadata/v1.metadata.json",
             "Location does not exist: /db/orders/metadata/v1.metadata.json",

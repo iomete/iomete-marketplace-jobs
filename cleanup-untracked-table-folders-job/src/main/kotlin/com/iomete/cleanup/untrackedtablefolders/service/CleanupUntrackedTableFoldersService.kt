@@ -767,7 +767,10 @@ class CleanupUntrackedTableFoldersService {
                     activeTableLocations = activeTableLocations,
                     cleanupRootFolderCount = cleanupRootFolderCount,
                 )
-                .copy(restNamespaceRootStatus = restRoot?.status)
+                .copy(
+                    restNamespaceRootStatus = restRoot?.status,
+                    unresolvedTableCount = discoveredDatabase.unresolvedTables.size,
+                )
         } catch (error: Exception) {
             logger.warn("Could not plan report-only storage roots for catalog=$catalog, database=$database", error)
             ScanPlanReport(roots = emptyList(), uncoveredTableLocations = emptyList(), planningError = error.toString())

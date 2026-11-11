@@ -409,8 +409,8 @@ class CleanupSummaryLogger {
         if (scanPlan.complete) {
             add("  Coverage is complete: every table this job can see is under the cleanup root.")
         } else {
-            add("  Coverage is partial: a table this job can see is outside the cleanup root, or a root")
-            add("  could not be listed.")
+            add("  Coverage is partial: a table this job can see is outside the cleanup root or has an")
+            add("  unknown location, or a root could not be listed.")
         }
         add("  Coverage counts only tables this job can see. It is not an ownership check.")
         if (scanPlan.restNamespaceRootStatus != null && scanPlan.restNamespaceRootStatus != "derived") {

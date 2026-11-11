@@ -456,7 +456,7 @@ class CleanupSummaryLoggerTest {
 
     @Test
     fun `coverage is complete only when every visible table is under the cleanup root`() {
-        fun coverageLines(outsideCleanupRoot: Int) =
+        fun coverageLines(outsideCleanupRoot: Int, unresolvedTables: Int = 0) =
             logger.buildReportLines(
                 summary().copy(
                     scanPlan =
@@ -464,14 +464,15 @@ class CleanupSummaryLoggerTest {
                             roots = listOf(ScanRootResult(cleanupRoot("s3a://bucket/db"), ScanRootOutcome.SCANNED, 1)),
                             uncoveredTableLocations = emptyList(),
                             visibleTablesOutsideCleanupRoot = outsideCleanupRoot,
+                            unresolvedTableCount = unresolvedTables,
                         ),
                 ),
             )
+        val partial = "  Coverage is partial: a table this job can see is outside the cleanup root or has an"
 
         assertTrue("  Coverage is complete: every table this job can see is under the cleanup root." in coverageLines(0))
-        assertTrue(
-            "  Coverage is partial: a table this job can see is outside the cleanup root, or a root" in coverageLines(1),
-        )
+        assertTrue(partial in coverageLines(1))
+        assertTrue(partial in coverageLines(0, unresolvedTables = 1))
         assertTrue("  Coverage counts only tables this job can see. It is not an ownership check." in coverageLines(0))
     }
 
