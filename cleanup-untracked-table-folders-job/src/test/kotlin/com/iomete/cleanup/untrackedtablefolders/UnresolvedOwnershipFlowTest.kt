@@ -236,6 +236,8 @@ class UnresolvedOwnershipFlowTest {
 
     @Test
     fun `a storage failure after discovery keeps its reason and reports the unresolved tables`() {
+        folders("t1")
+        InMemoryS3FileSystem.failListFor = SALES
         val flow = flow(tables = listOf(verified("t1"), unresolved("t2")))
 
         flow.run()
@@ -243,6 +245,7 @@ class UnresolvedOwnershipFlowTest {
         val record = flow.auditRecords.single()
         assertEquals("FAILED", record.status)
         assertEquals("unexpected_error", record.statusReason)
+        assertTrue(record.errorMessage.orEmpty().startsWith("Failed to list immediate child folders"))
         assertEquals(1, record.unresolvedTableCount)
         assertEquals("$CATALOG.sales.t2", record.diagnosticDetails["unresolved_tables_sample"])
     }
@@ -341,6 +344,43 @@ class UnresolvedOwnershipFlowTest {
         assertEquals("$SALES/nested", record.storageScanLocation)
         assertEquals("$SALES/nested/t1", record.diagnosticDetails["active_table_locations_sample"])
         assertEquals(listOf("$SALES/nested/t1"), flow.summaries.single().activeTableLocations)
+    }
+
+    @Test
+    fun `a known location at or above the scan root does not hide the unmatched folders`() {
+        listOf(SALES, WAREHOUSE, "s3a://bucket").forEach { knownLocation ->
+            InMemoryS3FileSystem.reset()
+            folders("t1", "t2", "orphan")
+            val flow = flow(tables = listOf(verified("t1"), unresolved("t2", knownLocation = knownLocation)), maxCandidateFolders = 1)
+
+            flow.run()
+
+            val record = flow.auditRecords.single()
+            assertEquals("too_many_candidate_folders", record.statusReason, knownLocation)
+            assertEquals(2, record.potentiallyUntrackedFolderCount, knownLocation)
+        }
+    }
+
+    @Test
+    fun `a known location equal to a scan root below the database location does not hide its folders`() {
+        putFolder("$SALES/nested")
+        listOf("t1", "orphan").forEach { putFolder("$SALES/nested/$it", "part-0.parquet") }
+        val flow =
+            flow(
+                tables =
+                    listOf(
+                        DiscoveredTable(CATALOG, "sales", "t1", isTemporary = false, location = "$SALES/nested/t1"),
+                        unresolved("t2", knownLocation = "$SALES/nested"),
+                    ),
+            )
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("$SALES/nested", record.storageScanLocation)
+        assertEquals("BLOCKED", record.status)
+        assertEquals(1, record.potentiallyUntrackedFolderCount)
+        assertEquals("$SALES/nested/orphan", record.diagnosticDetails["potentially_untracked_folder_paths_sample"])
     }
 
     private fun folders(vararg children: String) {

@@ -322,12 +322,27 @@ class CleanupUntrackedTableFoldersService {
                     }
                     val protectedPaths = effectiveExcludedPaths + otherDatabaseStorage.orEmpty()
 
+                    // A known location strictly inside the scan root covers at most one listed folder. A broader one would
+                    // hide every folder, so it is not used for matching.
+                    val (matchableKnownLocations, ignoredKnownLocations) =
+                        discoveredDatabase.tables.mapNotNull { it.knownLocation }.partition { knownLocation ->
+                            runCatching {
+                                StoragePathUtils.isSameOrChildLocation(knownLocation, storageScanLocation) &&
+                                    StoragePathUtils.normalizeLocation(knownLocation) != StoragePathUtils.normalizeLocation(storageScanLocation)
+                            }.getOrDefault(false)
+                        }
+                    if (ignoredKnownLocations.isNotEmpty()) {
+                        logger.warn(
+                            "Not using ${ignoredKnownLocations.size} unresolved table location(s) for folder matching because they are not inside storage scan location=$storageScanLocation: $ignoredKnownLocations"
+                        )
+                    }
+
                     val detectedReconciliation =
                         try {
                             untrackedFolderCandidateDetector.detectCandidates(
                                 storageFolders = storageFolders,
                                 activeTableLocations =
-                                    discoveredDatabase.tables.flatMap { listOfNotNull(it.location, it.knownLocation) + it.writeLocations },
+                                    discoveredDatabase.tables.flatMap { listOfNotNull(it.location) + it.writeLocations } + matchableKnownLocations,
                                 excludedPaths = protectedPaths,
                                 maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
                                 unresolvedTableCount = unresolvedTableNames.size,

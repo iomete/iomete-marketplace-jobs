@@ -704,7 +704,7 @@ Audit rows include:
 | `older_than_hours` | Configured age threshold used for candidate detection. |
 | `cutoff_time` | Calculated timestamp used to decide whether a folder is old enough to be considered. Null when no age check ran. |
 | `max_candidate_folders_per_database` | Configured per-database candidate-folder safety limit. |
-| `unresolved_table_count` | Number of catalog tables in this database whose storage location could not be read during discovery. Reported whatever the row's `status_reason` is, so filter on `unresolved_table_count > 0` to find every affected database. It is `0` when discovery itself failed, because the count is then unknown. |
+| `unresolved_table_count` | Number of catalog tables in this database whose storage location could not be read during discovery. Reported whatever the row's `status_reason` is, so filter on `unresolved_table_count > 0` to find affected databases. It is `0` when the count is unknown: when discovery itself failed, or when the pre-delete recheck found new unresolved tables, in which case the number is in `error_message`. Both are `FAILED` rows, so check `FAILED` rows as well. |
 | `candidate_folder_count` | Number of folders confirmed as untracked and eligible for deletion. Reserved for confirmed deletion-eligible candidates, so it stays `0` when table storage ownership could not be fully verified. |
 | `potentially_untracked_folder_count` | Number of storage folders that matched no verified table location while at least one table's storage location was unresolved. These folders are reported for review only. They are not confirmed untracked and are never deletion candidates, which is why they are counted separately from `candidate_folder_count`. On a `too_many_candidate_folders` row this is the count that exceeded the limit, before any age check. |
 | `candidate_object_count` | Number of objects found under candidate folders. |
@@ -899,6 +899,7 @@ mixes confirmed candidates and unverified folders in the same database.
 
 Some tables become unresolved after their location was read, for example when `gc.enabled` is not
 `true`. The job keeps that location only to leave the table's own folder out of the unmatched list.
+It is used only when it is inside the scan root, so it can leave out at most one listed folder.
 It is not a verified location: it never selects the scan root and never makes a folder deletable,
 and the database stays `BLOCKED` even when no unmatched folder remains.
 
