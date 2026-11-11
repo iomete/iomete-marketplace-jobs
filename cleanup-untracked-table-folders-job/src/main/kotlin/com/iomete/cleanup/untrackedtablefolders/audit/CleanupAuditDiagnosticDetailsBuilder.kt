@@ -61,6 +61,16 @@ class CleanupAuditDiagnosticDetailsBuilder {
         return details
     }
 
+    // Stated on every row so a clean result is never read as proof that no table anywhere uses the folder.
+    fun ownershipCheckDetails(): Map<String, String> =
+        mapOf(
+            "ownership_checks" to
+                "visible_tables_of_this_database,write_paths_of_visible_tables_of_this_database," +
+                "default_folders_of_visible_other_databases,configured_exclusions",
+            "ownership_not_checked" to
+                "other_database_tables,other_catalogs,hidden_tables,files_outside_table_folders",
+        )
+
     fun unresolvedTableDetails(unresolvedTables: List<String>): Map<String, String> =
         if (unresolvedTables.isEmpty()) {
             emptyMap()

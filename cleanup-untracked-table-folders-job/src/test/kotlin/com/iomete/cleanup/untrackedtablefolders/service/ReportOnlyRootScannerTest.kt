@@ -14,6 +14,7 @@ import io.mockk.mockk
 import io.mockk.verify
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -114,6 +115,53 @@ class ReportOnlyRootScannerTest {
         val malformed = report.roots.single { it.root.location == "://bad" }
         assertEquals(ScanRootOutcome.NOT_SCANNED, malformed.outcome)
         assertEquals(0, malformed.visibleTableCount)
+    }
+
+    @Test
+    fun `a table covered only by a report-only root leaves coverage partial`() {
+        every { discovery.listImmediateChildFoldersIfPresent("c", "s3a://b/lake/sales") } returns folders("s3a://b/lake/sales/t2")
+
+        val report =
+            scanner.scan(
+                "c",
+                "sales",
+                plan(cleanup("s3a://b/lake/sales.db"), reportOnly("s3a://b/lake/sales")),
+                activeTableLocations = listOf("s3a://b/lake/sales.db/t1", "s3a://b/lake/sales/t2"),
+            )
+
+        assertEquals(emptyList<String>(), report.uncoveredTableLocations)
+        assertEquals(1, report.visibleTablesOutsideCleanupRoot)
+        assertFalse(report.complete)
+    }
+
+    @Test
+    fun `a plan without a cleanup root never counts as complete`() {
+        every { discovery.listImmediateChildFoldersIfPresent("c", "s3a://b/lake/sales") } returns emptyList()
+
+        val report =
+            scanner.scan("c", "sales", plan(reportOnly("s3a://b/lake/sales")), activeTableLocations = listOf("s3a://b/lake/sales/t1"))
+
+        assertNull(report.visibleTablesOutsideCleanupRoot)
+        assertFalse(report.complete)
+    }
+
+    @Test
+    fun `listed roots record how many child folders they hold`() {
+        every { discovery.listImmediateChildFoldersIfPresent("c", "s3a://b/lake/sales") } returns emptyList()
+
+        val report =
+            scanner.scan(
+                "c",
+                "sales",
+                plan(cleanup("s3a://b/lake/sales.db"), reportOnly("s3a://b/lake/sales")),
+                activeTableLocations = listOf("s3a://b/lake/sales.db/t1"),
+                cleanupRootFolderCount = 4,
+            )
+
+        assertEquals(4, report.roots.single { it.root.cleanupRoot }.listedFolderCount)
+        val empty = report.roots.single { it.root.location == "s3a://b/lake/sales" }
+        assertEquals(ScanRootOutcome.SCANNED, empty.outcome)
+        assertEquals(0, empty.listedFolderCount)
     }
 
     private fun folders(vararg paths: String) = paths.map { StorageFolder(it) }

@@ -14,6 +14,7 @@ import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
 import com.iomete.cleanup.untrackedtablefolders.logging.NoVerifiedLocationSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.TooManyFoldersSummary
+import com.iomete.cleanup.untrackedtablefolders.logging.UnresolvedTableDetail
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionResult
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
@@ -105,6 +106,10 @@ class CleanupUntrackedTableFoldersService {
 
                 val unresolvedTableNames = discoveredDatabase.unresolvedTables.map { it.qualifiedName }.sorted()
                 unresolvedTablesForAudit = unresolvedTableNames
+                val unresolvedTableDetails =
+                    discoveredDatabase.unresolvedTables.associate { table ->
+                        table.qualifiedName to UnresolvedTableDetail(table.unresolvedReason.orEmpty(), table.knownLocation)
+                    }
 
                 if (unresolvedTableNames.isNotEmpty()) {
                     logger.warn(
@@ -130,6 +135,7 @@ class CleanupUntrackedTableFoldersService {
                             catalogTableCount = discoveredDatabase.tables.size,
                             unresolvedTableNames = unresolvedTableNames,
                             dryRun = config.dryRun,
+                            unresolvedTableDetails = unresolvedTableDetails,
                         )
                     )
 
@@ -285,6 +291,7 @@ class CleanupUntrackedTableFoldersService {
                             cleanupRoot = storageScanLocation,
                             databaseLocation = discoveredDatabase.location,
                             sharedWarehouseRoots = sharedWarehouseRoots,
+                            cleanupRootFolderCount = storageFolders.size,
                         )
 
                     scanPlanForAudit = scanPlan
@@ -359,23 +366,22 @@ class CleanupUntrackedTableFoldersService {
                             )
                             val candidateFolderPaths = th.candidateFolderPaths.sorted()
 
-                            if (unresolvedOwnershipNote != null) {
-                                cleanupSummaryLogger.logTooManyFoldersReport(
-                                    TooManyFoldersSummary(
-                                        catalog = discoveredDatabase.catalog,
-                                        database = discoveredDatabase.database,
-                                        discoveredDatabaseLocation = discoveredDatabase.location,
-                                        storageScanLocation = storageScanLocation,
-                                        catalogTableCount = discoveredDatabase.tables.size,
-                                        verifiedTableCount = activeTableLocations.size,
-                                        unresolvedTableNames = unresolvedTableNames,
-                                        storageFolderCount = storageFolderPaths.size,
-                                        unmatchedFolderCount = candidateFolderPaths.size,
-                                        maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
-                                        dryRun = config.dryRun,
-                                    )
+                            cleanupSummaryLogger.logTooManyFoldersReport(
+                                TooManyFoldersSummary(
+                                    catalog = discoveredDatabase.catalog,
+                                    database = discoveredDatabase.database,
+                                    discoveredDatabaseLocation = discoveredDatabase.location,
+                                    storageScanLocation = storageScanLocation,
+                                    catalogTableCount = discoveredDatabase.tables.size,
+                                    verifiedTableCount = activeTableLocations.size,
+                                    unresolvedTableNames = unresolvedTableNames,
+                                    storageFolderCount = storageFolderPaths.size,
+                                    unmatchedFolderPaths = candidateFolderPaths,
+                                    maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
+                                    dryRun = config.dryRun,
+                                    unresolvedTableDetails = unresolvedTableDetails,
                                 )
-                            }
+                            )
 
                             recordAudit(database) {
                                 cleanupAuditRecorder.recordTooManyCandidateFolders(
@@ -541,6 +547,7 @@ class CleanupUntrackedTableFoldersService {
                             scanPlan = scanPlan,
                             inspectionOutcomes = inspectionOutcomes,
                             notFoundAtDeletionPaths = deletionResult.notFoundPaths,
+                            unresolvedTableDetails = unresolvedTableDetails,
                         )
                     )
 
@@ -728,6 +735,7 @@ class CleanupUntrackedTableFoldersService {
         cleanupRoot: String?,
         databaseLocation: String?,
         sharedWarehouseRoots: List<String>,
+        cleanupRootFolderCount: Int? = null,
     ): ScanPlanReport {
         val catalog = discoveredDatabase.catalog
         val database = discoveredDatabase.database
@@ -752,7 +760,13 @@ class CleanupUntrackedTableFoldersService {
                 )
 
             reportOnlyRootScanner
-                .scan(catalog = catalog, database = database, roots = roots, activeTableLocations = activeTableLocations)
+                .scan(
+                    catalog = catalog,
+                    database = database,
+                    roots = roots,
+                    activeTableLocations = activeTableLocations,
+                    cleanupRootFolderCount = cleanupRootFolderCount,
+                )
                 .copy(restNamespaceRootStatus = restRoot?.status)
         } catch (error: Exception) {
             logger.warn("Could not plan report-only storage roots for catalog=$catalog, database=$database", error)
