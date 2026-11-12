@@ -3,6 +3,7 @@ package com.iomete.cleanup.untrackedtablefolders
 import com.iomete.cleanup.untrackedtablefolders.CleanupFlowHarness.Companion.putFolder
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecord
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
+import com.iomete.cleanup.untrackedtablefolders.catalog.DatabaseNotFoundException
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredTable
 import com.iomete.cleanup.untrackedtablefolders.catalog.RestNamespaceRoot
@@ -840,6 +841,53 @@ class OwnershipProtectionFlowTest {
 
         assertEquals(listOf("$SALES/orphan"), flow.auditRecords.single().deletedFolders)
         verify(exactly = 0) { flow.catalogDiscoveryService.visibleDatabaseLocations("jdbc_source") }
+    }
+
+    @Test
+    fun `a database that disappears at the pre-delete recheck keeps its finished checks on the row and deletes nothing`() {
+        folders(SALES, "t1", "orphan")
+        val flow = flow(tables = listOf(table("$SALES/t1")), databases = mapOf("sales" to SALES, "archive" to "$WAREHOUSE/archive.db"))
+        every { flow.catalogDiscoveryService.discoverTables(CATALOG, "archive") } returns emptyList()
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "sales") } returns
+            database(listOf(table("$SALES/t1"))) andThenThrows DatabaseNotFoundException(CATALOG, "sales", RuntimeException("dropped"))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("SKIPPED", record.status)
+        assertEquals("database_not_found", record.statusReason)
+        assertTrue(record.deletedFolders.isEmpty())
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+        assertEquals(
+            listOf(
+                "visible_tables_of_this_database", "write_paths_of_visible_tables_of_this_database",
+                "default_folders_of_visible_other_databases", "configured_exclusions", "visible_tables_of_other_databases",
+                "visible_storage_of_same_bucket_session_catalogs", "final_recheck_before_deletion",
+            ),
+            checks(record),
+        )
+        assertEquals(
+            listOf("other_bucket_session_catalogs", "catalogs_outside_session", "hidden_tables", "nested_namespace_tables", "files_outside_table_folders"),
+            notChecked(record),
+        )
+    }
+
+    @Test
+    fun `a database missing at the first read reports no check of other storage`() {
+        val flow = flow(tables = emptyList())
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "sales") } throws
+            DatabaseNotFoundException(CATALOG, "sales", RuntimeException("missing"))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("database_not_found", record.statusReason)
+        assertEquals(listOf("visible_tables_of_this_database", "write_paths_of_visible_tables_of_this_database", "configured_exclusions"), checks(record))
+        assertTrue(
+            notChecked(record).containsAll(
+                listOf("default_folders_of_other_databases", "other_database_tables", "same_bucket_session_catalogs", "final_recheck_before_deletion"),
+            ),
+        )
     }
 
     // Lists the session's catalogs with the real CatalogDiscoveryService over these settings, so the flow sees which

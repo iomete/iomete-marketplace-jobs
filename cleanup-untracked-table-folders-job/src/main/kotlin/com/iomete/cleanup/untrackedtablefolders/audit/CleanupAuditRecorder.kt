@@ -381,11 +381,14 @@ class CleanupAuditRecorder {
         )
     }
 
+    // The database can also disappear at the pre-delete recheck, after other storage was read, so the row keeps
+    // whatever checks had finished.
     fun recordDatabaseNotFound(
         runId: String,
         database: String,
         databaseStartTime: Instant,
         error: Throwable,
+        ownershipChecks: OwnershipChecks = OwnershipChecks(),
     ) {
         writeAuditRecord(
             runId = runId,
@@ -395,6 +398,7 @@ class CleanupAuditRecorder {
             status = STATUS_SKIPPED,
             statusReason = "database_not_found",
             errorMessage = error.message ?: error::class.java.name,
+            ownershipChecks = ownershipChecks,
         )
     }
 

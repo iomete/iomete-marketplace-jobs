@@ -123,6 +123,31 @@ class CleanupAuditRecorderTest {
         assertEquals(0, record.deletedFolderCount)
     }
 
+    @Test
+    fun `a database that disappears after some checks keeps exactly those checks on its row`() {
+        recorder.recordDatabaseNotFound(
+            "run",
+            "analytics",
+            Instant.EPOCH,
+            IllegalStateException("missing"),
+            ownershipChecks = OwnershipChecks(otherDatabaseFolders = true),
+        )
+
+        val record = capturedRecord()
+        assertEquals("SKIPPED", record.status)
+        assertEquals("database_not_found", record.statusReason)
+        assertEquals(
+            "visible_tables_of_this_database,write_paths_of_visible_tables_of_this_database," +
+                "default_folders_of_visible_other_databases,configured_exclusions",
+            record.diagnosticDetails["ownership_checks"],
+        )
+        assertEquals(
+            "other_database_tables,same_bucket_session_catalogs,final_recheck_before_deletion," +
+                "other_bucket_session_catalogs,catalogs_outside_session,hidden_tables,nested_namespace_tables,files_outside_table_folders",
+            record.diagnosticDetails["ownership_not_checked"],
+        )
+    }
+
     private fun capturedRecord(): CleanupAuditRecord {
         val record = slot<CleanupAuditRecord>()
         verify { cleanupAuditTableService.writeAuditRecord(capture(record)) }
@@ -404,7 +429,8 @@ class CleanupAuditRecorderTest {
         recorder.recordFailed(
             "run", "analytics", Instant.EPOCH, unresolvedTables = emptyList(), error = IllegalStateException("boom"), ownershipChecks = allRead,
         )
-        // Written before other storage is read, so these rows state only this database's checks.
+        // Written before other storage is read (database_not_found here as at the first read), so these rows state only
+        // this database's checks.
         recorder.recordDatabaseNotFound("run", "analytics", Instant.EPOCH, IllegalStateException("missing"))
         recorder.recordNoActiveTables("run", Instant.EPOCH, "example_catalog", "analytics", db, emptyList())
         recorder.recordDatabaseLocationMissing("run", Instant.EPOCH, "example_catalog", "analytics", null, 1, emptyList(), tables, "missing", emptyList())

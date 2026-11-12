@@ -338,7 +338,7 @@ class CleanupUntrackedTableFoldersServiceTest {
             Unit
         }
         every {
-            cleanupAuditRecorder.recordDatabaseNotFound(any(), any(), any(), any())
+            cleanupAuditRecorder.recordDatabaseNotFound(any(), any(), any(), any(), ownershipChecks = any())
         } answers {
             capturedRunIds.add(firstArg<String>())
             Unit
@@ -350,7 +350,7 @@ class CleanupUntrackedTableFoldersServiceTest {
             cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
         }
         verify(exactly = 1) {
-            cleanupAuditRecorder.recordDatabaseNotFound(any(), any(), any(), any())
+            cleanupAuditRecorder.recordDatabaseNotFound(any(), any(), any(), any(), ownershipChecks = any())
         }
         assertEquals(1, capturedRunIds.size, "All databases in one run share one runId")
     }
@@ -1026,7 +1026,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         }
         if (except != "recordDatabaseNotFound") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordDatabaseNotFound(any(), any(), any(), any())
+                cleanupAuditRecorder.recordDatabaseNotFound(any(), any(), any(), any(), ownershipChecks = any())
             }
         }
         if (except != "recordDeletionFailed") {

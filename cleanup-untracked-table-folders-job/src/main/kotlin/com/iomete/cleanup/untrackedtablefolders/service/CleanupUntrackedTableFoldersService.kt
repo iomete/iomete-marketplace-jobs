@@ -720,6 +720,7 @@ class CleanupUntrackedTableFoldersService {
                         database = database,
                         databaseStartTime = databaseStartTime,
                         error = th,
+                        ownershipChecks = ownershipChecksForAudit,
                     )
                 }
             } catch (th: Throwable) {
