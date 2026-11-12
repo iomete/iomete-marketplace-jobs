@@ -87,6 +87,22 @@ class SharedWarehouseRootsTest {
     }
 
     @Test
+    fun `lists a storage catalog with no warehouse or a blank one, and leaves out JDBC catalogs`() {
+        sessionConf["spark.sql.catalog.remote"] = "org.apache.iceberg.spark.SparkCatalog"
+        sessionConf["spark.sql.catalog.remote.type"] = "rest"
+        sessionConf["spark.sql.catalog.ent"] = "com.iomete.enterprisecatalog.IomEnterpriseSparkCatalog"
+        sessionConf["spark.sql.catalog.ent.warehouse"] = " "
+        sessionConf["spark.sql.catalog.jdbc_source"] = "org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog"
+        sessionConf["spark.sql.catalog.blank_class"] = " "
+        every { runtimeConfig.get("spark.sql.warehouse.dir", "") } returns "s3a://bucket/hive"
+
+        assertEquals(
+            mapOf("remote" to emptyList(), "ent" to emptyList(), "spark_catalog" to listOf("s3a://bucket/hive")),
+            catalogDiscoveryService.sessionCatalogWarehouses(),
+        )
+    }
+
+    @Test
     fun `reads catalogs from the session config, which can gain a catalog after startup`() {
         startupConf.set("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
         startupConf.set("spark.sql.catalog.spark_catalog.warehouse", "s3a://bucket/lake")

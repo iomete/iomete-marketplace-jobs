@@ -437,7 +437,7 @@ The main safety principle is **fail closed**: if the job cannot prove that a fol
 | Warehouse-root rejection | Scanning a shared warehouse root where other databases live |
 | Active table location protection | Deleting folders still claimed by the catalog, including folders inside a table location |
 | Other database protection | Deleting the storage of another database the job can see that sits inside the cleanup root |
-| Other table protection | Deleting a folder used by a table the job can see in another database, or in another catalog of its Spark session in the same bucket |
+| Other table protection | Deleting a folder used by a table the job can see in another database, or in another catalog of its Spark session in the same bucket or with no `warehouse` setting |
 | Iceberg write path protection | Deleting folders named by a visible Iceberg table's `write.*.path` properties |
 | Configured exclusions | Deleting folders explicitly protected through `exclude_paths` or `exclude_database_folders`, including an excluded path nested inside a candidate |
 | `older_than_hours` cutoff | Selecting folders that hold recently written objects; folders of unknown age are skipped |
@@ -459,7 +459,7 @@ none of these claims it:
 - the storage of another database that the job can see, as described in
   [Storage of other databases and Iceberg write paths](#storage-of-other-databases-and-iceberg-write-paths);
 - a table of another database that the job can see, or the storage of another catalog of its Spark
-  session in the same bucket, as described in
+  session in the same bucket or with no `warehouse` setting, as described in
   [Tables of other databases and catalogs](#tables-of-other-databases-and-catalogs);
 - `exclude_paths` and `exclude_database_folders`.
 
@@ -992,7 +992,9 @@ A table keeps its location when it is renamed into another database, and a table
 created with an explicit location anywhere. So when a folder is still unmatched after the checks above,
 the job also reads every table it can see in the other databases of the catalog, the same way it reads
 its own tables. It does the same for every other catalog in the job's Spark session whose `warehouse` is
-in the same bucket as the cleanup root, or has no scheme and bucket. The catalogs come from the session's
+in the same bucket as the cleanup root, has no scheme and bucket, or is not set. A catalog with no
+`warehouse`, or a blank one, can still keep tables in the bucket: a REST catalog can get its warehouse
+from the server. JDBC catalogs (`JDBCTableCatalog`) keep no table folders, so they are not read. The catalogs come from the session's
 configuration, so a catalog added while the job runs, for example by catalog sync, is included.
 `spark_catalog` always counts as one of them. Its Hive tables go to Spark's `spark.sql.warehouse.dir`, so
 that is also one of its warehouses. For those catalogs:
@@ -1005,7 +1007,8 @@ Each of these tables' location and write paths is protected when it is, holds, o
 of the cleanup root. If one of these tables is unresolved, its files could be in any folder, so the
 database is `BLOCKED` with `status_reason=other_table_unresolved` and the log names the table. If the
 databases or tables of one of these catalogs cannot be read, the database is `BLOCKED` with
-`status_reason=other_database_storage_unknown`.
+`status_reason=other_database_storage_unknown`. The same happens for an IOMETE-managed REST catalog with
+no `warehouse`: it stores each database under `<warehouse>/<database>`, and that folder is unknown.
 
 The first read is shared by every configured database. A read that fails, or that could not read a
 database location or found an unresolved table, is not kept, so the next database reads again. Reading costs about one catalog lookup per table. The log reports how many tables
@@ -1240,6 +1243,8 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T35 | Reading other databases fails, or finds an unresolved table, only at the final read | `BLOCKED` with `other_database_storage_unknown` or `other_table_unresolved`; nothing deleted |
 | T36 | Reading other databases fails briefly, or cannot read a database location or a table, while the first configured database is processed | That database is `BLOCKED`; the next database reads again and is not blocked by the earlier failure |
 | T37 | Another database's existing Iceberg table changes its `write.data.path` to a candidate folder after the first read, before deletion | That folder is kept and recorded as `folder_kept_at_final_check`; unrelated orphans are still deleted |
+| T38 | Another catalog of the job session has no `warehouse` setting, or a blank one, and a table stored under the cleanup root | The catalog is read, at the first read and the final read, and that folder is never deleted. An IOMETE-managed REST catalog with no `warehouse`, or a catalog that cannot be read, gives `BLOCKED` with `other_database_storage_unknown` |
+| T39 | A JDBC catalog is registered in the job session | It is not read and does not block deletion |
 
 ---
 
@@ -1348,7 +1353,7 @@ Any old unreferenced files inside that active table folder should be handled by 
 - Folders are deleted only under the cleanup root. Additional roots are reported only, and table parents
   outside the database's own storage are not listed at all.
 - Ownership is checked against the tables and databases the job can see in the catalog, and in the other
-  catalogs of its Spark session in the same bucket. A table or database the job cannot see does not
+  catalogs of its Spark session in the same bucket or with no `warehouse` setting. A table or database the job cannot see does not
   protect its folder, and neither does a Hive partition stored outside its table's folder. Catalogs
   outside the Spark session or with their warehouse in another bucket, and files a table uses outside
   its own folder, are not checked. See

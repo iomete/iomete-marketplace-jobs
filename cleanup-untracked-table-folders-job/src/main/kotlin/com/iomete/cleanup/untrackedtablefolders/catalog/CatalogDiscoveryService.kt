@@ -81,6 +81,9 @@ private val ICEBERG_CATALOG_CLASSES =
     setOf("org.apache.iceberg.spark.SparkSessionCatalog", "org.apache.iceberg.spark.SparkCatalog")
 private const val REST_CATALOG_SERVICE_HOST = "iom-rest-catalog"
 
+// The class IOMETE sets for a JDBC catalog. It is the only catalog type the platform creates without table storage.
+private const val JDBC_CATALOG_CLASS = "org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog"
+
 // iom-core gives computes <base>/internal/catalogs/<catalog>. iom-rest-catalog also serves the same catalogs at
 // /catalogs/<catalog>, which is accepted only on its own in-cluster service host.
 internal fun isManagedRestCatalogUri(
@@ -226,15 +229,17 @@ class CatalogDiscoveryService {
             .sorted()
     }
 
-    // Catalogs registered in this Spark session that name a warehouse, by catalog name. The built-in spark_catalog
-    // always exists and puts its Hive tables in the session warehouse, so it is listed with that warehouse too.
+    // Catalogs registered in this Spark session, by catalog name, with the warehouses they name. A catalog with no
+    // warehouse setting, or a blank one, is listed with none: a REST catalog can get its warehouse from the server.
+    // Only JDBC catalogs are left out, because they keep no table folders. The built-in spark_catalog always exists
+    // and puts its Hive tables in the session warehouse, so it is listed with that warehouse too.
     fun sessionCatalogWarehouses(): Map<String, List<String>> {
         val properties = catalogProperties()
         val registered =
-            properties.keys
-                .filter { '.' !in it }
-                .mapNotNull { catalog -> properties["$catalog.$WAREHOUSE_PROPERTY"]?.takeIf { it.isNotEmpty() }?.let { catalog to listOf(it) } }
-                .toMap()
+            properties
+                .filter { (key, catalogClass) -> '.' !in key && catalogClass.isNotEmpty() && catalogClass != JDBC_CATALOG_CLASS }
+                .keys
+                .associateWith { catalog -> listOfNotNull(properties["$catalog.$WAREHOUSE_PROPERTY"]?.takeIf { it.isNotEmpty() }) }
         val sessionCatalogWarehouses =
             (registered[SESSION_CATALOG_NAME].orEmpty() + sparkSessionProvider.getOrCreate().conf().get(SESSION_WAREHOUSE_KEY, "").trim())
                 .filter { it.isNotEmpty() }

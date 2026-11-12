@@ -2,14 +2,19 @@ package com.iomete.cleanup.untrackedtablefolders
 
 import com.iomete.cleanup.untrackedtablefolders.CleanupFlowHarness.Companion.putFolder
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecord
+import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredTable
 import com.iomete.cleanup.untrackedtablefolders.catalog.RestNamespaceRoot
+import com.iomete.cleanup.untrackedtablefolders.catalog.sessionConfigOf
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
+import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
 import com.iomete.cleanup.untrackedtablefolders.storage.InMemoryS3FileSystem
 import io.mockk.every
+import io.mockk.mockk
 import io.mockk.verify
 import org.apache.hadoop.fs.FileSystem
+import org.apache.spark.sql.SparkSession
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -753,6 +758,121 @@ class OwnershipProtectionFlowTest {
         assertEquals("other_database_storage_unknown", flow.auditRecords.single().statusReason)
         assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
     }
+
+    @Test
+    fun `a REST catalog with no warehouse setting is read, and its table in the cleanup root survives`() {
+        folders(SALES, "t1", "remote_t", "orphan")
+        val flow = flow(tables = listOf(table("$SALES/t1")))
+        sessionCatalogs(flow, restCatalog("remote", "https://catalog.example.com/api/catalog"))
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("remote") } returns mapOf("reports" to "s3a://bucket/remote/reports")
+        every { flow.catalogDiscoveryService.discoverTables("remote", "reports") } returns
+            listOf(DiscoveredTable("remote", "reports", "remote_t", false, location = "$SALES/remote_t"))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("SUCCESS", record.status)
+        assertEquals(listOf("$SALES/orphan"), record.deletedFolders)
+        assertTrue(flow.objectExists("$SALES/remote_t/part-0.parquet"))
+        assertTrue("visible_storage_of_same_bucket_session_catalogs" in checks(record))
+        assertTrue("final_recheck_before_deletion" in checks(record))
+    }
+
+    @Test
+    fun `a table that a catalog with no warehouse setting places in a candidate folder before the final check keeps that folder`() {
+        folders(SALES, "t1", "orders", "orphan")
+        val flow = flow(tables = listOf(table("$SALES/t1")))
+        sessionCatalogs(flow, restCatalog("remote", "https://catalog.example.com/api/catalog"))
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("remote") } returns mapOf("reports" to "s3a://bucket/remote/reports")
+        every { flow.catalogDiscoveryService.discoverTables("remote", "reports") } returnsMany
+            listOf(emptyList(), listOf(DiscoveredTable("remote", "reports", "orders", false, location = "$SALES/orders")))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals(listOf("$SALES/orders", "$SALES/orphan"), record.candidateFolders)
+        assertEquals(listOf("$SALES/orphan"), record.deletedFolders)
+        assertEquals("$SALES/orders", record.diagnosticDetails["folder_kept_at_final_check_paths_sample"])
+        assertTrue(flow.objectExists("$SALES/orders/part-0.parquet"))
+    }
+
+    @Test
+    fun `a managed REST catalog with a blank warehouse blocks deletion because its database folders are unknown`() {
+        folders(SALES, "t1", "orphan")
+        val flow = flow(tables = listOf(table("$SALES/t1")))
+        sessionCatalogs(flow, restCatalog("remote", "http://iom-core/api/internal/catalogs/remote", warehouse = ""))
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("remote") } returns mapOf("reports" to "s3a://bucket/remote/reports")
+        every { flow.catalogDiscoveryService.discoverTables("remote", "reports") } returns emptyList()
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("other_database_storage_unknown", record.statusReason)
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+        assertFalse("visible_storage_of_same_bucket_session_catalogs" in checks(record))
+        assertTrue("same_bucket_session_catalogs" in notChecked(record))
+    }
+
+    @Test
+    fun `a catalog with no warehouse setting whose databases cannot be listed blocks deletion`() {
+        folders(SALES, "t1", "orphan")
+        val flow = flow(tables = listOf(table("$SALES/t1")))
+        sessionCatalogs(flow, restCatalog("remote", "https://catalog.example.com/api/catalog"))
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("remote") } throws IllegalStateException("catalog unreachable")
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("other_database_storage_unknown", record.statusReason)
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+        assertTrue("same_bucket_session_catalogs" in notChecked(record))
+    }
+
+    @Test
+    fun `a JDBC catalog is not read and does not stop deletion`() {
+        folders(SALES, "t1", "orphan")
+        val flow = flow(tables = listOf(table("$SALES/t1")))
+        sessionCatalogs(flow, mapOf("spark.sql.catalog.jdbc_source" to "org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog"))
+
+        flow.run()
+
+        assertEquals(listOf("$SALES/orphan"), flow.auditRecords.single().deletedFolders)
+        verify(exactly = 0) { flow.catalogDiscoveryService.visibleDatabaseLocations("jdbc_source") }
+    }
+
+    // Lists the session's catalogs with the real CatalogDiscoveryService over these settings, so the flow sees which
+    // catalogs it keeps or leaves out. Spark's own warehouse is in another bucket, so spark_catalog is not read.
+    private fun sessionCatalogs(
+        flow: CleanupFlowHarness,
+        settings: Map<String, String>,
+    ) {
+        val runtimeConfig = sessionConfigOf(settings)
+        every { runtimeConfig.get("spark.sql.warehouse.dir", "") } returns "s3a://hive-bucket/warehouse"
+        val discovery =
+            CatalogDiscoveryService().apply {
+                sparkSessionProvider =
+                    mockk<SparkSessionProvider>().also { provider ->
+                        val sparkSession = mockk<SparkSession>()
+                        every { sparkSession.conf() } returns runtimeConfig
+                        every { provider.getOrCreate() } returns sparkSession
+                    }
+            }
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } answers { discovery.sessionCatalogWarehouses() }
+        every { flow.catalogDiscoveryService.restNamespaceRoot(any(), any()) } answers { discovery.restNamespaceRoot(firstArg(), secondArg()) }
+    }
+
+    private fun restCatalog(
+        name: String,
+        uri: String,
+        warehouse: String? = null,
+    ): Map<String, String> =
+        mapOf(
+            "spark.sql.catalog.$name" to "org.apache.iceberg.spark.SparkCatalog",
+            "spark.sql.catalog.$name.type" to "rest",
+            "spark.sql.catalog.$name.uri" to uri,
+        ) + listOfNotNull(warehouse?.let { "spark.sql.catalog.$name.warehouse" to it })
 
     private fun checks(record: CleanupAuditRecord): List<String> = record.diagnosticDetails.getValue("ownership_checks").split(",")
 

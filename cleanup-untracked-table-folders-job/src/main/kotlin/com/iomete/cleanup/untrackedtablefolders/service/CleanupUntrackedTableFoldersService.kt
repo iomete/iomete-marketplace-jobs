@@ -777,9 +777,16 @@ class CleanupUntrackedTableFoldersService {
                         return null
                     }
                     val hiveRoot = StoragePathUtils.normalizeLocation(location)
-                    val restRoot =
-                        catalogDiscoveryService.restNamespaceRoot(catalog, otherDatabase)?.location
-                            ?.let(StoragePathUtils::normalizeLocation)
+                    val restNamespaceRoot = catalogDiscoveryService.restNamespaceRoot(catalog, otherDatabase)
+                    // The managed REST catalog stores this database under <warehouse>/<database>. With no warehouse in
+                    // the session, that folder is unknown and could be the cleanup root.
+                    if (restNamespaceRoot?.status == "no_warehouse") {
+                        logger.warn(
+                            "Catalog=$catalog is a managed REST catalog with no warehouse in the Spark session, so the folder of database=$otherDatabase is unknown"
+                        )
+                        return null
+                    }
+                    val restRoot = restNamespaceRoot?.location?.let(StoragePathUtils::normalizeLocation)
 
                     listOfNotNull(hiveRoot, restRoot).flatMap { storage ->
                         when {
@@ -823,8 +830,8 @@ class CleanupUntrackedTableFoldersService {
 
     // Any table of another database, or of another session catalog with a warehouse in the cleanup root's bucket, can
     // be stored in the root after a rename, a register or an explicit location. A warehouse without a bucket, or no
-    // known warehouse, could be that bucket. A table with unknown storage could be anywhere. Tables hidden from the job
-    // and catalogs outside its session are not seen.
+    // warehouse in the session, could be that bucket, so those catalogs are read too. A table with unknown storage
+    // could be anywhere. Tables hidden from the job and catalogs outside its session are not seen.
     private fun otherTableStorage(
         discoveredDatabase: DiscoveredDatabase,
         cleanupRoot: String,
