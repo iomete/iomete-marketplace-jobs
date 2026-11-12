@@ -821,9 +821,10 @@ class CleanupUntrackedTableFoldersService {
         return databases - setOfNotNull(ownName)
     }
 
-    // Any table of another database, or of another session catalog whose warehouse is in the cleanup root's bucket,
-    // can be stored in the root after a rename, a register or an explicit location. A table with unknown storage could
-    // be anywhere. Tables hidden from the job and catalogs outside its session are not seen.
+    // Any table of another database, or of another session catalog with a warehouse in the cleanup root's bucket, can
+    // be stored in the root after a rename, a register or an explicit location. A warehouse without a bucket, or no
+    // known warehouse, could be that bucket. A table with unknown storage could be anywhere. Tables hidden from the job
+    // and catalogs outside its session are not seen.
     private fun otherTableStorage(
         discoveredDatabase: DiscoveredDatabase,
         cleanupRoot: String,
@@ -833,16 +834,14 @@ class CleanupUntrackedTableFoldersService {
         try {
             val root = StoragePathUtils.normalizeLocation(cleanupRoot)
             val otherCatalogs =
-                catalogDiscoveryService.sessionCatalogWarehouses().filter { (catalog, warehouse) ->
+                catalogDiscoveryService.sessionCatalogWarehouses().filter { (catalog, warehouses) ->
                     catalog != discoveredDatabase.catalog &&
-                        (!StoragePathUtils.isQualifiedLocation(warehouse) || StoragePathUtils.isSameBucket(warehouse, root))
+                        (warehouses.isEmpty() || warehouses.any { !StoragePathUtils.isQualifiedLocation(it) || StoragePathUtils.isSameBucket(it, root) })
                 }
 
             val paths = mutableListOf<String>()
-            otherCatalogs.forEach { (catalog, warehouse) ->
-                if (StoragePathUtils.isSameOrChildLocation(warehouse, root)) {
-                    paths += StoragePathUtils.normalizeLocation(warehouse)
-                }
+            otherCatalogs.forEach { (catalog, warehouses) ->
+                paths += warehouses.filter { StoragePathUtils.isSameOrChildLocation(it, root) }.map(StoragePathUtils::normalizeLocation)
                 paths += otherDatabaseStorage(catalog, null, root, index.databaseLocations(catalog)) ?: return OtherTableStorage(null, emptyList())
             }
 
@@ -977,8 +976,9 @@ private data class OtherTableStorage(
             }
 }
 
-// A successful read is kept and shared by every configured database, because it can describe every visible table.
-// A failed read is not kept, so a brief failure does not block the databases processed after it.
+// A complete read is kept and shared by every configured database, because it can describe every visible table.
+// A failed read, or one with an unreadable database location or an unresolved table, is not kept, so a brief failure
+// does not block the databases processed after it. It still blocks the database that read it.
 private class OtherStorageIndex(
     private val catalogDiscoveryService: CatalogDiscoveryService,
 ) {
@@ -987,14 +987,16 @@ private class OtherStorageIndex(
 
     fun databaseLocations(catalog: String): Result<Map<String, String?>> =
         databaseLocations[catalog]?.let { Result.success(it) }
-            ?: runCatching { catalogDiscoveryService.visibleDatabaseLocations(catalog) }.onSuccess { databaseLocations[catalog] = it }
+            ?: runCatching { catalogDiscoveryService.visibleDatabaseLocations(catalog) }
+                .onSuccess { if (null !in it.values) databaseLocations[catalog] = it }
 
     fun tables(
         catalog: String,
         database: String,
     ): Result<List<DiscoveredTable>> =
         tables[catalog to database]?.let { Result.success(it) }
-            ?: runCatching { catalogDiscoveryService.discoverTables(catalog, database) }.onSuccess { tables[catalog to database] = it }
+            ?: runCatching { catalogDiscoveryService.discoverTables(catalog, database) }
+                .onSuccess { if (it.none(DiscoveredTable::isUnresolved)) tables[catalog to database] = it }
 }
 
 class AuditIntegrityLostException(

@@ -3,8 +3,6 @@ package com.iomete.cleanup.untrackedtablefolders.catalog
 import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
 import io.mockk.every
 import io.mockk.mockk
-import org.apache.spark.SparkConf
-import org.apache.spark.SparkContext
 import org.apache.spark.sql.SparkSession
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -16,16 +14,14 @@ private const val MANAGED_URI = "http://iom-rest-catalog.iomete-system.svc.clust
 
 class RestNamespaceRootTest {
 
-    private val sparkConf = SparkConf(false)
+    private val sessionConf = mutableMapOf<String, String>()
 
     private val catalogDiscoveryService =
         CatalogDiscoveryService().apply {
             sparkSessionProvider =
                 mockk<SparkSessionProvider>().also { provider ->
-                    val sparkContext = mockk<SparkContext>()
                     val sparkSession = mockk<SparkSession>()
-                    every { sparkContext.getConf() } returns sparkConf
-                    every { sparkSession.sparkContext() } returns sparkContext
+                    every { sparkSession.conf() } returns sessionConfigOf(sessionConf)
                     every { provider.getOrCreate() } returns sparkSession
                 }
         }
@@ -100,9 +96,9 @@ class RestNamespaceRootTest {
         uri: String,
         warehouse: String,
     ) {
-        sparkConf.set("spark.sql.catalog.$catalog", catalogClass)
-        sparkConf.set("spark.sql.catalog.$catalog.type", type)
-        sparkConf.set("spark.sql.catalog.$catalog.uri", uri)
-        sparkConf.set("spark.sql.catalog.$catalog.warehouse", warehouse)
+        sessionConf["spark.sql.catalog.$catalog"] = catalogClass
+        sessionConf["spark.sql.catalog.$catalog.type"] = type
+        sessionConf["spark.sql.catalog.$catalog.uri"] = uri
+        sessionConf["spark.sql.catalog.$catalog.warehouse"] = warehouse
     }
 }

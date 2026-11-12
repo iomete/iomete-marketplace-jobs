@@ -992,7 +992,10 @@ A table keeps its location when it is renamed into another database, and a table
 created with an explicit location anywhere. So when a folder is still unmatched after the checks above,
 the job also reads every table it can see in the other databases of the catalog, the same way it reads
 its own tables. It does the same for every other catalog in the job's Spark session whose `warehouse` is
-in the same bucket as the cleanup root, or has no scheme and bucket. For those catalogs:
+in the same bucket as the cleanup root, or has no scheme and bucket. The catalogs come from the session's
+configuration, so a catalog added while the job runs, for example by catalog sync, is included.
+`spark_catalog` always counts as one of them. Its Hive tables go to Spark's `spark.sql.warehouse.dir`, so
+that is also one of its warehouses. For those catalogs:
 
 - a warehouse at or inside the cleanup root is protected whole;
 - the storage of their databases is protected with the rules above;
@@ -1004,12 +1007,15 @@ database is `BLOCKED` with `status_reason=other_table_unresolved` and the log na
 databases or tables of one of these catalogs cannot be read, the database is `BLOCKED` with
 `status_reason=other_database_storage_unknown`.
 
-The first read is shared by every configured database. A read that fails is not kept, so the next
-database reads again. Reading costs about one catalog lookup per table. The log reports how many tables
+The first read is shared by every configured database. A read that fails, or that could not read a
+database location or found an unresolved table, is not kept, so the next database reads again. Reading costs about one catalog lookup per table. The log reports how many tables
 were checked and how long it took. When every folder already has an owner, nothing is read.
 
 Another database can claim a folder while the run is going. So right before a database deletes, the job
-reads all of this again, with nothing reused from the first read. A candidate folder that is now claimed
+reads all of this again, with nothing reused from the first read. Iceberg catalogs cache the tables they
+load, so before every table read the job drops that table's cached copy, and the read comes from the
+catalog. This also applies to the pre-delete recheck of the database's own tables. If the copy cannot be
+dropped, the read fails. A candidate folder that is now claimed
 is kept and recorded as `folder_kept_at_final_check`, and the log names the new storage. If this final
 read fails, the database is `BLOCKED` with `status_reason=other_database_storage_unknown`. If it finds an
 unresolved table, the database is `BLOCKED` with `status_reason=other_table_unresolved`. A dry run deletes
@@ -1232,7 +1238,8 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T33 | Another database has a table whose metadata is missing | `BLOCKED`, `status_reason=other_table_unresolved`, in dry-run and deletion mode |
 | T34 | Another database places a table in a candidate folder after the first read, before deletion | That folder is kept and recorded as `folder_kept_at_final_check`; unrelated orphans are still deleted |
 | T35 | Reading other databases fails, or finds an unresolved table, only at the final read | `BLOCKED` with `other_database_storage_unknown` or `other_table_unresolved`; nothing deleted |
-| T36 | Reading other databases fails briefly while the first configured database is processed | That database is `BLOCKED`; the next database reads again and is not blocked by the earlier failure |
+| T36 | Reading other databases fails briefly, or cannot read a database location or a table, while the first configured database is processed | That database is `BLOCKED`; the next database reads again and is not blocked by the earlier failure |
+| T37 | Another database's existing Iceberg table changes its `write.data.path` to a candidate folder after the first read, before deletion | That folder is kept and recorded as `folder_kept_at_final_check`; unrelated orphans are still deleted |
 
 ---
 

@@ -649,11 +649,45 @@ class OwnershipProtectionFlowTest {
     }
 
     @Test
+    fun `a database location that could not be read is read again by the next database instead of blocking it`() {
+        val marketing = "$WAREHOUSE/marketing.db"
+        val flow = twoDatabaseFlow(marketing)
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations(CATALOG) } returns
+            mapOf("sales" to SALES, "marketing" to marketing, "archive" to null) andThen
+            mapOf("sales" to SALES, "marketing" to marketing, "archive" to "$WAREHOUSE/archive.db")
+
+        flow.run()
+
+        assertEquals(listOf("BLOCKED", "SUCCESS"), flow.auditRecords.map { it.status })
+        assertEquals("other_database_storage_unknown", flow.auditRecords.first().statusReason)
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+        assertEquals(listOf("$marketing/orphan"), flow.auditRecords.last().deletedFolders)
+    }
+
+    @Test
+    fun `an unresolved table of another database is read again by the next database instead of blocking it`() {
+        val marketing = "$WAREHOUSE/marketing.db"
+        val flow = twoDatabaseFlow(marketing)
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations(CATALOG) } returns
+            mapOf("sales" to SALES, "marketing" to marketing, "archive" to "$WAREHOUSE/archive.db")
+        every { flow.catalogDiscoveryService.discoverTables(CATALOG, "archive") } returns
+            listOf(DiscoveredTable(CATALOG, "archive", "t9", false, location = null, unresolvedReason = "metadata could not be read")) andThen
+            listOf(otherTable("archive", "$WAREHOUSE/archive.db/t9"))
+
+        flow.run()
+
+        assertEquals(listOf("BLOCKED", "SUCCESS"), flow.auditRecords.map { it.status })
+        assertEquals("other_table_unresolved", flow.auditRecords.first().statusReason)
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+        assertEquals(listOf("$marketing/orphan"), flow.auditRecords.last().deletedFolders)
+    }
+
+    @Test
     fun `a table of another catalog in the same bucket survives, and a catalog in another bucket is not read`() {
         folders(SALES, "t1", "shared_t", "orphan")
         val flow = flow(tables = listOf(table("$SALES/t1")))
         every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns
-            mapOf(CATALOG to WAREHOUSE, "views" to "s3://bucket/views", "far" to "s3a://far-bucket/lake")
+            mapOf(CATALOG to listOf(WAREHOUSE), "views" to listOf("s3://bucket/views"), "far" to listOf("s3a://far-bucket/lake"))
         every { flow.catalogDiscoveryService.visibleDatabaseLocations("views") } returns mapOf("reports" to "s3://bucket/views/reports.db")
         every { flow.catalogDiscoveryService.discoverTables("views", "reports") } returns
             listOf(DiscoveredTable("views", "reports", "shared_t", false, location = "$SALES/shared_t"))
@@ -666,10 +700,26 @@ class OwnershipProtectionFlowTest {
     }
 
     @Test
+    fun `spark_catalog is read when only its Hive warehouse shares the cleanup root's bucket`() {
+        folders(SALES, "t1", "hive_t", "orphan")
+        val flow = flow(tables = listOf(table("$SALES/t1")))
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns
+            mapOf("spark_catalog" to listOf("s3a://iceberg-bucket/lake", "s3a://bucket/hive"))
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("spark_catalog") } returns mapOf("legacy" to "s3a://bucket/hive/legacy.db")
+        every { flow.catalogDiscoveryService.discoverTables("spark_catalog", "legacy") } returns
+            listOf(DiscoveredTable("spark_catalog", "legacy", "hive_t", false, location = "$SALES/hive_t"))
+
+        flow.run()
+
+        assertEquals(listOf("$SALES/orphan"), flow.auditRecords.single().deletedFolders)
+        assertTrue(flow.objectExists("$SALES/hive_t/part-0.parquet"))
+    }
+
+    @Test
     fun `a database of the same name in another catalog stored at the cleanup root protects every folder in it`() {
         folders(SALES, "t1", "orphan")
         val flow = flow(tables = listOf(table("$SALES/t1")))
-        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("views" to WAREHOUSE)
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("views" to listOf(WAREHOUSE))
         every { flow.catalogDiscoveryService.visibleDatabaseLocations("views") } returns mapOf("sales" to SALES)
 
         flow.run()
@@ -682,7 +732,7 @@ class OwnershipProtectionFlowTest {
     fun `another catalog's warehouse inside the cleanup root is protected whole`() {
         folders(SALES, "t1", "nested_lake", "orphan")
         val flow = flow(tables = listOf(table("$SALES/t1")))
-        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("nested" to "$SALES/nested_lake")
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("nested" to listOf("$SALES/nested_lake"))
         every { flow.catalogDiscoveryService.visibleDatabaseLocations("nested") } returns emptyMap()
 
         flow.run()
@@ -695,7 +745,7 @@ class OwnershipProtectionFlowTest {
     fun `a catalog in the same bucket whose databases cannot be listed blocks deletion`() {
         folders(SALES, "t1", "orphan")
         val flow = flow(tables = listOf(table("$SALES/t1")))
-        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("views" to "s3a://bucket/views")
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("views" to listOf("s3a://bucket/views"))
         every { flow.catalogDiscoveryService.visibleDatabaseLocations("views") } throws IllegalStateException("catalog unreachable")
 
         flow.run()
@@ -731,6 +781,20 @@ class OwnershipProtectionFlowTest {
         DiscoveredTable(CATALOG, database, location.substringAfterLast('/'), isTemporary = false, location = location, writeLocations = writeLocations)
 
     private fun database(tables: List<DiscoveredTable>): DiscoveredDatabase = DiscoveredDatabase(CATALOG, "sales", SALES, tables)
+
+    private fun twoDatabaseFlow(marketing: String): CleanupFlowHarness {
+        folders(SALES, "t1", "orphan")
+        folders(marketing, "m1", "orphan")
+        val flow =
+            CleanupFlowHarness(
+                ApplicationConfig(catalog = CATALOG, databases = listOf("sales", "marketing"), dryRun = false, deleteEnabled = true),
+            )
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "sales") } returns database(listOf(table("$SALES/t1")))
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "marketing") } returns
+            DiscoveredDatabase(CATALOG, "marketing", marketing, listOf(otherTable("marketing", "$marketing/m1")))
+        every { flow.catalogDiscoveryService.sharedWarehouseRoots(CATALOG) } returns listOf(WAREHOUSE)
+        return flow
+    }
 
     private fun flow(
         tables: List<DiscoveredTable>,
