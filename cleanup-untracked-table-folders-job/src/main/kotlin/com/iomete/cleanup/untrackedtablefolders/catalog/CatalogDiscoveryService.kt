@@ -229,6 +229,19 @@ class CatalogDiscoveryService {
             .sorted()
     }
 
+    // Catalogs registered in this Spark session that name a warehouse, by catalog name.
+    fun sessionCatalogWarehouses(): Map<String, String> {
+        val properties =
+            sparkSessionProvider.getOrCreate().sparkContext().getConf()
+                .getAllWithPrefix("spark.sql.catalog.")
+                .associate { it._1() to it._2().trim() }
+
+        return properties.keys
+            .filter { '.' !in it }
+            .mapNotNull { catalog -> properties["$catalog.$WAREHOUSE_PROPERTY"]?.takeIf { it.isNotEmpty() }?.let { catalog to it } }
+            .toMap()
+    }
+
     // The managed REST catalog places every table at <warehouse>/<namespace>/<table> and ignores any
     // namespace location property, so this root holds its tables even when none of them is visible.
     // Null when the catalog is not an Iceberg REST catalog at all.

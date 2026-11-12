@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders
 
 import com.iomete.cleanup.untrackedtablefolders.CleanupFlowHarness.Companion.putFolder
+import com.iomete.cleanup.untrackedtablefolders.audit.OwnershipChecks
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredTable
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
@@ -179,6 +180,7 @@ class UnresolvedOwnershipFlowTest {
                     maxCandidateFolders = 1,
                     dryRun = false,
                     unresolvedTableDetails = mapOf("$CATALOG.sales.t2" to UnresolvedTableDetail("metadata could not be read", null)),
+                    ownershipChecks = OwnershipChecks(otherDatabaseFolders = true, otherTables = true),
                 ),
             )
         }
@@ -226,6 +228,7 @@ class UnresolvedOwnershipFlowTest {
                     unmatchedFolderPaths = listOf("$SALES/orphan_a", "$SALES/orphan_b"),
                     maxCandidateFolders = 1,
                     dryRun = false,
+                    ownershipChecks = OwnershipChecks(otherDatabaseFolders = true, otherTables = true),
                 ),
             )
         }

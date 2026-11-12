@@ -68,4 +68,20 @@ class SharedWarehouseRootsTest {
 
         assertEquals(emptyList<String>(), catalogDiscoveryService.sharedWarehouseRoots("example_catalog"))
     }
+
+    @Test
+    fun `lists each registered session catalog with its warehouse`() {
+        sparkConf.set("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
+        sparkConf.set("spark.sql.catalog.spark_catalog.warehouse", " s3a://bucket/lake/ ")
+        sparkConf.set("spark.sql.catalog.views", "org.apache.iceberg.spark.SparkCatalog")
+        sparkConf.set("spark.sql.catalog.views.warehouse", "s3://bucket/views")
+        sparkConf.set("spark.sql.catalog.views.io.warehouse", "s3://bucket/not-a-catalog")
+        sparkConf.set("spark.sql.catalog.jdbc_source", "org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog")
+        sparkConf.set("spark.sql.catalog.unregistered.warehouse", "s3://bucket/unregistered")
+
+        assertEquals(
+            mapOf("spark_catalog" to "s3a://bucket/lake/", "views" to "s3://bucket/views"),
+            catalogDiscoveryService.sessionCatalogWarehouses(),
+        )
+    }
 }

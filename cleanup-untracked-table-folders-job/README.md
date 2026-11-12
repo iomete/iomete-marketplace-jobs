@@ -437,6 +437,7 @@ The main safety principle is **fail closed**: if the job cannot prove that a fol
 | Warehouse-root rejection | Scanning a shared warehouse root where other databases live |
 | Active table location protection | Deleting folders still claimed by the catalog, including folders inside a table location |
 | Other database protection | Deleting the storage of another database the job can see that sits inside the cleanup root |
+| Other table protection | Deleting a folder used by a table the job can see in another database, or in another catalog of its Spark session in the same bucket |
 | Iceberg write path protection | Deleting folders named by a visible Iceberg table's `write.*.path` properties |
 | Configured exclusions | Deleting folders explicitly protected through `exclude_paths` or `exclude_database_folders`, including an excluded path nested inside a candidate |
 | `older_than_hours` cutoff | Selecting folders that hold recently written objects; folders of unknown age are skipped |
@@ -457,16 +458,21 @@ none of these claims it:
 - a table of this database that the job can see, including its Iceberg write paths;
 - the storage of another database that the job can see, as described in
   [Storage of other databases and Iceberg write paths](#storage-of-other-databases-and-iceberg-write-paths);
+- a table of another database that the job can see, or the storage of another catalog of its Spark
+  session in the same bucket, as described in
+  [Tables of other databases and catalogs](#tables-of-other-databases-and-catalogs);
 - `exclude_paths` and `exclude_database_folders`.
+
+In deletion mode, the storage of other databases and catalogs is read again right before deleting.
 
 A deleted folder therefore means "no table or database visible to this job, in the places checked,
 claims this folder". It does not prove that nothing else uses the folder. The job does not check:
 
 | Not checked | Example | What to do |
 |---|---|---|
-| Tables of other databases stored inside the cleanup root | A table renamed into another database keeps its folder. A table created or registered with an explicit `LOCATION` can point into this database's folder. | Review the dry-run candidates. Protect the folder with `exclude_paths`. |
-| Tables of other catalogs | Two catalogs that use the same warehouse folder | Give each catalog its own warehouse. Protect shared folders with `exclude_paths`. |
+| Catalogs outside the job's Spark session, or with their warehouse in another bucket | A catalog of another data plane or tool, or a catalog in another bucket with a table whose `LOCATION` is in this database's folder | Review the dry-run candidates. Protect the folder with `exclude_paths`. |
 | Tables the job cannot see | Tables the job's run-as user is not allowed to see | Run the job as a user who can see every table in the catalog. |
+| Tables of nested namespaces | A table in a namespace inside another namespace | Protect its folder with `exclude_paths`. |
 | Files a table uses outside its own folder | After `ALTER TABLE ... SET LOCATION`, the existing files stay in the old folder and the table still reads them. Files added with `add_files`, or used by a table made with `snapshot` or `migrate`, stay where they were. | Protect the old or source folder with `exclude_paths` while any table still uses it. |
 
 Deletion mode is only as safe as these preconditions:
@@ -478,10 +484,24 @@ Deletion mode is only as safe as these preconditions:
 If any of these may not hold, run in dry-run, review the candidates, and protect what must stay with
 `exclude_paths`.
 
-Every audit row states the same thing in `diagnostic_details`. `ownership_checks` lists what the job
-checks, and `ownership_not_checked` lists what it does not. Both are written on every row, whether or
-not the database reached the folder checks. Each `CLEANUP REPORT` in the log starts with an
-`OWNERSHIP CHECKS` section that says the same.
+Every audit row states which of these checks ran for its database, in `diagnostic_details`.
+`ownership_checks` lists the checks that ran, and `ownership_not_checked` lists the rest. A check that
+was skipped or failed is listed as not checked, so a row never claims a check that did not run.
+
+| In `ownership_checks` | Listed when |
+|---|---|
+| `visible_tables_of_this_database`, `write_paths_of_visible_tables_of_this_database`, `configured_exclusions` | Always. They are part of every folder comparison. A row that stops before comparing folders has no candidates. |
+| `default_folders_of_visible_other_databases` | The locations of other databases were read. They are read only when the cleanup root has at least one folder. |
+| `visible_tables_of_other_databases`, `visible_storage_of_same_bucket_session_catalogs` | The tables of other databases and catalogs were read. They are read only when a folder has no owner after the checks above. |
+| `final_recheck_before_deletion` | Other storage was read again right before deleting. This happens only in deletion mode. |
+
+When one of the last three rows is missing, `ownership_not_checked` names it instead, as
+`default_folders_of_other_databases`, `other_database_tables` and `same_bucket_session_catalogs`, or
+`final_recheck_before_deletion`. `ownership_not_checked` always has `other_bucket_session_catalogs`,
+`catalogs_outside_session`, `hidden_tables`, `nested_namespace_tables` and `files_outside_table_folders`.
+
+Each `CLEANUP REPORT` in the log starts with an `OWNERSHIP CHECKS` section that says the same for its
+database.
 
 ---
 
@@ -821,6 +841,8 @@ unknown_age_count
 unknown_age_paths_sample
 folder_not_found_at_deletion_count
 folder_not_found_at_deletion_paths_sample
+folder_kept_at_final_check_count
+folder_kept_at_final_check_paths_sample
 *_truncated
 ```
 
@@ -832,6 +854,11 @@ candidates or as potentially untracked folders.
 The `folder_not_found_at_deletion` keys are separate. They name candidate folders that passed
 inspection but were gone when deletion reached them. They appear on `SUCCESS` and
 `deletion_failed` rows.
+
+The `folder_kept_at_final_check` keys name candidate folders that another database, catalog or table
+claimed when the job read their storage again just before deleting. These folders are not deleted and
+stay counted as candidates. They appear on `SUCCESS` rows. See
+[Tables of other databases and catalogs](#tables-of-other-databases-and-catalogs).
 
 Storage root keys follow `scan_plan_status`:
 
@@ -877,6 +904,7 @@ Its state is unknown: it may be fully present, partly deleted, or gone.
 | An earlier audit write in the same run failed | `BLOCKED` | `status_reason=audit_integrity_lost`; see [Audit write failures](#audit-write-failures) |
 | No visible table is stored under the cleanup root | `BLOCKED` | `status_reason=cleanup_root_has_no_visible_table`; candidates are reported, nothing is deleted |
 | The storage of other databases could not be established | `BLOCKED` | `status_reason=other_database_storage_unknown`; candidates are reported, nothing is deleted; see [Storage of other databases and Iceberg write paths](#storage-of-other-databases-and-iceberg-write-paths) |
+| A table of another database or catalog is unresolved | `BLOCKED` | `status_reason=other_table_unresolved`; candidates are reported, nothing is deleted; see [Tables of other databases and catalogs](#tables-of-other-databases-and-catalogs) |
 
 ---
 
@@ -933,7 +961,7 @@ log's `DELETION` section gives the reason.
 ## Storage of other databases and Iceberg write paths
 
 Before choosing candidates, the job reads the location of every database it can see in the catalog,
-once per run, with `SHOW NAMESPACES` and `DESCRIBE DATABASE`. It never lists other databases' tables.
+once per run, with `SHOW NAMESPACES` and `DESCRIBE DATABASE`.
 For `spark_catalog` and IOMETE-managed REST catalogs, a database's storage also includes its REST
 namespace folder, `<catalog warehouse>/<database>`, where its Iceberg tables live.
 
@@ -958,9 +986,40 @@ candidate selection and again in the pre-delete recheck. A table with `gc.enable
 `true` or with `write.location-provider.impl` set, a blank write path or one without a scheme and bucket,
 or properties that cannot be read is treated as an unresolved table, which blocks deletion for its database.
 
+### Tables of other databases and catalogs
+
+A table keeps its location when it is renamed into another database, and a table can be registered or
+created with an explicit location anywhere. So when a folder is still unmatched after the checks above,
+the job also reads every table it can see in the other databases of the catalog, the same way it reads
+its own tables. It does the same for every other catalog in the job's Spark session whose `warehouse` is
+in the same bucket as the cleanup root, or has no scheme and bucket. For those catalogs:
+
+- a warehouse at or inside the cleanup root is protected whole;
+- the storage of their databases is protected with the rules above;
+- their tables are read like the tables of other databases.
+
+Each of these tables' location and write paths is protected when it is, holds, or sits inside a folder
+of the cleanup root. If one of these tables is unresolved, its files could be in any folder, so the
+database is `BLOCKED` with `status_reason=other_table_unresolved` and the log names the table. If the
+databases or tables of one of these catalogs cannot be read, the database is `BLOCKED` with
+`status_reason=other_database_storage_unknown`.
+
+The first read is shared by every configured database. A read that fails is not kept, so the next
+database reads again. Reading costs about one catalog lookup per table. The log reports how many tables
+were checked and how long it took. When every folder already has an owner, nothing is read.
+
+Another database can claim a folder while the run is going. So right before a database deletes, the job
+reads all of this again, with nothing reused from the first read. A candidate folder that is now claimed
+is kept and recorded as `folder_kept_at_final_check`, and the log names the new storage. If this final
+read fails, the database is `BLOCKED` with `status_reason=other_database_storage_unknown`. If it finds an
+unresolved table, the database is `BLOCKED` with `status_reason=other_table_unresolved`. A dry run deletes
+nothing, so it does not read again.
+
 These checks use only what the job can see. They do not protect a database or table hidden from the
-job, another database's table stored inside the cleanup root, or files that a table reaches without a
-write path property, for example through `add_files`, `migrate`, `snapshot`, or an earlier location.
+job, tables of a catalog outside the job's Spark session or with its warehouse in another bucket, tables
+of nested namespaces, a table placed in a folder after the final read while that database is deleting,
+or files that a table reaches without a write path property, for example through `add_files`,
+`migrate`, `snapshot`, or an earlier location.
 
 ---
 
@@ -1168,6 +1227,12 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T28 | A candidate folder holds only directory markers | Skipped as `empty_folder` on every run; never deleted |
 | T29 | Listing a candidate folder is denied | Skipped as `statistics_unavailable`; if every existing candidate is denied, `FAILED` |
 | T30 | A candidate folder is deleted by someone else after inspection, before the job deletes it (S3A) | Recorded as `folder_not_found_at_deletion`; still a candidate, not deleted; other folders are still deleted |
+| T31 | A table is renamed from the cleaned database into another database | Its folder stays and is never a candidate; unrelated orphans are still deleted |
+| T32 | Another catalog of the job session, in the same bucket, has a table stored under the cleanup root | That folder is never a candidate |
+| T33 | Another database has a table whose metadata is missing | `BLOCKED`, `status_reason=other_table_unresolved`, in dry-run and deletion mode |
+| T34 | Another database places a table in a candidate folder after the first read, before deletion | That folder is kept and recorded as `folder_kept_at_final_check`; unrelated orphans are still deleted |
+| T35 | Reading other databases fails, or finds an unresolved table, only at the final read | `BLOCKED` with `other_database_storage_unknown` or `other_table_unresolved`; nothing deleted |
+| T36 | Reading other databases fails briefly while the first configured database is processed | That database is `BLOCKED`; the next database reads again and is not blocked by the earlier failure |
 
 ---
 
@@ -1275,10 +1340,11 @@ Any old unreferenced files inside that active table folder should be handled by 
 - A database whose location equals or contains the catalog warehouse root cannot be cleaned by this job.
 - Folders are deleted only under the cleanup root. Additional roots are reported only, and table parents
   outside the database's own storage are not listed at all.
-- Ownership is checked against the tables and databases the job can see in the catalog. A table or
-  database the job cannot see does not protect its folder, and neither does another database's table
-  stored inside the cleanup root or a Hive partition stored outside its table's folder. Tables of other
-  catalogs, and files a table uses outside its own folder, are not checked either. See
+- Ownership is checked against the tables and databases the job can see in the catalog, and in the other
+  catalogs of its Spark session in the same bucket. A table or database the job cannot see does not
+  protect its folder, and neither does a Hive partition stored outside its table's folder. Catalogs
+  outside the Spark session or with their warehouse in another bucket, and files a table uses outside
+  its own folder, are not checked. See
   [What deletion mode can and cannot prove](#what-deletion-mode-can-and-cannot-prove).
 - On a versioned bucket, deleting a folder may not free storage. See [Versioned buckets](#versioned-buckets).
 - The job is intended for controlled cleanup workflows, not blind automatic deletion.

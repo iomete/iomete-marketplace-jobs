@@ -74,6 +74,16 @@ object StoragePathUtils {
 
     fun scheme(location: String): String? = Path(location.trim()).toUri().scheme?.lowercase()
 
+    fun isSameBucket(
+        firstLocation: String,
+        secondLocation: String,
+    ): Boolean = bucketOf(firstLocation) == bucketOf(secondLocation)
+
+    private fun bucketOf(location: String): Pair<String?, String?> {
+        val uri = Path(location.trim()).toUri()
+        return uri.scheme?.lowercase()?.let(::canonicalizeScheme) to uri.authority?.lowercase()
+    }
+
     fun isStorageRoot(location: String): Boolean =
         normalizeUriPath(Path(location.trim().trimEnd('/').ifEmpty { "/" }).toUri().normalize()) == "/"
 

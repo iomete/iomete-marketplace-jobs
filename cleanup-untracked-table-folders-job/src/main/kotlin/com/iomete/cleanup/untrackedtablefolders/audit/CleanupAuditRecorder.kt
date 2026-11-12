@@ -118,6 +118,7 @@ class CleanupAuditRecorder {
         unscannedTableLocations: List<String> = emptyList(),
         scanPlan: ScanPlanReport? = null,
         inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>> = emptyMap(),
+        ownershipChecks: OwnershipChecks = OwnershipChecks(),
     ) {
         writeAuditRecord(
             runId = runId,
@@ -135,6 +136,7 @@ class CleanupAuditRecorder {
             storageFolderCount = storageFolderPaths.size.toLong(),
             cutoffTime = cutoffTime,
             excludedPaths = excludedPaths,
+            ownershipChecks = ownershipChecks,
             diagnosticDetails =
                 auditDiagnosticDetailsBuilder.build(
                     activeTableLocations = activeTableLocations,
@@ -164,6 +166,7 @@ class CleanupAuditRecorder {
         errorMessage: String,
         unscannedTableLocations: List<String> = emptyList(),
         scanPlan: ScanPlanReport? = null,
+        ownershipChecks: OwnershipChecks = OwnershipChecks(),
     ) {
         // With unresolved tables no folder is a confirmed candidate, but the count that exceeded the limit stays visible.
         val (confirmedFolderPaths, unverifiedFolderPaths) =
@@ -191,6 +194,7 @@ class CleanupAuditRecorder {
             candidateFolders = confirmedFolderPaths.take(MAX_AUDIT_PATH_SAMPLE_SIZE),
             cutoffTime = cutoffTime,
             excludedPaths = excludedPaths,
+            ownershipChecks = ownershipChecks,
             diagnosticDetails =
                 auditDiagnosticDetailsBuilder.build(
                     activeTableLocations = activeTableLocations,
@@ -223,6 +227,8 @@ class CleanupAuditRecorder {
         scanPlan: ScanPlanReport? = null,
         inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>> = emptyMap(),
         notFoundAtDeletionPaths: List<String> = emptyList(),
+        keptAtFinalCheckPaths: List<String> = emptyList(),
+        ownershipChecks: OwnershipChecks = OwnershipChecks(),
     ) {
         val candidateFolderPathSet = candidateFolderPaths.toSet()
 
@@ -248,6 +254,7 @@ class CleanupAuditRecorder {
             deletedFolders = deletedFolderPaths,
             cutoffTime = cutoffTime,
             excludedPaths = excludedPaths,
+            ownershipChecks = ownershipChecks,
             diagnosticDetails =
                 auditDiagnosticDetailsBuilder.build(
                     activeTableLocations = activeTableLocations,
@@ -258,7 +265,8 @@ class CleanupAuditRecorder {
                     unscannedTableLocations = unscannedTableLocations,
                 ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan) +
                     auditDiagnosticDetailsBuilder.inspectionOutcomeDetails(inspectionOutcomes) +
-                    auditDiagnosticDetailsBuilder.notFoundAtDeletionDetails(notFoundAtDeletionPaths),
+                    auditDiagnosticDetailsBuilder.notFoundAtDeletionDetails(notFoundAtDeletionPaths) +
+                    auditDiagnosticDetailsBuilder.keptAtFinalCheckDetails(keptAtFinalCheckPaths),
         )
     }
 
@@ -284,6 +292,7 @@ class CleanupAuditRecorder {
         inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>> = emptyMap(),
         notFoundAtDeletionPaths: List<String> = emptyList(),
         error: Throwable,
+        ownershipChecks: OwnershipChecks = OwnershipChecks(),
     ) {
         writeAuditRecord(
             runId = runId,
@@ -307,6 +316,7 @@ class CleanupAuditRecorder {
             deletedFolders = deletedFolderPaths,
             cutoffTime = cutoffTime,
             excludedPaths = excludedPaths,
+            ownershipChecks = ownershipChecks,
             diagnosticDetails =
                 auditDiagnosticDetailsBuilder.build(
                     activeTableLocations = activeTableLocations,
@@ -339,6 +349,7 @@ class CleanupAuditRecorder {
         unscannedTableLocations: List<String>,
         scanPlan: ScanPlanReport?,
         inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>> = emptyMap(),
+        ownershipChecks: OwnershipChecks = OwnershipChecks(),
     ) {
         writeAuditRecord(
             runId = runId,
@@ -358,6 +369,7 @@ class CleanupAuditRecorder {
             candidateFolders = candidateFolderPaths,
             cutoffTime = cutoffTime,
             excludedPaths = excludedPaths,
+            ownershipChecks = ownershipChecks,
             diagnosticDetails =
                 auditDiagnosticDetailsBuilder.build(
                     activeTableLocations = activeTableLocations,
@@ -395,6 +407,7 @@ class CleanupAuditRecorder {
         scanPlan: ScanPlanReport? = null,
         unresolvedTables: List<String>,
         error: Throwable,
+        ownershipChecks: OwnershipChecks = OwnershipChecks(),
     ) {
         writeAuditRecord(
             runId = runId,
@@ -406,6 +419,7 @@ class CleanupAuditRecorder {
             errorMessage = error.message ?: error::class.java.name,
             unresolvedTableCount = unresolvedTables.size.toLong(),
             excludedPaths = excludedPaths,
+            ownershipChecks = ownershipChecks,
             diagnosticDetails =
                 unscannedTableLocations
                     ?.let { auditDiagnosticDetailsBuilder.scanCoverageDetails(it, reportCompleteScanCoverage = true) }
@@ -438,6 +452,7 @@ class CleanupAuditRecorder {
         deletedFolders: List<String> = emptyList(),
         cutoffTime: Instant? = null,
         excludedPaths: List<String> = excludePathResolver.normalizedConfiguredExcludePaths(),
+        ownershipChecks: OwnershipChecks = OwnershipChecks(),
         diagnosticDetails: Map<String, String> = emptyMap(),
     ) {
         cleanupAuditTableService.writeAuditRecord(
@@ -476,7 +491,7 @@ class CleanupAuditRecorder {
                 deletedTotalSizeBytes = deletedTotalSizeBytes,
                 candidateFolders = candidateFolders,
                 deletedFolders = deletedFolders,
-                diagnosticDetails = auditDiagnosticDetailsBuilder.ownershipCheckDetails() + diagnosticDetails,
+                diagnosticDetails = auditDiagnosticDetailsBuilder.ownershipCheckDetails(ownershipChecks) + diagnosticDetails,
                 startTime = databaseStartTime,
                 endTime = Instant.now(),
             )

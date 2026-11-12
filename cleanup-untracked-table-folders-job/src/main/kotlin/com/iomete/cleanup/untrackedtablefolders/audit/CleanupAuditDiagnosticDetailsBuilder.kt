@@ -62,13 +62,30 @@ class CleanupAuditDiagnosticDetailsBuilder {
     }
 
     // Stated on every row so a clean result is never read as proof that no table anywhere uses the folder.
-    fun ownershipCheckDetails(): Map<String, String> =
+    fun ownershipCheckDetails(checks: OwnershipChecks): Map<String, String> =
         mapOf(
             "ownership_checks" to
-                "visible_tables_of_this_database,write_paths_of_visible_tables_of_this_database," +
-                "default_folders_of_visible_other_databases,configured_exclusions",
+                listOfNotNull(
+                    "visible_tables_of_this_database",
+                    "write_paths_of_visible_tables_of_this_database",
+                    "default_folders_of_visible_other_databases".takeIf { checks.otherDatabaseFolders },
+                    "configured_exclusions",
+                    "visible_tables_of_other_databases".takeIf { checks.otherTables },
+                    "visible_storage_of_same_bucket_session_catalogs".takeIf { checks.otherTables },
+                    "final_recheck_before_deletion".takeIf { checks.finalRecheck },
+                ).joinToString(","),
             "ownership_not_checked" to
-                "other_database_tables,other_catalogs,hidden_tables,files_outside_table_folders",
+                listOfNotNull(
+                    "default_folders_of_other_databases".takeUnless { checks.otherDatabaseFolders },
+                    "other_database_tables".takeUnless { checks.otherTables },
+                    "same_bucket_session_catalogs".takeUnless { checks.otherTables },
+                    "final_recheck_before_deletion".takeUnless { checks.finalRecheck },
+                    "other_bucket_session_catalogs",
+                    "catalogs_outside_session",
+                    "hidden_tables",
+                    "nested_namespace_tables",
+                    "files_outside_table_folders",
+                ).joinToString(","),
         )
 
     fun unresolvedTableDetails(unresolvedTables: List<String>): Map<String, String> =
@@ -151,6 +168,9 @@ class CleanupAuditDiagnosticDetailsBuilder {
 
     fun notFoundAtDeletionDetails(notFoundAtDeletionPaths: List<String>): Map<String, String> =
         countedPathSample("folder_not_found_at_deletion", notFoundAtDeletionPaths).toMap()
+
+    fun keptAtFinalCheckDetails(keptAtFinalCheckPaths: List<String>): Map<String, String> =
+        countedPathSample("folder_kept_at_final_check", keptAtFinalCheckPaths).toMap()
 
     private fun countedPathSample(
         key: String,

@@ -377,30 +377,34 @@ class CleanupAuditRecorderTest {
         val tables = listOf("$db/orders")
         val folders = listOf("$db/orders", "$db/a")
         val candidates = listOf("$db/a")
+        val allRead = OwnershipChecks(otherDatabaseFolders = true, otherTables = true, finalRecheck = true)
 
         recorder.recordSuccess(
             "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, tables, folders, candidates, null, emptyList(), null,
-            Instant.EPOCH, emptyList(),
+            Instant.EPOCH, emptyList(), ownershipChecks = allRead,
         )
         DeletionBlockReason.entries.forEach { reason ->
             recorder.recordDeletionBlocked(
                 reason, "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, tables, folders, candidates, null,
-                Instant.EPOCH, emptyList(), emptyList(), null,
+                Instant.EPOCH, emptyList(), emptyList(), null, ownershipChecks = allRead,
             )
         }
         recorder.recordOwnershipUnverified(
             "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 2, listOf("example_catalog.analytics.t2"), tables, folders,
-            candidates, Instant.EPOCH, emptyList(),
+            candidates, Instant.EPOCH, emptyList(), ownershipChecks = allRead,
         )
         recorder.recordTooManyCandidateFolders(
             "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, emptyList(), tables, folders, candidates, Instant.EPOCH,
-            emptyList(), "too many",
+            emptyList(), "too many", ownershipChecks = allRead,
         )
         recorder.recordDeletionFailed(
             "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, tables, folders, candidates, null, emptyList(), null,
-            "$db/a", Instant.EPOCH, emptyList(), emptyList(), error = IllegalStateException("delete failed"),
+            "$db/a", Instant.EPOCH, emptyList(), emptyList(), error = IllegalStateException("delete failed"), ownershipChecks = allRead,
         )
-        recorder.recordFailed("run", "analytics", Instant.EPOCH, unresolvedTables = emptyList(), error = IllegalStateException("boom"))
+        recorder.recordFailed(
+            "run", "analytics", Instant.EPOCH, unresolvedTables = emptyList(), error = IllegalStateException("boom"), ownershipChecks = allRead,
+        )
+        // Written before other storage is read, so these rows state only this database's checks.
         recorder.recordDatabaseNotFound("run", "analytics", Instant.EPOCH, IllegalStateException("missing"))
         recorder.recordNoActiveTables("run", Instant.EPOCH, "example_catalog", "analytics", db, emptyList())
         recorder.recordDatabaseLocationMissing("run", Instant.EPOCH, "example_catalog", "analytics", null, 1, emptyList(), tables, "missing", emptyList())
@@ -408,20 +412,34 @@ class CleanupAuditRecorderTest {
 
         assertEquals(
             listOf(
-                "SUCCESS", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "SKIPPED", "FAILED", "FAILED", "SKIPPED", "SKIPPED", "SKIPPED",
-                "SKIPPED",
+                "SUCCESS", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "SKIPPED", "FAILED", "FAILED", "SKIPPED", "SKIPPED",
+                "SKIPPED", "SKIPPED",
             ),
             records.map { it.status },
         )
-        records.forEach { record ->
+        records.dropLast(4).forEach { record ->
             assertEquals(
                 "visible_tables_of_this_database,write_paths_of_visible_tables_of_this_database," +
-                    "default_folders_of_visible_other_databases,configured_exclusions",
+                    "default_folders_of_visible_other_databases,configured_exclusions,visible_tables_of_other_databases," +
+                    "visible_storage_of_same_bucket_session_catalogs,final_recheck_before_deletion",
                 record.diagnosticDetails["ownership_checks"],
                 record.statusReason,
             )
             assertEquals(
-                "other_database_tables,other_catalogs,hidden_tables,files_outside_table_folders",
+                "other_bucket_session_catalogs,catalogs_outside_session,hidden_tables,nested_namespace_tables,files_outside_table_folders",
+                record.diagnosticDetails["ownership_not_checked"],
+                record.statusReason,
+            )
+        }
+        records.takeLast(4).forEach { record ->
+            assertEquals(
+                "visible_tables_of_this_database,write_paths_of_visible_tables_of_this_database,configured_exclusions",
+                record.diagnosticDetails["ownership_checks"],
+                record.statusReason,
+            )
+            assertEquals(
+                "default_folders_of_other_databases,other_database_tables,same_bucket_session_catalogs,final_recheck_before_deletion," +
+                    "other_bucket_session_catalogs,catalogs_outside_session,hidden_tables,nested_namespace_tables,files_outside_table_folders",
                 record.diagnosticDetails["ownership_not_checked"],
                 record.statusReason,
             )
