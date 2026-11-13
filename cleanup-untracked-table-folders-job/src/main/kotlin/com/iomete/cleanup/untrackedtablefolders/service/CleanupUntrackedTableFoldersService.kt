@@ -20,15 +20,19 @@ import com.iomete.cleanup.untrackedtablefolders.logging.UnresolvedTableDetail
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionResult
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
+import com.iomete.cleanup.untrackedtablefolders.storage.CleanupRootListing
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.storage.PartialDeletionException
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
+import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
+import com.iomete.cleanup.untrackedtablefolders.storage.StorageFolder
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationPlanner
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.UnsafeScanRootException
 import com.iomete.cleanup.untrackedtablefolders.storage.UnsafeScanRootReason
+import com.iomete.cleanup.untrackedtablefolders.storage.managedRootRefused
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.time.Duration
@@ -208,7 +212,7 @@ class CleanupUntrackedTableFoldersService {
                     }
                 } else {
                     val sharedWarehouseRoots = catalogDiscoveryService.sharedWarehouseRoots(discoveredDatabase.catalog)
-                    val storageScanLocation =
+                    val resolvedScanLocation =
                         try {
                             storageScanLocationResolver.resolve(
                                 databaseLocation = discoveredDatabase.location,
@@ -246,17 +250,40 @@ class CleanupUntrackedTableFoldersService {
 
                             return@forEach
                         }
-                    logger.info(
-                        "Using storage scan location=$storageScanLocation for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, discoveredDatabaseLocation=${discoveredDatabase.location}"
-                    )
+                    val activeTableLocations =
+                        discoveredDatabase.tables.mapNotNull { it.location }.sorted()
 
-                    val storageFolders =
-                        objectStorageDiscoveryService.listImmediateChildFolders(
-                            catalog = discoveredDatabase.catalog,
-                            location = storageScanLocation,
+                    val cleanupRoots =
+                        storageScanLocationResolver.cleanupRoots(
+                            resolvedScanLocation = resolvedScanLocation,
+                            databaseLocation = discoveredDatabase.location,
+                            activeTableLocations = activeTableLocations,
+                            derivedRestNamespaceRoot = { derivedRestNamespaceRoot(discoveredDatabase) },
                         )
                     logger.info(
-                        "Discovered ${storageFolders.size} immediate storage folder(s) under storage scan location=$storageScanLocation"
+                        "Using storage scan location=${cleanupRoots.locations.joinToString()} for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, discoveredDatabaseLocation=${discoveredDatabase.location}, managedRootStatus=${cleanupRoots.managedRootStatus}"
+                    )
+
+                    val cleanupRootListings = listCleanupRoots(discoveredDatabase.catalog, cleanupRoots.locations)
+                    val listedRoots = cleanupRootListings.filter { it.outcome != ScanRootOutcome.LISTING_FAILED }
+                    val listedRootLocations = listedRoots.map { it.location }
+                    // The audit row keeps one storage_scan_location: the first cleanup root that was listed.
+                    val storageScanLocation = listedRootLocations.first()
+                    val managedRootStatus =
+                        if (cleanupRootListings.any { it.outcome == ScanRootOutcome.LISTING_FAILED && it.location != resolvedScanLocation }) {
+                            managedRootRefused(ScanRootOutcome.LISTING_FAILED.code)
+                        } else {
+                            cleanupRoots.managedRootStatus
+                        }
+
+                    // Cleanup roots never overlap, but a folder is still counted and deleted at most once.
+                    val storageFolders =
+                        listedRoots
+                            .flatMap { it.folders }
+                            .distinctBy { StoragePathUtils.normalizeLocation(it.path) }
+                            .sortedBy { it.path }
+                    logger.info(
+                        "Discovered ${storageFolders.size} immediate storage folder(s) under storage scan location=${listedRootLocations.joinToString()}"
                     )
                     storageFolders.forEach { folder ->
                         logger.info(
@@ -272,41 +299,50 @@ class CleanupUntrackedTableFoldersService {
                         "Applying older_than_hours=${config.olderThanHours}; the newest object in a candidate folder must be at or before $cutoffTime"
                     )
 
-                    val activeTableLocations =
-                        discoveredDatabase.tables.mapNotNull { it.location }.sorted()
-
                     val unscannedTableLocations =
                         activeTableLocations.filterNot { tableLocation ->
-                            StoragePathUtils.isSameOrChildLocation(tableLocation, storageScanLocation)
+                            listedRootLocations.any { StoragePathUtils.isSameOrChildLocation(tableLocation, it) }
                         }
 
                     unscannedTableLocationsForAudit = unscannedTableLocations
 
                     if (unscannedTableLocations.isNotEmpty()) {
                         logger.warn(
-                            "Storage scan covers part of the database only: ${unscannedTableLocations.size} table location(s) are outside storage scan location=$storageScanLocation for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
+                            "Storage scan covers part of the database only: ${unscannedTableLocations.size} table location(s) are outside storage scan location=${listedRootLocations.joinToString()} for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}"
                         )
                     }
 
                     val scanPlan =
                         planStorageRoots(
                             discoveredDatabase = discoveredDatabase,
-                            cleanupRoot = storageScanLocation,
+                            cleanupRoots = cleanupRoots.locations,
                             databaseLocation = discoveredDatabase.location,
                             sharedWarehouseRoots = sharedWarehouseRoots,
-                            cleanupRootFolderCount = storageFolders.size,
-                        )
+                            cleanupRootListings =
+                                cleanupRootListings.associate { listing ->
+                                    StoragePathUtils.normalizeLocation(listing.location) to
+                                        CleanupRootListing(
+                                            outcome = listing.outcome,
+                                            folderCount = listing.folders.size.takeIf { listing.outcome == ScanRootOutcome.SCANNED },
+                                        )
+                                },
+                        ).copy(cleanupRoots = listedRootLocations, managedRootStatus = managedRootStatus)
 
                     scanPlanForAudit = scanPlan
 
-                    // Without a visible table under it, the cleanup root gives nothing to check ownership against.
-                    val cleanupRootHasVisibleTable = unscannedTableLocations.size < activeTableLocations.size
+                    // Without a visible table under it, a cleanup root gives nothing to check ownership against.
+                    val cleanupRootHasVisibleTable =
+                        listedRootLocations.all { root -> activeTableLocations.any { StoragePathUtils.isSameOrChildLocation(it, root) } }
 
                     val effectiveExcludedPaths =
-                        excludePathResolver.effectiveExcludedPaths(
-                            database = discoveredDatabase.database,
-                            storageScanLocation = storageScanLocation,
-                        )
+                        listedRootLocations
+                            .flatMap { root ->
+                                excludePathResolver.effectiveExcludedPaths(
+                                    database = discoveredDatabase.database,
+                                    storageScanLocation = root,
+                                )
+                            }.distinct()
+                            .sorted()
 
                     effectiveExcludedPathsForAudit = effectiveExcludedPaths
 
@@ -321,34 +357,40 @@ class CleanupUntrackedTableFoldersService {
 
                     val storageFolderPaths = storageFolders.map { it.path }.sorted()
 
-                    // Null when the storage of other databases cannot be established, which blocks deletion.
-                    val otherDatabaseStorage =
-                        if (storageFolders.isEmpty()) {
-                            emptyList()
-                        } else {
+                    // Other storage is checked under every listed root that has folders. A check that fails under one
+                    // root blocks deletion in all of them.
+                    val checkedRoots = listedRoots.filter { it.folders.isNotEmpty() }.map { it.location }
+
+                    // Null when the storage of other databases cannot be established under any cleanup root.
+                    val otherDatabaseStoragePerRoot =
+                        checkedRoots.map { root ->
                             otherDatabaseStorage(
                                 catalog = discoveredDatabase.catalog,
                                 database = discoveredDatabase.database,
-                                cleanupRoot = storageScanLocation,
+                                cleanupRoot = root,
                                 databaseLocations = otherStorageIndex.databaseLocations(discoveredDatabase.catalog),
                             )
                         }
+                    val otherDatabaseStorage =
+                        if (otherDatabaseStoragePerRoot.any { it == null }) null else otherDatabaseStoragePerRoot.flatMap { it.orEmpty() }.distinct()
                     otherDatabaseStorage.orEmpty().forEach { location ->
-                        logger.warn("Protecting storage of another database under storage scan location=$storageScanLocation: $location")
+                        logger.warn("Protecting storage of another database under storage scan location=${listedRootLocations.joinToString()}: $location")
                     }
 
-                    // A known location strictly inside the scan root covers at most one listed folder. A broader one would
+                    // A known location strictly inside a scan root covers at most one listed folder. A broader one would
                     // hide every folder, so it is not used for matching.
                     val (matchableKnownLocations, ignoredKnownLocations) =
                         discoveredDatabase.tables.mapNotNull { it.knownLocation }.partition { knownLocation ->
                             runCatching {
-                                StoragePathUtils.isSameOrChildLocation(knownLocation, storageScanLocation) &&
-                                    StoragePathUtils.normalizeLocation(knownLocation) != StoragePathUtils.normalizeLocation(storageScanLocation)
+                                listedRootLocations.any { root ->
+                                    StoragePathUtils.isSameOrChildLocation(knownLocation, root) &&
+                                        StoragePathUtils.normalizeLocation(knownLocation) != StoragePathUtils.normalizeLocation(root)
+                                }
                             }.getOrDefault(false)
                         }
                     if (ignoredKnownLocations.isNotEmpty()) {
                         logger.warn(
-                            "Not using ${ignoredKnownLocations.size} unresolved table location(s) for folder matching because they are not inside storage scan location=$storageScanLocation: $ignoredKnownLocations"
+                            "Not using ${ignoredKnownLocations.size} unresolved table location(s) for folder matching because they are not inside storage scan location=${listedRootLocations.joinToString()}: $ignoredKnownLocations"
                         )
                     }
 
@@ -368,7 +410,7 @@ class CleanupUntrackedTableFoldersService {
                                 ).isNotEmpty()
                     val otherTableStorage =
                         if (otherTablesNeeded) {
-                            otherTableStorage(discoveredDatabase, storageScanLocation, otherStorageIndex)
+                            OtherTableStorage.combine(checkedRoots.map { otherTableStorage(discoveredDatabase, it, otherStorageIndex) })
                         } else {
                             OtherTableStorage(paths = emptyList(), unresolvedTables = emptyList())
                         }
@@ -379,7 +421,7 @@ class CleanupUntrackedTableFoldersService {
                         )
                     ownershipChecksForAudit = firstReadChecks
                     otherTableStorage.paths.orEmpty().forEach { location ->
-                        logger.warn("Protecting storage of another table or catalog under storage scan location=$storageScanLocation: $location")
+                        logger.warn("Protecting storage of another table or catalog under storage scan location=${listedRootLocations.joinToString()}: $location")
                     }
                     val protectedPaths = effectiveExcludedPaths + otherDatabaseStorage.orEmpty() + otherTableStorage.paths.orEmpty()
 
@@ -409,6 +451,7 @@ class CleanupUntrackedTableFoldersService {
                                     database = discoveredDatabase.database,
                                     discoveredDatabaseLocation = discoveredDatabase.location,
                                     storageScanLocation = storageScanLocation,
+                                    cleanupRoots = listedRootLocations,
                                     catalogTableCount = discoveredDatabase.tables.size,
                                     verifiedTableCount = activeTableLocations.size,
                                     unresolvedTableNames = unresolvedTableNames,
@@ -495,7 +538,7 @@ class CleanupUntrackedTableFoldersService {
                         ) {
                             finalOtherStorageCheck(
                                 discoveredDatabase = discoveredDatabase,
-                                cleanupRoot = storageScanLocation,
+                                cleanupRoots = checkedRoots,
                                 firstReadPaths = otherDatabaseStorage.orEmpty() + otherTableStorage.paths.orEmpty(),
                             )
                         } else {
@@ -513,7 +556,7 @@ class CleanupUntrackedTableFoldersService {
                                         when (deletionBlockReason) {
                                             DeletionBlockReason.AUDIT_INTEGRITY_LOST -> "an audit write failed earlier in this run."
                                             DeletionBlockReason.CLEANUP_ROOT_HAS_NO_VISIBLE_TABLE ->
-                                                "no visible table is stored under storage scan location=$storageScanLocation."
+                                                "no visible table is stored under storage scan location=${listedRootLocations.joinToString()}."
                                             DeletionBlockReason.OTHER_DATABASE_STORAGE_UNKNOWN ->
                                                 "the storage of other databases could not be established."
                                             DeletionBlockReason.OTHER_TABLE_UNRESOLVED ->
@@ -606,6 +649,7 @@ class CleanupUntrackedTableFoldersService {
                             database = discoveredDatabase.database,
                             discoveredDatabaseLocation = discoveredDatabase.location,
                             storageScanLocation = storageScanLocation,
+                            cleanupRoots = listedRootLocations,
                             catalogTableCount = discoveredDatabase.tables.size,
                             unresolvedTableNames = unresolvedTableNames,
                             activeTableLocations = activeTableLocations,
@@ -873,36 +917,89 @@ class CleanupUntrackedTableFoldersService {
         }
     }
 
-    // The same checks as the first read, with nothing reused from it. Paths are null when any of it could not be read.
+    // The same checks as the first read under every cleanup root, with nothing reused from it. Paths are null when any
+    // of it could not be read under any root.
     private fun finalOtherStorageCheck(
         discoveredDatabase: DiscoveredDatabase,
-        cleanupRoot: String,
+        cleanupRoots: List<String>,
         firstReadPaths: List<String>,
     ): OtherTableStorage {
         val index = OtherStorageIndex(catalogDiscoveryService)
-        val databaseStorage =
-            otherDatabaseStorage(
-                catalog = discoveredDatabase.catalog,
-                database = discoveredDatabase.database,
-                cleanupRoot = cleanupRoot,
-                databaseLocations = index.databaseLocations(discoveredDatabase.catalog),
-            ) ?: return OtherTableStorage(null, emptyList())
-        val tableStorage = otherTableStorage(discoveredDatabase, cleanupRoot, index)
-        val paths = tableStorage.paths?.let { (databaseStorage + it).distinct().sorted() }
+        val storage =
+            OtherTableStorage.combine(
+                cleanupRoots.map { cleanupRoot ->
+                    val databaseStorage =
+                        otherDatabaseStorage(
+                            catalog = discoveredDatabase.catalog,
+                            database = discoveredDatabase.database,
+                            cleanupRoot = cleanupRoot,
+                            databaseLocations = index.databaseLocations(discoveredDatabase.catalog),
+                        ) ?: return OtherTableStorage(null, emptyList())
+                    val tableStorage = otherTableStorage(discoveredDatabase, cleanupRoot, index)
+                    tableStorage.copy(paths = tableStorage.paths?.let { databaseStorage + it })
+                },
+            )
 
-        (paths.orEmpty() - firstReadPaths.toSet()).forEach { location ->
-            logger.warn("Protecting storage found at the final check before deletion, under storage scan location=$cleanupRoot: $location")
+        (storage.paths.orEmpty() - firstReadPaths.toSet()).forEach { location ->
+            logger.warn("Protecting storage found at the final check before deletion, under storage scan location=${cleanupRoots.joinToString()}: $location")
         }
-        return tableStorage.copy(paths = paths)
+        return storage
     }
+
+    // One cleanup root keeps the strict listing, where a missing or unreadable root fails the database. With two, a
+    // root that cannot be listed is left out and the other is still cleaned. Only when none can be listed does the
+    // database fail.
+    private fun listCleanupRoots(
+        catalog: String,
+        roots: List<String>,
+    ): List<CleanupRootFolders> {
+        roots.singleOrNull()?.let { root ->
+            return listOf(CleanupRootFolders(root, ScanRootOutcome.SCANNED, objectStorageDiscoveryService.listImmediateChildFolders(catalog, root)))
+        }
+
+        val failures = mutableListOf<Exception>()
+        val listings =
+            roots.map { root ->
+                try {
+                    objectStorageDiscoveryService.listImmediateChildFoldersIfPresent(catalog, root)
+                        ?.let { CleanupRootFolders(root, ScanRootOutcome.SCANNED, it) }
+                        ?: CleanupRootFolders(root, ScanRootOutcome.ABSENT, emptyList())
+                } catch (error: Exception) {
+                    logger.warn("Could not list cleanup root for catalog=$catalog, root=$root. Nothing under it is deleted in this run.", error)
+                    failures += error
+                    CleanupRootFolders(root, ScanRootOutcome.LISTING_FAILED, emptyList())
+                }
+            }
+
+        if (failures.size == roots.size) {
+            throw failures.first().also { first -> failures.drop(1).forEach(first::addSuppressed) }
+        }
+        return listings
+    }
+
+    // Only a folder this catalog derives for the database can make the folder without .db a cleanup root.
+    private fun derivedRestNamespaceRoot(discoveredDatabase: DiscoveredDatabase): String? =
+        try {
+            catalogDiscoveryService
+                .restNamespaceRoot(discoveredDatabase.catalog, discoveredDatabase.database)
+                ?.takeIf { it.status == "derived" }
+                ?.location
+                ?.takeIf { it.isNotBlank() }
+        } catch (error: Exception) {
+            logger.warn(
+                "Could not derive the REST namespace root for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, so it is not used as a cleanup root",
+                error,
+            )
+            null
+        }
 
     // Report-only planning must never change deletion, so a failure here is only reported.
     private fun planStorageRoots(
         discoveredDatabase: DiscoveredDatabase,
-        cleanupRoot: String?,
+        cleanupRoots: List<String>,
         databaseLocation: String?,
         sharedWarehouseRoots: List<String>,
-        cleanupRootFolderCount: Int? = null,
+        cleanupRootListings: Map<String, CleanupRootListing> = emptyMap(),
     ): ScanPlanReport {
         val catalog = discoveredDatabase.catalog
         val database = discoveredDatabase.database
@@ -918,7 +1015,7 @@ class CleanupUntrackedTableFoldersService {
 
             val roots =
                 storageScanLocationPlanner.plan(
-                    cleanupRoot = cleanupRoot,
+                    cleanupRoots = cleanupRoots,
                     databaseLocation = databaseLocation,
                     restNamespaceRoot = restRoot?.location?.takeIf { it.isNotBlank() },
                     approvedRoots = config.reportOnlyStorageRoots[database].orEmpty(),
@@ -932,7 +1029,7 @@ class CleanupUntrackedTableFoldersService {
                     database = database,
                     roots = roots,
                     activeTableLocations = activeTableLocations,
-                    cleanupRootFolderCount = cleanupRootFolderCount,
+                    cleanupRootListings = cleanupRootListings,
                 )
                 .copy(
                     restNamespaceRootStatus = restRoot?.status,
@@ -963,7 +1060,7 @@ class CleanupUntrackedTableFoldersService {
 
         return planStorageRoots(
             discoveredDatabase = discoveredDatabase,
-            cleanupRoot = null,
+            cleanupRoots = emptyList(),
             databaseLocation = databaseLocation,
             sharedWarehouseRoots = sharedWarehouseRoots,
         ).also { cleanupSummaryLogger.logScanPlan(discoveredDatabase.catalog, discoveredDatabase.database, it) }
@@ -982,6 +1079,15 @@ private data class OtherTableStorage(
                 unresolvedTables.isNotEmpty() -> DeletionBlockReason.OTHER_TABLE_UNRESOLVED
                 else -> null
             }
+
+    companion object {
+        // One read per cleanup root. A root that could not be read leaves the paths of every root unknown.
+        fun combine(perRoot: List<OtherTableStorage>): OtherTableStorage =
+            OtherTableStorage(
+                paths = if (perRoot.any { it.paths == null }) null else perRoot.flatMap { it.paths.orEmpty() }.distinct().sorted(),
+                unresolvedTables = perRoot.flatMap { it.unresolvedTables }.distinct().sorted(),
+            )
+    }
 }
 
 // A complete read is kept and shared by every configured database, because it can describe every visible table.
@@ -1006,6 +1112,12 @@ private class OtherStorageIndex(
             ?: runCatching { catalogDiscoveryService.discoverTables(catalog, database) }
                 .onSuccess { if (it.none(DiscoveredTable::isUnresolved)) tables[catalog to database] = it }
 }
+
+private data class CleanupRootFolders(
+    val location: String,
+    val outcome: ScanRootOutcome,
+    val folders: List<StorageFolder>,
+)
 
 class AuditIntegrityLostException(
     cause: Throwable,

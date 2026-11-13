@@ -282,6 +282,21 @@ class StorageScanLocationPlannerTest {
         assertFalse(archive.approved)
     }
 
+    @Test
+    fun `every cleanup root is marked as one and none is listed for review`() {
+        val plan =
+            plan(
+                cleanupRoot = null,
+                cleanupRoots = listOf(DATABASE_LOCATION, "$REST_ROOT/"),
+                tables = listOf("$DATABASE_LOCATION/t1", "$REST_ROOT/t2"),
+                restNamespaceRoot = REST_ROOT,
+            )
+
+        assertEquals(setOf(DATABASE_LOCATION, REST_ROOT), plan.filter { it.cleanupRoot }.map { it.location }.toSet())
+        assertTrue(plan.none { it.reportOnly })
+        assertEquals(2, plan.size)
+    }
+
     private fun plan(
         cleanupRoot: String?,
         tables: List<String>,
@@ -289,9 +304,10 @@ class StorageScanLocationPlannerTest {
         restNamespaceRoot: String? = null,
         approvedRoots: List<String> = emptyList(),
         warehouseRoots: List<String> = listOf(WAREHOUSE),
+        cleanupRoots: List<String> = listOfNotNull(cleanupRoot),
     ): List<PlannedScanRoot> =
         planner.plan(
-            cleanupRoot = cleanupRoot,
+            cleanupRoots = cleanupRoots,
             databaseLocation = databaseLocation,
             restNamespaceRoot = restNamespaceRoot,
             approvedRoots = approvedRoots,

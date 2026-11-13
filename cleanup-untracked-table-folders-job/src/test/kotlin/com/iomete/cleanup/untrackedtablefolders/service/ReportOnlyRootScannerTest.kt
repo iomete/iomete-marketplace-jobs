@@ -2,6 +2,7 @@ package com.iomete.cleanup.untrackedtablefolders.service
 
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
+import com.iomete.cleanup.untrackedtablefolders.storage.CleanupRootListing
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.storage.PlannedScanRoot
@@ -155,13 +156,54 @@ class ReportOnlyRootScannerTest {
                 "sales",
                 plan(cleanup("s3a://b/lake/sales.db"), reportOnly("s3a://b/lake/sales")),
                 activeTableLocations = listOf("s3a://b/lake/sales.db/t1"),
-                cleanupRootFolderCount = 4,
+                cleanupRootListings = mapOf("s3a://b/lake/sales.db" to CleanupRootListing(ScanRootOutcome.SCANNED, folderCount = 4)),
             )
 
         assertEquals(4, report.roots.single { it.root.cleanupRoot }.listedFolderCount)
         val empty = report.roots.single { it.root.location == "s3a://b/lake/sales" }
         assertEquals(ScanRootOutcome.SCANNED, empty.outcome)
         assertEquals(0, empty.listedFolderCount)
+    }
+
+    @Test
+    fun `tables in a cleanup root that could not be listed count as outside every cleanup root`() {
+        val report =
+            scanner.scan(
+                "c",
+                "sales",
+                plan(cleanup("s3a://b/lake/sales.db"), cleanup("s3a://b/lake/sales")),
+                activeTableLocations = listOf("s3a://b/lake/sales.db/t1", "s3a://b/lake/sales/t2"),
+                cleanupRootListings =
+                    mapOf(
+                        "s3a://b/lake/sales.db" to CleanupRootListing(ScanRootOutcome.SCANNED, folderCount = 2),
+                        "s3a://b/lake/sales" to CleanupRootListing(ScanRootOutcome.LISTING_FAILED),
+                    ),
+            )
+
+        assertEquals(1, report.visibleTablesOutsideCleanupRoot)
+        assertEquals(ScanRootOutcome.LISTING_FAILED, report.roots.single { it.root.location == "s3a://b/lake/sales" }.outcome)
+        assertFalse(report.complete)
+        verify(exactly = 0) { discovery.listImmediateChildFoldersIfPresent(any(), any()) }
+    }
+
+    @Test
+    fun `two listed cleanup roots cover the tables in both`() {
+        val report =
+            scanner.scan(
+                "c",
+                "sales",
+                plan(cleanup("s3a://b/lake/sales.db"), cleanup("s3a://b/lake/sales")),
+                activeTableLocations = listOf("s3a://b/lake/sales.db/t1", "s3a://b/lake/sales/t2"),
+                cleanupRootListings =
+                    mapOf(
+                        "s3a://b/lake/sales.db" to CleanupRootListing(ScanRootOutcome.ABSENT),
+                        "s3a://b/lake/sales" to CleanupRootListing(ScanRootOutcome.SCANNED, folderCount = 1),
+                    ),
+            )
+
+        assertEquals(0, report.visibleTablesOutsideCleanupRoot)
+        assertTrue(report.complete)
+        assertEquals("absent", report.roots.single { it.root.location == "s3a://b/lake/sales.db" }.status)
     }
 
     private fun folders(vararg paths: String) = paths.map { StorageFolder(it) }
