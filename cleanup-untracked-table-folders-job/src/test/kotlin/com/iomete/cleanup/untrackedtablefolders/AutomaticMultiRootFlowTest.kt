@@ -301,6 +301,23 @@ class AutomaticMultiRootFlowTest {
     }
 
     @Test
+    fun `another database stored inside the db folder is never a candidate`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive", "x_data")
+        folders(REST_FOLDER, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"), dryRun = true)
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations(CATALOG) } returns
+            mapOf("sales" to DB_FOLDER, "x" to "$DB_FOLDER/x_data")
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("SUCCESS", record.status)
+        assertEquals(listOf("$DB_FOLDER/orphan_hive", "$REST_FOLDER/orphan_rest"), record.candidateFolders)
+        assertTrue(record.deletedFolders.isEmpty())
+        assertTrue(flow.objectExists("$DB_FOLDER/x_data/part-0.parquet"))
+    }
+
+    @Test
     fun `the candidate limit counts folders from both roots`() {
         folders(DB_FOLDER, "t_hive", "orphan_hive")
         folders(REST_FOLDER, "t_rest", "orphan_rest")

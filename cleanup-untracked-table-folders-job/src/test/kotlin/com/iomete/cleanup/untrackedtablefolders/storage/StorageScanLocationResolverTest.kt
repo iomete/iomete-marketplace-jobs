@@ -347,6 +347,15 @@ class StorageScanLocationResolverTest {
     }
 
     @Test
+    fun `an s3 database location keeps the s3 spelling for the folder without db`() {
+        val database = "s3://bucket/lake/sales.db"
+        val twin = "s3://bucket/lake/sales"
+
+        assertEquals(listOf(database, twin), cleanupRoots(listOf("$database/t1", "$twin/t2"), databaseLocation = database).locations)
+        assertEquals(listOf(twin), cleanupRoots(listOf("$twin/t1", "s3://other/ext/t2"), databaseLocation = database).locations)
+    }
+
+    @Test
     fun `a REST root spelled with s3 still matches the folder without db`() {
         val roots = cleanupRoots(listOf("$MANAGED_DB/t1", "$MANAGED_TWIN/t2"), restRoot = "s3://bucket/lake/sales/")
 

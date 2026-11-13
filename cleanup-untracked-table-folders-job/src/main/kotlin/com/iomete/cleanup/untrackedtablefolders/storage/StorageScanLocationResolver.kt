@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.storage
 
 import jakarta.enterprise.context.ApplicationScoped
+import org.apache.hadoop.fs.Path
 import org.jboss.logging.Logger
 
 // IOMETE stores lakehouse data in S3-compatible storage, Google Cloud Storage, or Azure storage.
@@ -117,8 +118,10 @@ class StorageScanLocationResolver {
         }
 
         val primaryHoldsTable = tablesOutside.size < activeTableLocations.size
+        // The twin keeps the resolved root's scheme, so candidates from both roots stay one filesystem target.
+        val twinLocation = Path(resolvedScanLocation.trim()).toUri().scheme?.let { "$it:${twin.substringAfter(':')}" } ?: twin
         return CleanupRoots(
-            locations = if (primaryHoldsTable) listOf(resolvedScanLocation, twin) else listOf(twin),
+            locations = if (primaryHoldsTable) listOf(resolvedScanLocation, twinLocation) else listOf(twinLocation),
             managedRootStatus = MANAGED_ROOT_USED,
         )
     }
