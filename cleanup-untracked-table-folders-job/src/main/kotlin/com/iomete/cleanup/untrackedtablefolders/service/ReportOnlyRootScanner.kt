@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.service
 
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
+import com.iomete.cleanup.untrackedtablefolders.storage.CleanupRootListing
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.storage.PlannedScanRoot
@@ -26,10 +27,10 @@ class ReportOnlyRootScanner {
         database: String,
         roots: List<PlannedScanRoot>,
         activeTableLocations: List<String>,
-        cleanupRootFolderCount: Int? = null,
+        // Keyed by normalized location. A cleanup root missing here was scanned.
+        cleanupRootListings: Map<String, CleanupRootListing> = emptyMap(),
     ): ScanPlanReport {
         val acceptedRootLocations = roots.filter { it.cleanupRoot || it.reportOnly }.map { it.location }
-        val cleanupRoot = roots.firstOrNull { it.cleanupRoot }?.location
 
         val results =
             roots.map { root ->
@@ -41,7 +42,10 @@ class ReportOnlyRootScanner {
                         activeTableLocations.count { StoragePathUtils.isSameOrChildLocation(it, root.location) }
                     }
                 when {
-                    root.cleanupRoot -> ScanRootResult(root, ScanRootOutcome.SCANNED, visibleTableCount, listedFolderCount = cleanupRootFolderCount)
+                    root.cleanupRoot -> {
+                        val listing = cleanupRootListings[root.location]
+                        ScanRootResult(root, listing?.outcome ?: ScanRootOutcome.SCANNED, visibleTableCount, listedFolderCount = listing?.folderCount)
+                    }
                     !root.reportOnly -> ScanRootResult(root, ScanRootOutcome.NOT_SCANNED, visibleTableCount)
                     else -> scanReportOnlyRoot(catalog, database, root, visibleTableCount, acceptedRootLocations, activeTableLocations)
                 }
@@ -52,6 +56,8 @@ class ReportOnlyRootScanner {
                 .filter { it.outcome == ScanRootOutcome.SCANNED || it.outcome == ScanRootOutcome.ABSENT }
                 .map { it.root.location }
                 .toSet()
+        // A cleanup root whose listing failed deleted nothing, so its tables count as outside.
+        val listedCleanupRoots = results.filter { it.root.cleanupRoot && it.root.location in coveringRoots }.map { it.root.location }
 
         return ScanPlanReport(
             // Cleanup and listed roots first, so a long tail of unlisted parents never hides them in a bounded sample.
@@ -62,8 +68,12 @@ class ReportOnlyRootScanner {
             uncoveredTableLocations =
                 activeTableLocations.filterNot { StoragePathUtils.isInsideAnyRoot(it, coveringRoots) }.sorted(),
             visibleTablesOutsideCleanupRoot =
-                cleanupRoot?.let { root ->
-                    activeTableLocations.count { !runCatching { StoragePathUtils.isSameOrChildLocation(it, root) }.getOrDefault(false) }
+                if (roots.none { it.cleanupRoot }) {
+                    null
+                } else {
+                    activeTableLocations.count { table ->
+                        listedCleanupRoots.none { root -> runCatching { StoragePathUtils.isSameOrChildLocation(table, root) }.getOrDefault(false) }
+                    }
                 },
         )
     }

@@ -295,4 +295,120 @@ class StorageScanLocationResolverTest {
 
         assertEquals(UnsafeScanRootReason.INVALID_STORAGE_LOCATION, error.reason)
     }
+
+    @Test
+    fun `s3 and s3a spellings of one folder give one parent`() {
+        val result =
+            resolve(
+                databaseLocation = "s3a://bucket/data/sales.db",
+                activeTableLocations = listOf("s3://bucket/data/sales/orders", "s3a://bucket/data/sales/customers"),
+            )
+
+        assertEquals("s3://bucket/data/sales", result)
+    }
+
+    @Test
+    fun `parents that differ only by a trailing slash give one parent`() {
+        val result =
+            resolve(
+                databaseLocation = "s3a://bucket/data/sales.db",
+                activeTableLocations = listOf("s3a://bucket/data/sales/orders/", "s3a://bucket/data/sales/customers"),
+            )
+
+        assertEquals("s3a://bucket/data/sales", result)
+    }
+
+    private fun cleanupRoots(
+        tables: List<String>,
+        restRoot: String? = MANAGED_TWIN,
+        databaseLocation: String = MANAGED_DB,
+    ): CleanupRoots =
+        resolver.cleanupRoots(
+            resolvedScanLocation = resolve(databaseLocation, tables),
+            databaseLocation = databaseLocation,
+            activeTableLocations = tables,
+            derivedRestNamespaceRoot = { restRoot },
+        )
+
+    @Test
+    fun `tables in both folders make both folders cleanup roots`() {
+        val roots = cleanupRoots(listOf("$MANAGED_DB/t1", "$MANAGED_TWIN/t2"))
+
+        assertEquals(listOf(MANAGED_DB, MANAGED_TWIN), roots.locations)
+        assertEquals("used", roots.managedRootStatus)
+    }
+
+    @Test
+    fun `tables only in the folder without db and outside make that folder the only cleanup root`() {
+        val roots = cleanupRoots(listOf("$MANAGED_TWIN/t1", "s3a://other/ext/t2"))
+
+        assertEquals(listOf(MANAGED_TWIN), roots.locations)
+        assertEquals("used", roots.managedRootStatus)
+    }
+
+    @Test
+    fun `an s3 database location keeps the s3 spelling for the folder without db`() {
+        val database = "s3://bucket/lake/sales.db"
+        val twin = "s3://bucket/lake/sales"
+
+        assertEquals(listOf(database, twin), cleanupRoots(listOf("$database/t1", "$twin/t2"), databaseLocation = database).locations)
+        assertEquals(listOf(twin), cleanupRoots(listOf("$twin/t1", "s3://other/ext/t2"), databaseLocation = database).locations)
+    }
+
+    @Test
+    fun `a REST root spelled with s3 still matches the folder without db`() {
+        val roots = cleanupRoots(listOf("$MANAGED_DB/t1", "$MANAGED_TWIN/t2"), restRoot = "s3://bucket/lake/sales/")
+
+        assertEquals(listOf(MANAGED_DB, MANAGED_TWIN), roots.locations)
+    }
+
+    @Test
+    fun `the folder without db is refused with a reason when it cannot be proven`() {
+        val mixed = listOf("$MANAGED_DB/t1", "$MANAGED_TWIN/t2")
+
+        assertEquals("refused:rest_root_not_derived", cleanupRoots(mixed, restRoot = null).managedRootStatus)
+        assertEquals("refused:rest_root_differs", cleanupRoots(mixed, restRoot = "s3a://bucket/lake/other").managedRootStatus)
+        assertEquals("refused:no_visible_table", cleanupRoots(listOf("$MANAGED_DB/t1", "s3a://other/ext/t2")).managedRootStatus)
+        assertEquals("refused:table_at_or_above_root", cleanupRoots(listOf("$MANAGED_DB/t1", MANAGED_TWIN, "$MANAGED_TWIN/t3")).managedRootStatus)
+        listOf(
+            cleanupRoots(mixed, restRoot = null),
+            cleanupRoots(listOf("$MANAGED_DB/t1", "s3a://other/ext/t2")),
+        ).forEach { assertEquals(listOf(MANAGED_DB), it.locations) }
+    }
+
+    @Test
+    fun `the managed root is not evaluated when every table is under the resolved root`() {
+        var asked = false
+        val tables = listOf("$MANAGED_DB/t1", "$MANAGED_DB/archive/t2")
+        val roots =
+            resolver.cleanupRoots(
+                resolvedScanLocation = resolve(MANAGED_DB, tables),
+                databaseLocation = MANAGED_DB,
+                activeTableLocations = tables,
+                derivedRestNamespaceRoot = { asked = true; MANAGED_TWIN },
+            )
+
+        assertEquals(listOf(MANAGED_DB), roots.locations)
+        assertEquals("not_applicable", roots.managedRootStatus)
+        assertEquals(false, asked)
+    }
+
+    @Test
+    fun `a single parent outside the db folder is unchanged`() {
+        val roots = cleanupRoots(listOf("$MANAGED_TWIN/t1", "$MANAGED_TWIN/t2"))
+
+        assertEquals(listOf(MANAGED_TWIN), roots.locations)
+        assertEquals("not_applicable", roots.managedRootStatus)
+    }
+
+    @Test
+    fun `a database location without db has no second root`() {
+        val roots = cleanupRoots(listOf("s3a://bucket/lake/sales/t1", "s3a://other/ext/t2"), databaseLocation = "s3a://bucket/lake/sales")
+
+        assertEquals(listOf("s3a://bucket/lake/sales"), roots.locations)
+        assertEquals("not_applicable", roots.managedRootStatus)
+    }
 }
+
+private const val MANAGED_DB = "s3a://bucket/lake/sales.db"
+private const val MANAGED_TWIN = "s3a://bucket/lake/sales"

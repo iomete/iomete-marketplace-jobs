@@ -3,6 +3,7 @@ package com.iomete.cleanup.untrackedtablefolders.logging
 import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
 import com.iomete.cleanup.untrackedtablefolders.audit.OwnershipChecks
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
+import com.iomete.cleanup.untrackedtablefolders.storage.MANAGED_ROOT_REFUSED_PREFIX
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
@@ -34,6 +35,7 @@ data class CleanupSummary(
     val unresolvedTableDetails: Map<String, UnresolvedTableDetail> = emptyMap(),
     val keptAtFinalCheckPaths: List<String> = emptyList(),
     val ownershipChecks: OwnershipChecks = OwnershipChecks(),
+    val cleanupRoots: List<String> = listOf(storageScanLocation),
 )
 
 data class NoVerifiedLocationSummary(
@@ -60,6 +62,7 @@ data class TooManyFoldersSummary(
     val dryRun: Boolean,
     val unresolvedTableDetails: Map<String, UnresolvedTableDetail> = emptyMap(),
     val ownershipChecks: OwnershipChecks = OwnershipChecks(),
+    val cleanupRoots: List<String> = listOf(storageScanLocation),
 )
 
 // knownLocation is evidence only. It is never a verified table location.
@@ -160,7 +163,7 @@ class CleanupSummaryLogger {
             add("STORAGE")
             add("")
             add("  Database location                                ${summary.discoveredDatabaseLocation}")
-            add("  Folders scanned under                            ${summary.storageScanLocation}")
+            addFoldersScannedUnder(summary.cleanupRoots)
             add("  Folders discovered                               ${summary.storageFolderCount}")
             add("  Folders with no verified catalog owner           ${summary.unmatchedFolderPaths.size}")
             add("")
@@ -220,7 +223,7 @@ class CleanupSummaryLogger {
         add("STORAGE")
         add("")
         add("  Database location                                ${summary.discoveredDatabaseLocation}")
-        add("  Folders scanned under                            ${summary.storageScanLocation}")
+        addFoldersScannedUnder(summary.cleanupRoots)
         add("  Folders discovered                               ${summary.storageFolderPaths.size}")
         add("  Folders belonging to verified catalog tables     ${tableFolderPaths.size}")
         add("  Folders protected or skipped for other reasons   ${otherSkippedFolderPaths.size}")
@@ -228,7 +231,7 @@ class CleanupSummaryLogger {
             add("  ${inspectionOutcomeLabel(outcome).padEnd(STORAGE_LABEL_WIDTH)}${paths.size}")
         }
         add("  Folders with no verified catalog owner           ${summary.unmatchedFolderPaths.size}")
-        add("  Table locations outside the scanned root         ${unscannedTableLocations.size}")
+        add("  ${(if (summary.cleanupRoots.size > 1) "Table locations outside the scanned roots" else "Table locations outside the scanned root").padEnd(STORAGE_LABEL_WIDTH)}${unscannedTableLocations.size}")
         add(
             if (summary.unmatchedSizeStats != null) {
                 "  Size of folders with no verified owner           ${formatBytes(summary.unmatchedSizeStats.totalSizeBytes)} across ${summary.unmatchedSizeStats.objectCount} object(s)"
@@ -274,7 +277,7 @@ class CleanupSummaryLogger {
 
         if (unscannedTableLocations.isNotEmpty()) {
             add("")
-            add("TABLE LOCATIONS OUTSIDE THE SCANNED ROOT")
+            add(if (summary.cleanupRoots.size > 1) "TABLE LOCATIONS OUTSIDE THE SCANNED ROOTS" else "TABLE LOCATIONS OUTSIDE THE SCANNED ROOT")
             add("")
             add("  Storage around these table locations was not checked in this run.")
             add("")
@@ -457,6 +460,12 @@ class CleanupSummaryLogger {
         add(line)
     }
 
+    private fun MutableList<String>.addFoldersScannedUnder(cleanupRoots: List<String>) {
+        cleanupRoots.forEachIndexed { index, root ->
+            add("  ${(if (index == 0) "Folders scanned under" else "").padEnd(STORAGE_LABEL_WIDTH)}$root")
+        }
+    }
+
     private fun MutableList<String>.addScanPlan(scanPlan: ScanPlanReport) {
         add("")
         add("STORAGE ROOTS")
@@ -468,16 +477,29 @@ class CleanupSummaryLogger {
             return
         }
 
-        add("  Folders are deleted only under the cleanup root. Other roots are listed for review only.")
-        if (scanPlan.complete) {
-            add("  Coverage is complete: every table this job can see is under the cleanup root.")
+        if (scanPlan.roots.count { it.root.cleanupRoot } > 1) {
+            add("  Folders are deleted only under the cleanup roots. Other roots are listed for review only.")
+            if (scanPlan.complete) {
+                add("  Coverage is complete: every table this job can see is under a cleanup root.")
+            } else {
+                add("  Coverage is partial: a table this job can see is outside every cleanup root or has an")
+                add("  unknown location, or a root could not be listed.")
+            }
         } else {
-            add("  Coverage is partial: a table this job can see is outside the cleanup root or has an")
-            add("  unknown location, or a root could not be listed.")
+            add("  Folders are deleted only under the cleanup root. Other roots are listed for review only.")
+            if (scanPlan.complete) {
+                add("  Coverage is complete: every table this job can see is under the cleanup root.")
+            } else {
+                add("  Coverage is partial: a table this job can see is outside the cleanup root or has an")
+                add("  unknown location, or a root could not be listed.")
+            }
         }
         add("  Coverage counts only tables this job can see. It is not an ownership check.")
         if (scanPlan.restNamespaceRootStatus != null && scanPlan.restNamespaceRootStatus != "derived") {
             add("  The REST namespace root was not derived: ${scanPlan.restNamespaceRootStatus}.")
+        }
+        scanPlan.managedRootStatus?.takeIf { it.startsWith(MANAGED_ROOT_REFUSED_PREFIX) }?.let { status ->
+            add("  The database folder without .db is not a cleanup root: ${status.removePrefix(MANAGED_ROOT_REFUSED_PREFIX)}.")
         }
         add("")
         val (notScanned, listed) = scanPlan.roots.partition { it.outcome == ScanRootOutcome.NOT_SCANNED }

@@ -35,16 +35,14 @@ class MultiRootPlanningFlowTest {
         FileSystem.closeAll()
     }
 
+    // Without a derived REST root, the folder without .db is not proven to be this database's, so it stays report-only.
     @Test
     fun `orphans in every accepted root are reported but only the cleanup root deletes`() {
         folders(DATABASE_LOCATION, "t_hive", "orphan_hive")
         folders(REST_ROOT, "t_rest", "orphan_rest")
         folders("s3a://bucket/custom/x", "t_custom", "orphan_custom")
         val flow =
-            flow(
-                tables = listOf("$DATABASE_LOCATION/t_hive", "$REST_ROOT/t_rest", "s3a://bucket/custom/x/t_custom"),
-                restNamespaceRoot = REST_ROOT,
-            )
+            flow(tables = listOf("$DATABASE_LOCATION/t_hive", "$REST_ROOT/t_rest", "s3a://bucket/custom/x/t_custom"))
 
         flow.run()
 
@@ -59,13 +57,15 @@ class MultiRootPlanningFlowTest {
         assertEquals("partial", record.diagnosticDetails["scan_plan_coverage"])
         assertEquals("s3a://bucket/custom/x/t_custom", record.diagnosticDetails["scan_plan_uncovered_table_locations_sample"])
         assertNull(InMemoryS3FileSystem.listStatusCalls["s3a://bucket/custom/x"])
+        assertEquals("refused:rest_root_not_derived", record.diagnosticDetails["managed_root_status"])
+        assertEquals(DATABASE_LOCATION, record.diagnosticDetails["cleanup_roots"])
     }
 
     @Test
     fun `report-only folders are never walked for age or size`() {
         folders(DATABASE_LOCATION, "t_hive", "orphan_hive")
         folders(REST_ROOT, "t_rest", "orphan_rest")
-        val flow = flow(tables = listOf("$DATABASE_LOCATION/t_hive", "$REST_ROOT/t_rest"), restNamespaceRoot = REST_ROOT)
+        val flow = flow(tables = listOf("$DATABASE_LOCATION/t_hive", "$REST_ROOT/t_rest"))
 
         flow.run()
 
@@ -96,7 +96,8 @@ class MultiRootPlanningFlowTest {
         val lines = rootLines(record)
         assertEquals("9", record.diagnosticDetails["scan_root_count"])
         assertTrue("$DATABASE_LOCATION=cleanup:scanned:visible_tables=3" in lines)
-        assertTrue("$REST_ROOT=report_only:scanned:visible_tables=2" in lines)
+        assertTrue("$REST_ROOT=cleanup:scanned:visible_tables=2" in lines)
+        assertEquals("used", record.diagnosticDetails["managed_root_status"])
         assertTrue("$DATABASE_LOCATION/archive=report_only:scanned:visible_tables=1" in lines)
         outside.forEach { assertTrue("$it=not_scanned:outside_database_boundary:visible_tables=1" in lines) }
         assertEquals("5", record.diagnosticDetails["scan_plan_uncovered_table_location_count"])
@@ -198,7 +199,7 @@ class MultiRootPlanningFlowTest {
         folders(DATABASE_LOCATION, "t_hive", "orphan_hive")
         folders(REST_ROOT, "t_rest", "orphan_rest")
         InMemoryS3FileSystem.failListFor = REST_ROOT
-        val flow = flow(tables = listOf("$DATABASE_LOCATION/t_hive", "$REST_ROOT/t_rest"), restNamespaceRoot = REST_ROOT)
+        val flow = flow(tables = listOf("$DATABASE_LOCATION/t_hive", "$REST_ROOT/t_rest"))
 
         flow.run()
 
@@ -231,7 +232,6 @@ class MultiRootPlanningFlowTest {
         val flow =
             flow(
                 tables = listOf("$DATABASE_LOCATION/t_hive", "$REST_ROOT/t_rest"),
-                restNamespaceRoot = REST_ROOT,
                 excludeDatabaseFolders = listOf("sales.keep"),
             )
 

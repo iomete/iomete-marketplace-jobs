@@ -57,6 +57,12 @@ data class ScanRootResult(
     val status: String get() = root.rejection?.code ?: outcome.code
 }
 
+// How a cleanup root was listed before planning. The folder count is null unless it was scanned.
+data class CleanupRootListing(
+    val outcome: ScanRootOutcome,
+    val folderCount: Int? = null,
+)
+
 data class ScanPlanReport(
     val roots: List<ScanRootResult>,
     val uncoveredTableLocations: List<String>,
@@ -66,12 +72,16 @@ data class ScanPlanReport(
     // Null when there is no cleanup root to measure against.
     val visibleTablesOutsideCleanupRoot: Int? = null,
     val unresolvedTableCount: Int = 0,
+    // Cleanup roots that were listed and may delete, and whether the database folder without .db is one of them.
+    // Both are known before planning, so they are kept when planning fails.
+    val cleanupRoots: List<String> = emptyList(),
+    val managedRootStatus: String? = null,
 ) {
     val reportOnlyFolderPaths: List<String>
         get() = roots.flatMap { it.unmatchedFolderPaths }.distinct().sorted()
 
     // Coverage is measured against visible tables only, so "complete" never proves every table was seen. Report-only
-    // roots never delete, so a table outside the cleanup root leaves coverage partial, as partial_scan_coverage does.
+    // roots never delete, so a table outside every cleanup root leaves coverage partial, as partial_scan_coverage does.
     // An unresolved table's location is unknown, and a folder guessed from its error is not a verified location.
     val complete: Boolean
         get() =
@@ -90,18 +100,18 @@ const val MAX_REPORT_ONLY_SCAN_ROOTS = 25
 @ApplicationScoped
 class StorageScanLocationPlanner {
 
-    // Only the cleanup root can delete. Other roots are listed for reporting only when they sit inside the
+    // Only cleanup roots can delete. Other roots are listed for reporting only when they sit inside the
     // database's own storage (its location, the .db twin, the managed REST namespace root) or inside a root
     // approved for this database. A visible table alone never makes its parent listable.
     fun plan(
-        cleanupRoot: String?,
+        cleanupRoots: List<String>,
         databaseLocation: String?,
         restNamespaceRoot: String?,
         approvedRoots: List<String>,
         activeTableLocations: List<String>,
         warehouseRoots: List<String>,
     ): List<PlannedScanRoot> {
-        val normalizedCleanupRoot = cleanupRoot?.let(StoragePathUtils::normalizeLocation)
+        val normalizedCleanupRoots = cleanupRoots.map(StoragePathUtils::normalizeLocation).toSet()
         val proposedSources = linkedMapOf<String, MutableSet<ScanRootSource>>()
 
         fun propose(
@@ -119,7 +129,7 @@ class StorageScanLocationPlanner {
             val parent = runCatching { StoragePathUtils.parentLocation(tableLocation) }.getOrNull()
             propose(parent ?: tableLocation, ScanRootSource.TABLE_PARENT)
         }
-        normalizedCleanupRoot?.let { proposedSources.getOrPut(it) { mutableSetOf() } }
+        normalizedCleanupRoots.forEach { proposedSources.getOrPut(it) { mutableSetOf() } }
 
         val tableLocations = activeTableLocations.mapNotNull(::normalizedOrNull)
         val databaseStorage =
@@ -147,7 +157,7 @@ class StorageScanLocationPlanner {
         return proposedSources.entries
             .sortedBy { it.key }
             .map { (location, sources) ->
-                if (location == normalizedCleanupRoot) {
+                if (location in normalizedCleanupRoots) {
                     return@map PlannedScanRoot(location, sources, cleanupRoot = true)
                 }
 

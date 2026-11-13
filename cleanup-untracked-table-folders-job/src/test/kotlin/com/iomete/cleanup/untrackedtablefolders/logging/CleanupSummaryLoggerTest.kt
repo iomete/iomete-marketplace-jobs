@@ -542,4 +542,48 @@ class CleanupSummaryLoggerTest {
             maxCandidateFolders = 10,
             dryRun = false,
         )
+
+    @Test
+    fun `a report with two cleanup roots lists both and words coverage for both`() {
+        val twoRoots =
+            ScanPlanReport(
+                roots =
+                    listOf(
+                        ScanRootResult(cleanupRoot("s3a://bucket/db"), ScanRootOutcome.SCANNED, 1),
+                        ScanRootResult(cleanupRoot("s3a://bucket/db_twin"), ScanRootOutcome.SCANNED, 1),
+                    ),
+                uncoveredTableLocations = emptyList(),
+                visibleTablesOutsideCleanupRoot = 0,
+                cleanupRoots = listOf("s3a://bucket/db", "s3a://bucket/db_twin"),
+                managedRootStatus = "used",
+            )
+        val report = logger.buildReportLines(summary().copy(cleanupRoots = listOf("s3a://bucket/db", "s3a://bucket/db_twin"), scanPlan = twoRoots))
+
+        val scannedUnder = report.indexOf("  Folders scanned under                            s3a://bucket/db")
+        assertEquals("                                                   s3a://bucket/db_twin", report[scannedUnder + 1])
+        assertTrue("  Table locations outside the scanned roots        0" in report)
+        assertTrue("  Folders are deleted only under the cleanup roots. Other roots are listed for review only." in report)
+        assertTrue("  Coverage is complete: every table this job can see is under a cleanup root." in report)
+        assertFalse(report.any { it.contains("not a cleanup root") })
+
+        val tooMany = logger.buildTooManyFoldersReportLines(tooManySummary().copy(cleanupRoots = listOf("s3a://bucket/db", "s3a://bucket/db_twin")))
+        assertEquals("                                                   s3a://bucket/db_twin", tooMany[tooMany.indexOf("  Folders scanned under                            s3a://bucket/db") + 1])
+    }
+
+    @Test
+    fun `a refused second root is explained in the storage roots section`() {
+        val plan =
+            ScanPlanReport(
+                roots = listOf(ScanRootResult(cleanupRoot("s3a://bucket/db"), ScanRootOutcome.SCANNED, 1)),
+                uncoveredTableLocations = emptyList(),
+                visibleTablesOutsideCleanupRoot = 1,
+                managedRootStatus = "refused:rest_root_differs",
+            )
+
+        val report = logger.buildReportLines(summary().copy(scanPlan = plan))
+
+        assertTrue("  The database folder without .db is not a cleanup root: rest_root_differs." in report)
+        assertTrue("  Folders are deleted only under the cleanup root. Other roots are listed for review only." in report)
+        assertEquals(1, report.count { it.startsWith("  Folders scanned under") })
+    }
 }
