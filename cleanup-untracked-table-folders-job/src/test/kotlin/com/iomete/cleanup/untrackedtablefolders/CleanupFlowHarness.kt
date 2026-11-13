@@ -46,6 +46,8 @@ class CleanupFlowHarness(
         every { catalogDiscoveryService.knownWarehouseRoots() } returns emptyList()
         every { catalogDiscoveryService.visibleDatabaseLocations(any()) } returns emptyMap()
         every { catalogDiscoveryService.tableLocationIfExists(any(), any(), any()) } returns null
+        every { catalogDiscoveryService.sessionCatalogWarehouses() } returns emptyMap()
+        every { catalogDiscoveryService.discoverTables(any(), any()) } returns emptyList()
 
         val excludePathResolver = ExcludePathResolver().also { it.config = config }
         val discovery = storage.discoveryService()

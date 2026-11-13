@@ -79,6 +79,8 @@ class CleanupUntrackedTableFoldersServiceTest {
         every { catalogDiscoveryService.knownWarehouseRoots() } returns emptyList()
         every { catalogDiscoveryService.visibleDatabaseLocations(any()) } returns emptyMap()
         every { catalogDiscoveryService.tableLocationIfExists(any(), any(), any()) } returns null
+        every { catalogDiscoveryService.sessionCatalogWarehouses() } returns emptyMap()
+        every { catalogDiscoveryService.discoverTables(any(), any()) } returns emptyList()
     }
 
     @Test
@@ -124,6 +126,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 cutoffTime = any(),
                 excludedPaths = emptyList(),
                 scanPlan = any(),
+                ownershipChecks = any(),
             )
         }
         verifyNoOtherAuditCalls()
@@ -171,6 +174,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 cutoffTime = any(),
                 excludedPaths = any(),
                 scanPlan = any(),
+                ownershipChecks = any(),
             )
         }
     }
@@ -287,6 +291,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 scanPlan = null,
                 unresolvedTables = emptyList(),
                 error = any(),
+                ownershipChecks = any(),
             )
         }
         verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
@@ -327,13 +332,13 @@ class CleanupUntrackedTableFoldersServiceTest {
 
         val capturedRunIds = mutableSetOf<String>()
         every {
-            cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+            cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
         } answers {
             capturedRunIds.add(firstArg<String>())
             Unit
         }
         every {
-            cleanupAuditRecorder.recordDatabaseNotFound(any(), any(), any(), any())
+            cleanupAuditRecorder.recordDatabaseNotFound(any(), any(), any(), any(), ownershipChecks = any())
         } answers {
             capturedRunIds.add(firstArg<String>())
             Unit
@@ -342,10 +347,10 @@ class CleanupUntrackedTableFoldersServiceTest {
         service.run()
 
         verify(exactly = 2) {
-            cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+            cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
         }
         verify(exactly = 1) {
-            cleanupAuditRecorder.recordDatabaseNotFound(any(), any(), any(), any())
+            cleanupAuditRecorder.recordDatabaseNotFound(any(), any(), any(), any(), ownershipChecks = any())
         }
         assertEquals(1, capturedRunIds.size, "All databases in one run share one runId")
     }
@@ -391,6 +396,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 cutoffTime = any(),
                 excludedPaths = emptyList(),
                 scanPlan = any(),
+                ownershipChecks = any(),
             )
         }
         verifyNoOtherAuditCalls(except = "recordOwnershipUnverified")
@@ -442,7 +448,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         service.run()
 
         verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
-        verify(exactly = 0) { cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any()) }
     }
 
     @Test
@@ -470,7 +476,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         service.run()
 
         verify(exactly = 1) {
-            cleanupAuditRecorder.recordOwnershipUnverified(any(), any(), any(), "broken", any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+            cleanupAuditRecorder.recordOwnershipUnverified(any(), any(), any(), "broken", any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
         }
         verify(exactly = 1) {
             cleanupAuditRecorder.recordSuccess(
@@ -481,6 +487,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 candidateSizeStats = any(), deletedFolderPaths = any(), deletedSizeStats = any(),
                 cutoffTime = any(), excludedPaths = any(),
                 scanPlan = any(),
+                ownershipChecks = any(),
             )
         }
     }
@@ -563,6 +570,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 candidateSizeStats = any(), deletedFolderPaths = listOf("s3a://bucket/db/orphan_a"),
                 deletedSizeStats = any(), failedFolderPath = "s3a://bucket/db/orphan_b",
                 cutoffTime = any(), excludedPaths = any(), unscannedTableLocations = emptyList(), scanPlan = any(), error = any(),
+                ownershipChecks = any(),
             )
         }
         verifyNoOtherAuditCalls(except = "recordDeletionFailed")
@@ -580,7 +588,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 listOf(storageFolder("s3a://bucket/$name/active_table"), storageFolder("s3a://bucket/$name/orphan"))
         }
         every {
-            cleanupAuditRecorder.recordSuccess(any(), any(), any(), "first", any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())} throws IllegalStateException("audit table unavailable")
+            cleanupAuditRecorder.recordSuccess(any(), any(), any(), "first", any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())} throws IllegalStateException("audit table unavailable")
         val summaries = mutableListOf<CleanupSummary>()
         service.cleanupSummaryLogger =
             spyk(CleanupSummaryLogger()).also { logger ->
@@ -604,9 +612,10 @@ class CleanupUntrackedTableFoldersServiceTest {
                 candidateFolderPaths = listOf("s3a://bucket/second/orphan"),
                 candidateSizeStats = any(), cutoffTime = any(), excludedPaths = any(), unscannedTableLocations = any(),
                 scanPlan = any(),
+                ownershipChecks = any(),
             )
         }
-        verify(exactly = 0) { cleanupAuditRecorder.recordFailed(any(), any(), any(), any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { cleanupAuditRecorder.recordFailed(any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any()) }
     }
 
     @Test
@@ -659,6 +668,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 excludedPaths = emptyList(),
                 scanPlan = any(),
                 inspectionOutcomes = mapOf(CandidateInspectionOutcome.FOLDER_NOT_FOUND to listOf("s3a://bucket/db/gone")),
+                ownershipChecks = any(),
             )
         }
         verifyNoOtherAuditCalls()
@@ -725,6 +735,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                         CandidateInspectionOutcome.EMPTY_FOLDER to listOf("s3a://bucket/db/empty"),
                         CandidateInspectionOutcome.UNKNOWN_AGE to listOf("s3a://bucket/db/undated"),
                     ),
+                    ownershipChecks = any(),
             )
         }
         verifyNoOtherAuditCalls()
@@ -775,6 +786,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                     mapOf(
                         CandidateInspectionOutcome.FOLDER_NOT_FOUND to listOf("s3a://bucket/db/gone_a", "s3a://bucket/db/gone_b"),
                     ),
+                    ownershipChecks = any(),
             )
         }
         verifyNoOtherAuditCalls()
@@ -821,6 +833,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 scanPlan = any(),
                 unresolvedTables = emptyList(),
                 error = match { it.message!!.contains("all 1 candidate folder(s) that still exist") },
+                ownershipChecks = any(),
             )
         }
         verifyNoOtherAuditCalls(except = "recordFailed")
@@ -873,6 +886,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 excludedPaths = any(),
                 scanPlan = any(),
                 inspectionOutcomes = mapOf(CandidateInspectionOutcome.FOLDER_NOT_FOUND to listOf("s3a://bucket/db/gone")),
+                ownershipChecks = any(),
             )
         }
         verifyNoOtherAuditCalls(except = "recordOwnershipUnverified")
@@ -929,6 +943,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 scanPlan = any(),
                 inspectionOutcomes = mapOf(CandidateInspectionOutcome.FOLDER_NOT_FOUND to listOf("s3a://bucket/db/gone_at_inspection")),
                 notFoundAtDeletionPaths = listOf("s3a://bucket/db/gone_at_deletion"),
+                ownershipChecks = any(),
             )
         }
         verify(exactly = 1) { candidateSizeStatCollector.sum(listOf(oldStats())) }
@@ -968,6 +983,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 deletedSizeStats = any(), failedFolderPath = "s3a://bucket/db/orphan_b",
                 cutoffTime = any(), excludedPaths = any(), unscannedTableLocations = emptyList(), scanPlan = any(),
                 notFoundAtDeletionPaths = listOf("s3a://bucket/db/gone"), error = any(),
+                ownershipChecks = any(),
             )
         }
         verifyNoOtherAuditCalls(except = "recordDeletionFailed")
@@ -1000,37 +1016,37 @@ class CleanupUntrackedTableFoldersServiceTest {
         }
         if (except != "recordOwnershipUnverified") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordOwnershipUnverified(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+                cleanupAuditRecorder.recordOwnershipUnverified(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
             }
         }
         if (except != "recordTooManyCandidateFolders") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordTooManyCandidateFolders(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+                cleanupAuditRecorder.recordTooManyCandidateFolders(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
             }
         }
         if (except != "recordDatabaseNotFound") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordDatabaseNotFound(any(), any(), any(), any())
+                cleanupAuditRecorder.recordDatabaseNotFound(any(), any(), any(), any(), ownershipChecks = any())
             }
         }
         if (except != "recordDeletionFailed") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordDeletionFailed(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+                cleanupAuditRecorder.recordDeletionFailed(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
             }
         }
         if (except != "recordFailed") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordFailed(any(), any(), any(), any(), any(), any(), any(), any())
+                cleanupAuditRecorder.recordFailed(any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
             }
         }
         if (except != "recordSuccess") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+                cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
             }
         }
         if (except != "recordDeletionBlocked") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordDeletionBlocked(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+                cleanupAuditRecorder.recordDeletionBlocked(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
             }
         }
     }

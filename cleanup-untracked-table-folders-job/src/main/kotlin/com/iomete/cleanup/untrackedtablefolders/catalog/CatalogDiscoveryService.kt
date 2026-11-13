@@ -7,8 +7,12 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.Row
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
+import org.apache.spark.sql.connector.catalog.Identifier
+import org.apache.spark.sql.connector.catalog.TableCatalog
 import org.jboss.logging.Logger
+import scala.collection.JavaConverters
 
 data class DiscoveredDatabase(
     val catalog: String,
@@ -76,6 +80,9 @@ private const val CATALOG_URI_PROPERTY = "uri"
 private val ICEBERG_CATALOG_CLASSES =
     setOf("org.apache.iceberg.spark.SparkSessionCatalog", "org.apache.iceberg.spark.SparkCatalog")
 private const val REST_CATALOG_SERVICE_HOST = "iom-rest-catalog"
+
+// The class IOMETE sets for a JDBC catalog. It is the only catalog type the platform creates without table storage.
+private const val JDBC_CATALOG_CLASS = "org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog"
 
 // iom-core gives computes <base>/internal/catalogs/<catalog>. iom-rest-catalog also serves the same catalogs at
 // /catalogs/<catalog>, which is accepted only on its own in-cluster service host.
@@ -195,10 +202,7 @@ class CatalogDiscoveryService {
 
     fun sharedWarehouseRoots(catalog: String): List<String> {
         val spark = sparkSessionProvider.getOrCreate()
-        val catalogWarehouse =
-            spark.sparkContext().getConf()
-                .get(CatalogStorageProperties.catalogPropertyPrefix(catalog) + WAREHOUSE_PROPERTY, "")
-                .trim()
+        val catalogWarehouse = catalogProperties()["$catalog.$WAREHOUSE_PROPERTY"].orEmpty()
 
         // The session warehouse alone does not cover REST namespaces.
         if (catalogWarehouse.isEmpty()) {
@@ -217,16 +221,42 @@ class CatalogDiscoveryService {
 
     fun knownWarehouseRoots(): List<String> {
         val spark = sparkSessionProvider.getOrCreate()
-        val catalogWarehouses =
-            spark.sparkContext().getConf()
-                .getAllWithPrefix("spark.sql.catalog.")
-                .filter { it._1().endsWith(".$WAREHOUSE_PROPERTY") }
-                .map { it._2().trim() }
+        val catalogWarehouses = catalogProperties().filterKeys { it.endsWith(".$WAREHOUSE_PROPERTY") }.values
 
         return (catalogWarehouses + spark.conf().get(SESSION_WAREHOUSE_KEY, "").trim())
             .filter { it.isNotEmpty() }
             .distinct()
             .sorted()
+    }
+
+    // Catalogs registered in this Spark session, by catalog name, with the warehouses they name. A catalog with no
+    // warehouse setting, or a blank one, is listed with none: a REST catalog can get its warehouse from the server.
+    // Only JDBC catalogs are left out, because they keep no table folders. The built-in spark_catalog always exists
+    // and puts its Hive tables in the session warehouse, so it is listed with that warehouse too.
+    fun sessionCatalogWarehouses(): Map<String, List<String>> {
+        val properties = catalogProperties()
+        val registered =
+            properties
+                .filter { (key, catalogClass) -> '.' !in key && catalogClass.isNotEmpty() && catalogClass != JDBC_CATALOG_CLASS }
+                .keys
+                .associateWith { catalog -> listOfNotNull(properties["$catalog.$WAREHOUSE_PROPERTY"]?.takeIf { it.isNotEmpty() }) }
+        val sessionCatalogWarehouses =
+            (registered[SESSION_CATALOG_NAME].orEmpty() + sparkSessionProvider.getOrCreate().conf().get(SESSION_WAREHOUSE_KEY, "").trim())
+                .filter { it.isNotEmpty() }
+                .distinct()
+
+        return registered + (SESSION_CATALOG_NAME to sessionCatalogWarehouses)
+    }
+
+    // Settings under spark.sql.catalog., keyed by the rest of the name. Spark loads catalogs from the session config,
+    // which starts as the startup SparkConf and can gain or change catalogs later, for example through IOMETE's
+    // catalog sync. The startup SparkConf alone can miss a catalog this session can query.
+    private fun catalogProperties(): Map<String, String> {
+        val prefix = CatalogStorageProperties.CATALOG_CONF_PREFIX + "."
+        return JavaConverters.mapAsJavaMapConverter(sparkSessionProvider.getOrCreate().conf().getAll()).asJava()
+            .filterKeys { it.startsWith(prefix) }
+            .entries
+            .associate { (key, value) -> key.removePrefix(prefix) to value.trim() }
     }
 
     // The managed REST catalog places every table at <warehouse>/<namespace>/<table> and ignores any
@@ -236,13 +266,12 @@ class CatalogDiscoveryService {
         catalog: String,
         database: String,
     ): RestNamespaceRoot? {
-        val sparkConf = sparkSessionProvider.getOrCreate().sparkContext().getConf()
-        val prefix = CatalogStorageProperties.catalogPropertyPrefix(catalog)
+        val properties = catalogProperties()
 
-        val catalogClass = sparkConf.get(prefix.removeSuffix("."), "").trim()
-        val catalogType = sparkConf.get(prefix + CATALOG_TYPE_PROPERTY, "").trim()
-        val catalogUri = sparkConf.get(prefix + CATALOG_URI_PROPERTY, "").trim()
-        val warehouse = sparkConf.get(prefix + WAREHOUSE_PROPERTY, "").trim().trimEnd('/')
+        val catalogClass = properties[catalog].orEmpty()
+        val catalogType = properties["$catalog.$CATALOG_TYPE_PROPERTY"].orEmpty()
+        val catalogUri = properties["$catalog.$CATALOG_URI_PROPERTY"].orEmpty()
+        val warehouse = properties["$catalog.$WAREHOUSE_PROPERTY"].orEmpty().trimEnd('/')
 
         if (catalogClass !in ICEBERG_CATALOG_CLASSES || !catalogType.equals("rest", ignoreCase = true)) {
             return null
@@ -344,9 +373,11 @@ class CatalogDiscoveryService {
         database: String,
         table: String,
     ): String? {
+        val spark = sparkSessionProvider.getOrCreate()
+        dropCachedTable(spark, catalog, database, table)
         val rows =
             try {
-                sparkSessionProvider.getOrCreate().sql("DESCRIBE EXTENDED `$catalog`.`$database`.`$table`").collectAsList()
+                spark.sql("DESCRIBE EXTENDED `$catalog`.`$database`.`$table`").collectAsList()
             } catch (th: Throwable) {
                 if (isTableNotFoundError(th)) {
                     return null
@@ -400,6 +431,7 @@ class CatalogDiscoveryService {
     ): TableStorage {
         val spark = sparkSessionProvider.getOrCreate()
         val qualifiedTableName = "`$catalog`.`$database`.`$table`"
+        dropCachedTable(spark, catalog, database, table)
 
         val rows =
             try {
@@ -474,6 +506,23 @@ class CatalogDiscoveryService {
         }
 
         return TableStorage(location = location, writeLocations = writeLocations)
+    }
+
+    // Iceberg catalogs cache each table they load (cache-enabled is on by default, and the copy expires only after it
+    // goes unused), so a table read earlier in the run, for example as another database's table, would be described
+    // from that copy. Only this table's copy is dropped, and a failure is thrown so the caller fails closed.
+    private fun dropCachedTable(
+        spark: SparkSession,
+        catalog: String,
+        database: String,
+        table: String,
+    ) {
+        try {
+            val tableCatalog = spark.sessionState().catalogManager().catalog(catalog) as? TableCatalog ?: error("not a table catalog")
+            tableCatalog.invalidateTable(Identifier.of(arrayOf(database), table))
+        } catch (th: Throwable) {
+            throw IllegalStateException("Failed to drop the cached copy of table=`$catalog`.`$database`.`$table`", th)
+        }
     }
 
     // Columns are listed before the table details, and on v1 tables columns with defaults again after them, so a

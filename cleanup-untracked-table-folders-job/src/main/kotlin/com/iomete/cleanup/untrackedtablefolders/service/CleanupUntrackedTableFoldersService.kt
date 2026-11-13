@@ -3,12 +3,14 @@ package com.iomete.cleanup.untrackedtablefolders.service
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecorder
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditTableService
 import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
+import com.iomete.cleanup.untrackedtablefolders.audit.OwnershipChecks
 import com.iomete.cleanup.untrackedtablefolders.candidate.StorageFolderReconciliation
 import com.iomete.cleanup.untrackedtablefolders.candidate.TooManyCandidateFoldersException
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
 import com.iomete.cleanup.untrackedtablefolders.catalog.DatabaseNotFoundException
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
+import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredTable
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
@@ -61,7 +63,7 @@ class CleanupUntrackedTableFoldersService {
         cleanupAuditTableService.ensureAuditTableExists()
 
         var auditFailure: Throwable? = null
-        val otherDatabaseLocations by lazy { runCatching { catalogDiscoveryService.visibleDatabaseLocations(config.catalog) } }
+        val otherStorageIndex = OtherStorageIndex(catalogDiscoveryService)
 
         fun recordAudit(
             database: String,
@@ -86,6 +88,7 @@ class CleanupUntrackedTableFoldersService {
             var unscannedTableLocationsForAudit: List<String>? = null
             var scanPlanForAudit: ScanPlanReport? = null
             var unresolvedTablesForAudit = emptyList<String>()
+            var ownershipChecksForAudit = OwnershipChecks()
             try {
                 val discoveredDatabase =
                     catalogDiscoveryService.discoverDatabase(
@@ -323,12 +326,16 @@ class CleanupUntrackedTableFoldersService {
                         if (storageFolders.isEmpty()) {
                             emptyList()
                         } else {
-                            otherDatabaseStorage(discoveredDatabase, storageScanLocation, otherDatabaseLocations)
+                            otherDatabaseStorage(
+                                catalog = discoveredDatabase.catalog,
+                                database = discoveredDatabase.database,
+                                cleanupRoot = storageScanLocation,
+                                databaseLocations = otherStorageIndex.databaseLocations(discoveredDatabase.catalog),
+                            )
                         }
                     otherDatabaseStorage.orEmpty().forEach { location ->
                         logger.warn("Protecting storage of another database under storage scan location=$storageScanLocation: $location")
                     }
-                    val protectedPaths = effectiveExcludedPaths + otherDatabaseStorage.orEmpty()
 
                     // A known location strictly inside the scan root covers at most one listed folder. A broader one would
                     // hide every folder, so it is not used for matching.
@@ -345,12 +352,42 @@ class CleanupUntrackedTableFoldersService {
                         )
                     }
 
+                    val ownTableStorage =
+                        discoveredDatabase.tables.flatMap { listOfNotNull(it.location) + it.writeLocations } + matchableKnownLocations
+
+                    // Reading other tables describes every table the job can see, so it is skipped when no folder is
+                    // left for them to protect, or when unknown storage of other databases already blocks deletion.
+                    val otherTablesNeeded =
+                        otherDatabaseStorage != null &&
+                            untrackedFolderCandidateDetector
+                                .unmatchedFolders(
+                                    storageFolders = storageFolders,
+                                    activeTableLocations = ownTableStorage,
+                                    excludedPaths = effectiveExcludedPaths + otherDatabaseStorage,
+                                    stage = "the check for folders that other tables could use",
+                                ).isNotEmpty()
+                    val otherTableStorage =
+                        if (otherTablesNeeded) {
+                            otherTableStorage(discoveredDatabase, storageScanLocation, otherStorageIndex)
+                        } else {
+                            OtherTableStorage(paths = emptyList(), unresolvedTables = emptyList())
+                        }
+                    val firstReadChecks =
+                        OwnershipChecks(
+                            otherDatabaseFolders = storageFolders.isNotEmpty() && otherDatabaseStorage != null,
+                            otherTables = otherTablesNeeded && otherTableStorage.paths != null,
+                        )
+                    ownershipChecksForAudit = firstReadChecks
+                    otherTableStorage.paths.orEmpty().forEach { location ->
+                        logger.warn("Protecting storage of another table or catalog under storage scan location=$storageScanLocation: $location")
+                    }
+                    val protectedPaths = effectiveExcludedPaths + otherDatabaseStorage.orEmpty() + otherTableStorage.paths.orEmpty()
+
                     val detectedReconciliation =
                         try {
                             untrackedFolderCandidateDetector.detectCandidates(
                                 storageFolders = storageFolders,
-                                activeTableLocations =
-                                    discoveredDatabase.tables.flatMap { listOfNotNull(it.location) + it.writeLocations } + matchableKnownLocations,
+                                activeTableLocations = ownTableStorage,
                                 excludedPaths = protectedPaths,
                                 maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
                                 unresolvedTableCount = unresolvedTableNames.size,
@@ -380,6 +417,7 @@ class CleanupUntrackedTableFoldersService {
                                     maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
                                     dryRun = config.dryRun,
                                     unresolvedTableDetails = unresolvedTableDetails,
+                                    ownershipChecks = firstReadChecks,
                                 )
                             )
 
@@ -401,6 +439,7 @@ class CleanupUntrackedTableFoldersService {
                                     errorMessage = listOfNotNull(th.message ?: th::class.java.name, unresolvedOwnershipNote).joinToString(". "),
                                     unscannedTableLocations = unscannedTableLocations,
                                     scanPlan = scanPlan,
+                                    ownershipChecks = firstReadChecks,
                                 )
                             }
 
@@ -436,14 +475,35 @@ class CleanupUntrackedTableFoldersService {
                         logger.info("Storage folder with no verified catalog owner: path=${folder.path}")
                     }
 
-                    val deletionBlockReason =
+                    val firstBlockReason =
                         when {
                             reconciliation !is StorageFolderReconciliation.DeletionEligible -> null
                             auditFailure != null -> DeletionBlockReason.AUDIT_INTEGRITY_LOST
                             !cleanupRootHasVisibleTable -> DeletionBlockReason.CLEANUP_ROOT_HAS_NO_VISIBLE_TABLE
                             otherDatabaseStorage == null -> DeletionBlockReason.OTHER_DATABASE_STORAGE_UNKNOWN
-                            else -> null
+                            else -> otherTableStorage.blockReason
                         }
+
+                    // The first read of other databases and catalogs is shared by the whole run, so another database can
+                    // claim a candidate folder before this one deletes. It is read again, unshared, right before deleting.
+                    val finalOtherStorage =
+                        if (
+                            firstBlockReason == null &&
+                            reconciliation is StorageFolderReconciliation.DeletionEligible &&
+                            reconciliation.folders.isNotEmpty() &&
+                            !config.dryRun
+                        ) {
+                            finalOtherStorageCheck(
+                                discoveredDatabase = discoveredDatabase,
+                                cleanupRoot = storageScanLocation,
+                                firstReadPaths = otherDatabaseStorage.orEmpty() + otherTableStorage.paths.orEmpty(),
+                            )
+                        } else {
+                            null
+                        }
+                    val deletionBlockReason = firstBlockReason ?: finalOtherStorage?.blockReason
+                    val ownershipChecks = firstReadChecks.copy(finalRecheck = finalOtherStorage?.paths != null)
+                    ownershipChecksForAudit = ownershipChecks
 
                     val deletionResult =
                         when (reconciliation) {
@@ -456,9 +516,13 @@ class CleanupUntrackedTableFoldersService {
                                                 "no visible table is stored under storage scan location=$storageScanLocation."
                                             DeletionBlockReason.OTHER_DATABASE_STORAGE_UNKNOWN ->
                                                 "the storage of other databases could not be established."
+                                            DeletionBlockReason.OTHER_TABLE_UNRESOLVED ->
+                                                "these tables of other databases or catalogs could not be resolved to a storage location: " +
+                                                    "${(finalOtherStorage ?: otherTableStorage).unresolvedTables}."
                                         }
+                                    val stage = if (finalOtherStorage != null) " at the final check before deletion" else ""
                                     logger.warn(
-                                        "Not deleting any folder for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: $detail"
+                                        "Not deleting any folder for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}$stage: $detail"
                                     )
                                     CandidateDeletionResult()
                                 } else {
@@ -467,7 +531,7 @@ class CleanupUntrackedTableFoldersService {
                                             catalog = discoveredDatabase.catalog,
                                             database = discoveredDatabase.database,
                                             reconciliation = reconciliation,
-                                            excludedPaths = protectedPaths,
+                                            excludedPaths = protectedPaths + finalOtherStorage?.paths.orEmpty(),
                                         )
                                     } catch (th: PartialDeletionException) {
                                         logger.error(
@@ -501,6 +565,7 @@ class CleanupUntrackedTableFoldersService {
                                                 inspectionOutcomes = inspectionOutcomes,
                                                 notFoundAtDeletionPaths = th.notFoundPaths,
                                                 error = th,
+                                                ownershipChecks = ownershipChecks,
                                             )
                                         }
 
@@ -512,6 +577,16 @@ class CleanupUntrackedTableFoldersService {
                         }
 
                     val deletedFolders = deletionResult.deletedPaths
+
+                    // No candidate overlapped the first read, so an overlap here is storage claimed since then. The
+                    // deletion gate skips these folders and logs the owner it found.
+                    val keptAtFinalCheckPaths =
+                        if (deletionBlockReason == null) {
+                            val finalPaths = finalOtherStorage?.paths.orEmpty()
+                            unmatchedFolderPaths.filter { folder -> finalPaths.any { StoragePathUtils.overlaps(folder, it) } }
+                        } else {
+                            emptyList()
+                        }
 
                     val deletedSizeStats =
                         candidateSizeStatCollector.sum(deletedFolders.mapNotNull { candidateSizeStatsByFolder[it] })
@@ -548,6 +623,8 @@ class CleanupUntrackedTableFoldersService {
                             inspectionOutcomes = inspectionOutcomes,
                             notFoundAtDeletionPaths = deletionResult.notFoundPaths,
                             unresolvedTableDetails = unresolvedTableDetails,
+                            keptAtFinalCheckPaths = keptAtFinalCheckPaths,
+                            ownershipChecks = ownershipChecks,
                         )
                     )
 
@@ -573,6 +650,7 @@ class CleanupUntrackedTableFoldersService {
                                         unscannedTableLocations = unscannedTableLocations,
                                         scanPlan = scanPlan,
                                         inspectionOutcomes = inspectionOutcomes,
+                                        ownershipChecks = ownershipChecks,
                                     )
                                 }
                             } else {
@@ -597,6 +675,8 @@ class CleanupUntrackedTableFoldersService {
                                         scanPlan = scanPlan,
                                         inspectionOutcomes = inspectionOutcomes,
                                         notFoundAtDeletionPaths = deletionResult.notFoundPaths,
+                                        keptAtFinalCheckPaths = keptAtFinalCheckPaths,
+                                        ownershipChecks = ownershipChecks,
                                     )
                                 }
                             }
@@ -620,6 +700,7 @@ class CleanupUntrackedTableFoldersService {
                                     unscannedTableLocations = unscannedTableLocations,
                                     scanPlan = scanPlan,
                                     inspectionOutcomes = inspectionOutcomes,
+                                    ownershipChecks = ownershipChecks,
                                 )
                             }
                     }
@@ -639,6 +720,7 @@ class CleanupUntrackedTableFoldersService {
                         database = database,
                         databaseStartTime = databaseStartTime,
                         error = th,
+                        ownershipChecks = ownershipChecksForAudit,
                     )
                 }
             } catch (th: Throwable) {
@@ -654,6 +736,7 @@ class CleanupUntrackedTableFoldersService {
                         scanPlan = scanPlanForAudit,
                         unresolvedTables = unresolvedTablesForAudit,
                         error = th,
+                        ownershipChecks = ownershipChecksForAudit,
                     )
                 }
             }
@@ -675,33 +758,36 @@ class CleanupUntrackedTableFoldersService {
     // A database's location and REST namespace folder are where its tables go by default, not claims on
     // everything below them. Inside the cleanup root they are protected whole. Above it, only the table that Hive
     // placement would put on the root's path matters; REST folders add a unique suffix, so that table cannot be
-    // found by name and the storage is unknown.
+    // found by name and the storage is unknown. database is this job's database in that catalog, or null for another
+    // catalog.
     private fun otherDatabaseStorage(
-        discoveredDatabase: DiscoveredDatabase,
+        catalog: String,
+        database: String?,
         cleanupRoot: String,
         databaseLocations: Result<Map<String, String?>>,
     ): List<String>? {
         try {
             val root = StoragePathUtils.normalizeLocation(cleanupRoot)
             val locations = databaseLocations.getOrThrow()
-            // The listing shows how the catalog treats letter case: an exact name is this database; otherwise one
-            // entry that differs only in case is this database as the catalog normalized it. More than one is ambiguous.
-            val sameName = locations.keys.filter { it.equals(discoveredDatabase.database, ignoreCase = true) }
-            val ownName = sameName.firstOrNull { it == discoveredDatabase.database } ?: sameName.singleOrNull()
-            if (ownName == null && sameName.isNotEmpty()) {
-                return null
-            }
+            val otherDatabases = otherDatabases(locations.keys, database) ?: return null
 
             return locations
-                .filterKeys { it != ownName }
-                .flatMap { (database, location) ->
+                .filterKeys { it in otherDatabases }
+                .flatMap { (otherDatabase, location) ->
                     if (location == null || !StoragePathUtils.isQualifiedLocation(location)) {
                         return null
                     }
                     val hiveRoot = StoragePathUtils.normalizeLocation(location)
-                    val restRoot =
-                        catalogDiscoveryService.restNamespaceRoot(discoveredDatabase.catalog, database)?.location
-                            ?.let(StoragePathUtils::normalizeLocation)
+                    val restNamespaceRoot = catalogDiscoveryService.restNamespaceRoot(catalog, otherDatabase)
+                    // The managed REST catalog stores this database under <warehouse>/<database>. With no warehouse in
+                    // the session, that folder is unknown and could be the cleanup root.
+                    if (restNamespaceRoot?.status == "no_warehouse") {
+                        logger.warn(
+                            "Catalog=$catalog is a managed REST catalog with no warehouse in the Spark session, so the folder of database=$otherDatabase is unknown"
+                        )
+                        return null
+                    }
+                    val restRoot = restNamespaceRoot?.location?.let(StoragePathUtils::normalizeLocation)
 
                     listOfNotNull(hiveRoot, restRoot).flatMap { storage ->
                         when {
@@ -711,7 +797,7 @@ class CleanupUntrackedTableFoldersService {
                             else -> {
                                 val folderOnRootPath = root.removePrefix("$storage/").substringBefore('/')
                                 val tableLocation =
-                                    catalogDiscoveryService.tableLocationIfExists(discoveredDatabase.catalog, database, folderOnRootPath)
+                                    catalogDiscoveryService.tableLocationIfExists(catalog, otherDatabase, folderOnRootPath)
                                 if (tableLocation != null && !StoragePathUtils.isQualifiedLocation(tableLocation)) {
                                     return null
                                 }
@@ -721,12 +807,93 @@ class CleanupUntrackedTableFoldersService {
                     }
                 }
         } catch (error: Exception) {
-            logger.warn(
-                "Could not establish the storage of other databases for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}",
-                error,
-            )
+            logger.warn("Could not establish the storage of other databases for catalog=$catalog, cleanup root=$cleanupRoot", error)
             return null
         }
+    }
+
+    // The listing shows how the catalog treats letter case: an exact name is this database; otherwise one entry that
+    // differs only in case is this database as the catalog normalized it. More than one is ambiguous, which gives null.
+    private fun otherDatabases(
+        databases: Set<String>,
+        database: String?,
+    ): Set<String>? {
+        if (database == null) {
+            return databases
+        }
+        val sameName = databases.filter { it.equals(database, ignoreCase = true) }
+        val ownName = sameName.firstOrNull { it == database } ?: sameName.singleOrNull()
+        if (ownName == null && sameName.isNotEmpty()) {
+            return null
+        }
+        return databases - setOfNotNull(ownName)
+    }
+
+    // Any table of another database, or of another session catalog with a warehouse in the cleanup root's bucket, can
+    // be stored in the root after a rename, a register or an explicit location. A warehouse without a bucket, or no
+    // warehouse in the session, could be that bucket, so those catalogs are read too. A table with unknown storage
+    // could be anywhere. Tables hidden from the job and catalogs outside its session are not seen.
+    private fun otherTableStorage(
+        discoveredDatabase: DiscoveredDatabase,
+        cleanupRoot: String,
+        index: OtherStorageIndex,
+    ): OtherTableStorage {
+        val startedAt = System.nanoTime()
+        try {
+            val root = StoragePathUtils.normalizeLocation(cleanupRoot)
+            val otherCatalogs =
+                catalogDiscoveryService.sessionCatalogWarehouses().filter { (catalog, warehouses) ->
+                    catalog != discoveredDatabase.catalog &&
+                        (warehouses.isEmpty() || warehouses.any { !StoragePathUtils.isQualifiedLocation(it) || StoragePathUtils.isSameBucket(it, root) })
+                }
+
+            val paths = mutableListOf<String>()
+            otherCatalogs.forEach { (catalog, warehouses) ->
+                paths += warehouses.filter { StoragePathUtils.isSameOrChildLocation(it, root) }.map(StoragePathUtils::normalizeLocation)
+                paths += otherDatabaseStorage(catalog, null, root, index.databaseLocations(catalog)) ?: return OtherTableStorage(null, emptyList())
+            }
+
+            val tables =
+                (mapOf(discoveredDatabase.catalog to discoveredDatabase.database) + otherCatalogs.mapValues { null })
+                    .flatMap { (catalog, database) ->
+                        val databases = otherDatabases(index.databaseLocations(catalog).getOrThrow().keys, database)
+                            ?: return OtherTableStorage(null, emptyList())
+                        databases.flatMap { index.tables(catalog, it).getOrThrow() }
+                    }
+            paths += tables.flatMap { listOfNotNull(it.location) + it.writeLocations }.filter { StoragePathUtils.overlaps(it, root) }
+
+            logger.info(
+                "Checked ${tables.size} table(s) of other databases and ${otherCatalogs.size} other catalog(s) for cleanup root=$cleanupRoot " +
+                    "in ${(System.nanoTime() - startedAt) / 1_000_000} ms"
+            )
+            return OtherTableStorage(paths.distinct().sorted(), tables.filter { it.isUnresolved }.map { it.qualifiedName }.sorted())
+        } catch (error: Exception) {
+            logger.warn("Could not read the tables of other databases for catalog=${discoveredDatabase.catalog}, cleanup root=$cleanupRoot", error)
+            return OtherTableStorage(null, emptyList())
+        }
+    }
+
+    // The same checks as the first read, with nothing reused from it. Paths are null when any of it could not be read.
+    private fun finalOtherStorageCheck(
+        discoveredDatabase: DiscoveredDatabase,
+        cleanupRoot: String,
+        firstReadPaths: List<String>,
+    ): OtherTableStorage {
+        val index = OtherStorageIndex(catalogDiscoveryService)
+        val databaseStorage =
+            otherDatabaseStorage(
+                catalog = discoveredDatabase.catalog,
+                database = discoveredDatabase.database,
+                cleanupRoot = cleanupRoot,
+                databaseLocations = index.databaseLocations(discoveredDatabase.catalog),
+            ) ?: return OtherTableStorage(null, emptyList())
+        val tableStorage = otherTableStorage(discoveredDatabase, cleanupRoot, index)
+        val paths = tableStorage.paths?.let { (databaseStorage + it).distinct().sorted() }
+
+        (paths.orEmpty() - firstReadPaths.toSet()).forEach { location ->
+            logger.warn("Protecting storage found at the final check before deletion, under storage scan location=$cleanupRoot: $location")
+        }
+        return tableStorage.copy(paths = paths)
     }
 
     // Report-only planning must never change deletion, so a failure here is only reported.
@@ -801,6 +968,43 @@ class CleanupUntrackedTableFoldersService {
             sharedWarehouseRoots = sharedWarehouseRoots,
         ).also { cleanupSummaryLogger.logScanPlan(discoveredDatabase.catalog, discoveredDatabase.database, it) }
     }
+}
+
+// paths is null when any of it could not be read.
+private data class OtherTableStorage(
+    val paths: List<String>?,
+    val unresolvedTables: List<String>,
+) {
+    val blockReason: DeletionBlockReason?
+        get() =
+            when {
+                paths == null -> DeletionBlockReason.OTHER_DATABASE_STORAGE_UNKNOWN
+                unresolvedTables.isNotEmpty() -> DeletionBlockReason.OTHER_TABLE_UNRESOLVED
+                else -> null
+            }
+}
+
+// A complete read is kept and shared by every configured database, because it can describe every visible table.
+// A failed read, or one with an unreadable database location or an unresolved table, is not kept, so a brief failure
+// does not block the databases processed after it. It still blocks the database that read it.
+private class OtherStorageIndex(
+    private val catalogDiscoveryService: CatalogDiscoveryService,
+) {
+    private val databaseLocations = mutableMapOf<String, Map<String, String?>>()
+    private val tables = mutableMapOf<Pair<String, String>, List<DiscoveredTable>>()
+
+    fun databaseLocations(catalog: String): Result<Map<String, String?>> =
+        databaseLocations[catalog]?.let { Result.success(it) }
+            ?: runCatching { catalogDiscoveryService.visibleDatabaseLocations(catalog) }
+                .onSuccess { if (null !in it.values) databaseLocations[catalog] = it }
+
+    fun tables(
+        catalog: String,
+        database: String,
+    ): Result<List<DiscoveredTable>> =
+        tables[catalog to database]?.let { Result.success(it) }
+            ?: runCatching { catalogDiscoveryService.discoverTables(catalog, database) }
+                .onSuccess { if (it.none(DiscoveredTable::isUnresolved)) tables[catalog to database] = it }
 }
 
 class AuditIntegrityLostException(

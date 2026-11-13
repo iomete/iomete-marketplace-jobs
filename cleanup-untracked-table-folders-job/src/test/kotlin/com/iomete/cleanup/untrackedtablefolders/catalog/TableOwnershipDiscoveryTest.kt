@@ -15,6 +15,10 @@ import org.apache.spark.sql.Row
 import org.apache.spark.sql.RowFactory
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
+import org.apache.spark.sql.connector.catalog.CatalogManager
+import org.apache.spark.sql.connector.catalog.Identifier
+import org.apache.spark.sql.connector.catalog.TableCatalog
+import org.apache.spark.sql.internal.SessionState
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -25,7 +29,13 @@ private const val LOCATION = "s3a://b/lake/sales.db/events"
 
 class TableOwnershipDiscoveryTest {
 
-    private val spark = mockk<SparkSession>()
+    private val tableCatalog = mockk<TableCatalog>(relaxed = true)
+    private val spark =
+        mockk<SparkSession>().also { spark ->
+            val catalogManager = mockk<CatalogManager>()
+            every { catalogManager.catalog(any()) } returns tableCatalog
+            every { spark.sessionState() } returns mockk<SessionState>().also { every { it.catalogManager() } returns catalogManager }
+        }
 
     private val discovery =
         CatalogDiscoveryService().apply {
@@ -315,6 +325,39 @@ class TableOwnershipDiscoveryTest {
 
         assertThrows(IllegalStateException::class.java) { discovery.tableLocationIfExists("c", "default", "sales") }
         assertNull(discovery.tableLocationIfExists("c", "default", "orders"))
+    }
+
+    @Test
+    fun `a location or write path changed after an earlier read is seen, because each read drops the cached copy first`() {
+        // Stands in for Iceberg's table cache: reads serve the metadata loaded first until the table is invalidated.
+        var catalogMetadata = LOCATION to "s3a://b/lake/sales.db/events_data"
+        var cached: Pair<String, String>? = null
+        val load = { cached ?: catalogMetadata.also { cached = it } }
+        listsTables("events")
+        every { tableCatalog.invalidateTable(Identifier.of(arrayOf("sales"), "events")) } answers { cached = null }
+        every { spark.sql("DESCRIBE EXTENDED $TABLE") } answers {
+            dataset(listOf(column("id", "bigint")) + details("Location" to load().first, "Provider" to "iceberg"))
+        }
+        every { spark.sql("SHOW TBLPROPERTIES $TABLE") } answers { dataset(listOf(RowFactory.create("write.data.path", load().second))) }
+
+        assertEquals(listOf("s3a://b/lake/sales.db/events_data"), discovery.discoverTables("c", "sales").single().writeLocations)
+
+        catalogMetadata = "s3a://b/lake/sales.db/moved" to "s3a://b/lake/sales.db/orphan"
+        val table = discovery.discoverTables("c", "sales").single()
+        assertEquals("s3a://b/lake/sales.db/moved", table.location)
+        assertEquals(listOf("s3a://b/lake/sales.db/orphan"), table.writeLocations)
+
+        catalogMetadata = "s3a://b/lake/sales.db/orphan" to "s3a://b/lake/sales.db/orphan"
+        assertEquals("s3a://b/lake/sales.db/orphan", discovery.tableLocationIfExists("c", "sales", "events"))
+    }
+
+    @Test
+    fun `a table whose cached copy cannot be dropped is not read from that copy`() {
+        listsOneTable(provider = "hive")
+        every { tableCatalog.invalidateTable(any()) } throws IllegalStateException("catalog unreachable")
+
+        assertThrows(IllegalStateException::class.java) { discovery.discoverTables("c", "sales") }
+        assertThrows(IllegalStateException::class.java) { discovery.tableLocationIfExists("c", "sales", "events") }
     }
 
     private fun listsOneTable(provider: String) {

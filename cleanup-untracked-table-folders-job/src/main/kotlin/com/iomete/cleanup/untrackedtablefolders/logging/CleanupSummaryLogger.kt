@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.logging
 
 import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
+import com.iomete.cleanup.untrackedtablefolders.audit.OwnershipChecks
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
@@ -31,6 +32,8 @@ data class CleanupSummary(
     val inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>> = emptyMap(),
     val notFoundAtDeletionPaths: List<String> = emptyList(),
     val unresolvedTableDetails: Map<String, UnresolvedTableDetail> = emptyMap(),
+    val keptAtFinalCheckPaths: List<String> = emptyList(),
+    val ownershipChecks: OwnershipChecks = OwnershipChecks(),
 )
 
 data class NoVerifiedLocationSummary(
@@ -56,6 +59,7 @@ data class TooManyFoldersSummary(
     val maxCandidateFolders: Int,
     val dryRun: Boolean,
     val unresolvedTableDetails: Map<String, UnresolvedTableDetail> = emptyMap(),
+    val ownershipChecks: OwnershipChecks = OwnershipChecks(),
 )
 
 // knownLocation is evidence only. It is never a verified table location.
@@ -115,6 +119,7 @@ class CleanupSummaryLogger {
                 verifiedTableCount = 0,
                 summary.unresolvedTableNames,
                 summary.unresolvedTableDetails,
+                OwnershipChecks(),
             )
 
             add("")
@@ -148,6 +153,7 @@ class CleanupSummaryLogger {
                 summary.verifiedTableCount,
                 summary.unresolvedTableNames,
                 summary.unresolvedTableDetails,
+                summary.ownershipChecks,
             )
 
             add("")
@@ -207,6 +213,7 @@ class CleanupSummaryLogger {
             summary.activeTableLocations.size,
             summary.unresolvedTableNames,
             summary.unresolvedTableDetails,
+            summary.ownershipChecks,
         )
 
         add("")
@@ -322,6 +329,9 @@ class CleanupSummaryLogger {
             if (summary.notFoundAtDeletionPaths.isNotEmpty()) {
                 add("  Folders not found at deletion                    ${summary.notFoundAtDeletionPaths.size}")
             }
+            if (summary.keptAtFinalCheckPaths.isNotEmpty()) {
+                add("  Folders kept by the final check                  ${summary.keptAtFinalCheckPaths.size}")
+            }
             add("")
             addListOrNone(summary.deletedFolderPaths)
             if (summary.notFoundAtDeletionPaths.isNotEmpty()) {
@@ -330,6 +340,14 @@ class CleanupSummaryLogger {
                 add("  Still counted as a candidate, not as deleted.")
                 add("")
                 addListOrNone(summary.notFoundAtDeletionPaths)
+            }
+            if (summary.keptAtFinalCheckPaths.isNotEmpty()) {
+                add("")
+                add("  folder_kept_at_final_check: another database, catalog or table claimed the folder when")
+                add("  the job read their storage again just before deleting. Still counted as a candidate,")
+                add("  not as deleted.")
+                add("")
+                addListOrNone(summary.keptAtFinalCheckPaths)
             }
         } else {
             add("  BLOCKED")
@@ -351,6 +369,7 @@ class CleanupSummaryLogger {
         verifiedTableCount: Int,
         unresolvedTableNames: List<String>,
         unresolvedTableDetails: Map<String, UnresolvedTableDetail>,
+        ownershipChecks: OwnershipChecks,
     ) {
         repeat(BLANK_LINES_AROUND_REPORT) { add("") }
 
@@ -361,10 +380,7 @@ class CleanupSummaryLogger {
         add("")
         add("OWNERSHIP CHECKS")
         add("")
-        add("  Checked      tables of this database the job can see, their Iceberg write paths,")
-        add("               default folders of other databases the job can see, configured exclusions")
-        add("  Not checked  tables of other databases, tables of other catalogs, tables the job")
-        add("               cannot see, files a table uses outside its own folder")
+        addOwnershipCheckLines(ownershipChecks)
         add("  See \"What deletion mode can and cannot prove\" in the job README.")
         add("")
         add("CATALOG")
@@ -392,6 +408,53 @@ class CleanupSummaryLogger {
                 add("- ... truncated ${unresolvedTableNames.size - MAX_LOG_PATH_SAMPLE_SIZE} additional table(s)")
             }
         }
+    }
+
+    // Says the same as the ownership_checks and ownership_not_checked audit keys of the same database.
+    private fun MutableList<String>.addOwnershipCheckLines(checks: OwnershipChecks) {
+        addWrapped(
+            "Checked",
+            listOfNotNull(
+                "tables of this database the job can see",
+                "their Iceberg write paths",
+                "default folders of other databases the job can see".takeIf { checks.otherDatabaseFolders },
+                "configured exclusions",
+                "tables of other databases the job can see".takeIf { checks.otherTables },
+                "same-bucket catalogs of the Spark session".takeIf { checks.otherTables },
+                "a final read of other storage right before deleting".takeIf { checks.finalRecheck },
+            ),
+        )
+        addWrapped(
+            "Not checked",
+            listOfNotNull(
+                "default folders of other databases".takeUnless { checks.otherDatabaseFolders },
+                "tables of other databases".takeUnless { checks.otherTables },
+                "same-bucket catalogs of the Spark session".takeUnless { checks.otherTables },
+                "a final read of other storage right before deleting".takeUnless { checks.finalRecheck },
+                "catalogs in another bucket or outside the Spark session",
+                "tables the job cannot see",
+                "tables of nested namespaces",
+                "files a table uses outside its own folder",
+            ),
+        )
+    }
+
+    private fun MutableList<String>.addWrapped(
+        label: String,
+        items: List<String>,
+    ) {
+        val indent = " ".repeat(OWNERSHIP_LABEL_WIDTH)
+        var line = "  $label".padEnd(OWNERSHIP_LABEL_WIDTH)
+        items.forEachIndexed { index, item ->
+            val text = if (index < items.lastIndex) "$item," else item
+            if (index > 0 && line.length + 1 + text.length > MAX_OWNERSHIP_LINE_LENGTH) {
+                add(line)
+                line = indent + text
+            } else {
+                line += if (index > 0) " $text" else text
+            }
+        }
+        add(line)
     }
 
     private fun MutableList<String>.addScanPlan(scanPlan: ScanPlanReport) {
@@ -475,6 +538,11 @@ class CleanupSummaryLogger {
                 )
             DeletionBlockReason.OTHER_DATABASE_STORAGE_UNKNOWN ->
                 listOf("The storage of other databases could not be established, so it cannot be protected.")
+            DeletionBlockReason.OTHER_TABLE_UNRESOLVED ->
+                listOf(
+                    "A table of another database or catalog could not be resolved to its storage, so its files",
+                    "could be in any folder. The job log names the table.",
+                )
         }
 
     private fun MutableList<String>.addListOrNone(values: List<String>) {
@@ -512,6 +580,8 @@ class CleanupSummaryLogger {
         const val MAX_LOGGED_NOT_SCANNED_ROOTS = 25
         const val BLANK_LINES_AROUND_REPORT = 3
         const val STORAGE_LABEL_WIDTH = 49
+        const val OWNERSHIP_LABEL_WIDTH = 15
+        const val MAX_OWNERSHIP_LINE_LENGTH = 95
         const val MAX_REASON_LENGTH = 300
         const val SEPARATOR = "================================================================"
     }

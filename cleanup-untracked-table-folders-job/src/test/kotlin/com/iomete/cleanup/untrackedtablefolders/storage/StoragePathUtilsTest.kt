@@ -155,4 +155,12 @@ class StoragePathUtilsTest {
         assertFalse(StoragePathUtils.isQualifiedLocation("hdfs:/lake/sales.db/live_data"))
         assertFalse(StoragePathUtils.isQualifiedLocation("gs:/lake"))
     }
+
+    @Test
+    fun `same bucket means the same storage system and bucket, whatever the path`() {
+        assertTrue(StoragePathUtils.isSameBucket("s3://Bucket/views", "s3a://bucket/lake/sales.db"))
+        assertTrue(StoragePathUtils.isSameBucket("s3a://bucket", "s3a://bucket/lake"))
+        assertFalse(StoragePathUtils.isSameBucket("s3a://other-bucket/lake", "s3a://bucket/lake"))
+        assertFalse(StoragePathUtils.isSameBucket("gs://bucket/lake", "s3a://bucket/lake"))
+    }
 }

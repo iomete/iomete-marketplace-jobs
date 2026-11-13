@@ -1,5 +1,6 @@
 package com.iomete.cleanup.untrackedtablefolders.logging
 
+import com.iomete.cleanup.untrackedtablefolders.audit.OwnershipChecks
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.PlannedScanRoot
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
@@ -353,9 +354,36 @@ class CleanupSummaryLoggerTest {
         reports.forEach { lines ->
             val checks = lines.joinToString("\n").substringAfter("OWNERSHIP CHECKS").substringBefore("CATALOG")
             assertTrue(checks.contains("  Checked      tables of this database the job can see, their Iceberg write paths,"))
-            assertTrue(checks.contains("  Not checked  tables of other databases, tables of other catalogs, tables the job"))
+            assertTrue(checks.contains("  Not checked  default folders of other databases, tables of other databases,"))
             assertTrue(checks.contains("files a table uses outside its own folder"))
             assertTrue(lines.none { it.length > 100 })
+        }
+    }
+
+    @Test
+    fun `the ownership checks section names the reads of other storage that finished for this database`() {
+        val allRead = OwnershipChecks(otherDatabaseFolders = true, otherTables = true, finalRecheck = true)
+        val reports =
+            listOf(
+                logger.buildReportLines(summary().copy(ownershipChecks = allRead)),
+                logger.buildTooManyFoldersReportLines(tooManySummary(unresolvedTableNames = emptyList()).copy(ownershipChecks = allRead)),
+            )
+
+        reports.forEach { lines ->
+            val section = lines.joinToString("\n").substringAfter("OWNERSHIP CHECKS\n\n").substringBefore("\n  See ")
+            assertEquals(
+                listOf(
+                    "  Checked      tables of this database the job can see, their Iceberg write paths,",
+                    "               default folders of other databases the job can see, configured exclusions,",
+                    "               tables of other databases the job can see,",
+                    "               same-bucket catalogs of the Spark session,",
+                    "               a final read of other storage right before deleting",
+                    "  Not checked  catalogs in another bucket or outside the Spark session,",
+                    "               tables the job cannot see, tables of nested namespaces,",
+                    "               files a table uses outside its own folder",
+                ),
+                section.lines(),
+            )
         }
     }
 

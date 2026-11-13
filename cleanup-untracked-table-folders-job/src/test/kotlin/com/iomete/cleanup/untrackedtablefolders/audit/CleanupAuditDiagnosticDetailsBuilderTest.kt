@@ -17,6 +17,26 @@ class CleanupAuditDiagnosticDetailsBuilderTest {
     private val builder = CleanupAuditDiagnosticDetailsBuilder()
 
     @Test
+    fun `each check of other storage is listed as checked only when its read finished`() {
+        val checks = OwnershipChecks(otherDatabaseFolders = true, otherTables = false, finalRecheck = false)
+
+        val details = builder.ownershipCheckDetails(checks)
+
+        assertEquals(
+            "visible_tables_of_this_database,write_paths_of_visible_tables_of_this_database," +
+                "default_folders_of_visible_other_databases,configured_exclusions",
+            details["ownership_checks"],
+        )
+        assertEquals(
+            "other_database_tables,same_bucket_session_catalogs,final_recheck_before_deletion,other_bucket_session_catalogs," +
+                "catalogs_outside_session,hidden_tables,nested_namespace_tables,files_outside_table_folders",
+            details["ownership_not_checked"],
+        )
+        val listed = details.getValue("ownership_checks").split(",") + details.getValue("ownership_not_checked").split(",")
+        assertEquals(listed.distinct(), listed)
+    }
+
+    @Test
     fun `always emits active table location sample and truncation flag`() {
         val details = builder.build(activeTableLocations = emptyList())
 
