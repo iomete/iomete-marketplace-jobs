@@ -64,6 +64,31 @@ class TableOwnershipDiscoveryTest {
     }
 
     @Test
+    fun `a JDBC table keeps its location but stores no files there`() {
+        listOf("jdbc", "JDBC", "org.apache.spark.sql.jdbc", "com.microsoft.sqlserver.jdbc.spark").forEach { provider ->
+            listsOneTable(provider)
+
+            val table = discovery.discoverTables("c", "sales").single()
+
+            assertEquals(LOCATION, table.location, provider)
+            assertEquals(false, table.storesFiles, provider)
+        }
+    }
+
+    @Test
+    fun `every provider except JDBC counts as storing files`() {
+        rows("SHOW TBLPROPERTIES $TABLE", "format" to "iceberg/parquet")
+        listOf("iceberg", "parquet", "csv", "hive", "com.example.unknown.source").forEach { provider ->
+            listsOneTable(provider)
+
+            val table = discovery.discoverTables("c", "sales").single()
+
+            assertEquals(LOCATION, table.location, provider)
+            assertEquals(true, table.storesFiles, provider)
+        }
+    }
+
+    @Test
     fun `an Iceberg table with garbage collection off is unresolved`() {
         listsOneTable(provider = "iceberg")
         rows("SHOW TBLPROPERTIES $TABLE", "gc.enabled" to "false")
