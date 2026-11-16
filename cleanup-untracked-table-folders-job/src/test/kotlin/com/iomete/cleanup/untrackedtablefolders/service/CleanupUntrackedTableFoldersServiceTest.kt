@@ -203,6 +203,8 @@ class CleanupUntrackedTableFoldersServiceTest {
                 databaseName = "empty_db",
                 discoveredDatabaseLocation = "s3a://bucket/empty",
                 excludedPaths = any(),
+                activeTableCount = 0,
+                activeTableLocations = emptyList(),
             )
         }
         verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
@@ -1043,7 +1045,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         }
         if (except != "recordNoActiveTables") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordNoActiveTables(any(), any(), any(), any(), any(), any())
+                cleanupAuditRecorder.recordNoActiveTables(any(), any(), any(), any(), any(), any(), any(), any())
             }
         }
         if (except != "recordDatabaseLocationMissing") {

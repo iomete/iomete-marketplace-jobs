@@ -127,10 +127,11 @@ class CleanupUntrackedTableFoldersService {
                     unresolvedTableNames.forEach { logger.warn("Unresolved catalog table: $it") }
                 }
 
-                // With no verified location there is nothing to compare folders against, so scanning cannot change the outcome.
+                // With no verified location of a table that stores files, there is nothing to compare folders against,
+                // so scanning cannot change the outcome.
                 if (unresolvedTableNames.isNotEmpty() && discoveredDatabase.fileTableLocations.isEmpty()) {
                     logger.warn(
-                        "Not scanning storage because no table has a verified storage location. " +
+                        "Not scanning storage because no table that stores files has a verified storage location. " +
                             "catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, totalCatalogTables=${discoveredDatabase.tables.size}"
                     )
 
@@ -143,6 +144,7 @@ class CleanupUntrackedTableFoldersService {
                             unresolvedTableNames = unresolvedTableNames,
                             dryRun = config.dryRun,
                             unresolvedTableDetails = unresolvedTableDetails,
+                            verifiedTableCount = discoveredDatabase.tables.count { it.location != null },
                         )
                     )
 
@@ -156,7 +158,10 @@ class CleanupUntrackedTableFoldersService {
                             storageScanLocation = "",
                             activeTableCount = discoveredDatabase.tables.size.toLong(),
                             unresolvedTables = unresolvedTableNames,
-                            activeTableLocations = emptyList(),
+                            activeTableLocations =
+                                discoveredDatabase.tables
+                                    .mapNotNull { it.location }
+                                    .sorted(),
                             storageFolderPaths = emptyList(),
                             potentiallyUntrackedFolderPaths = emptyList(),
                             cutoffTime = null,
@@ -169,8 +174,8 @@ class CleanupUntrackedTableFoldersService {
 
                 if (discoveredDatabase.fileTableLocations.isEmpty()) {
                     logger.warn(
-                        "Skipping cleanup because database has no active tables with discoverable locations in the catalog. " +
-                                "Cleanup requires at least one active table location to anchor the safety check. " +
+                        "Skipping cleanup because database has no active table that stores files at a discoverable location in the catalog. " +
+                                "Cleanup requires at least one such table location to anchor the safety check. " +
                                 "catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, totalCatalogTables=${discoveredDatabase.tables.size}"
                     )
 
@@ -182,6 +187,11 @@ class CleanupUntrackedTableFoldersService {
                             databaseName = discoveredDatabase.database,
                             discoveredDatabaseLocation = discoveredDatabase.location,
                             excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
+                            activeTableCount = discoveredDatabase.tables.count { it.location != null }.toLong(),
+                            activeTableLocations =
+                                discoveredDatabase.tables
+                                    .mapNotNull { it.location }
+                                    .sorted(),
                         )
                     }
 

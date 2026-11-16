@@ -64,8 +64,16 @@ class TableOwnershipDiscoveryTest {
     }
 
     @Test
-    fun `a JDBC table keeps its location but stores no files there`() {
-        listOf("jdbc", "JDBC", "org.apache.spark.sql.jdbc", "com.microsoft.sqlserver.jdbc.spark").forEach { provider ->
+    fun `a JDBC table keeps its location but stores no files there, for every provider spelling in any letter case`() {
+        listOf(
+            "jdbc",
+            "org.apache.spark.sql.jdbc",
+            "org.apache.spark.sql.jdbc.DefaultSource",
+            "org.apache.spark.sql.execution.datasources.jdbc",
+            "org.apache.spark.sql.execution.datasources.jdbc.DefaultSource",
+            "org.apache.spark.sql.execution.datasources.jdbc.JdbcRelationProvider",
+            "com.microsoft.sqlserver.jdbc.spark",
+        ).flatMap { listOf(it, it.lowercase(), it.uppercase()) }.distinct().forEach { provider ->
             listsOneTable(provider)
 
             val table = discovery.discoverTables("c", "sales").single()
@@ -78,7 +86,7 @@ class TableOwnershipDiscoveryTest {
     @Test
     fun `every provider except JDBC counts as storing files`() {
         rows("SHOW TBLPROPERTIES $TABLE", "format" to "iceberg/parquet")
-        listOf("iceberg", "parquet", "csv", "hive", "com.example.unknown.source").forEach { provider ->
+        listOf("iceberg", "parquet", "csv", "hive", "com.example.unknown.source", "com.example.jdbc").forEach { provider ->
             listsOneTable(provider)
 
             val table = discovery.discoverTables("c", "sales").single()
