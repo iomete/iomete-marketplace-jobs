@@ -3,6 +3,7 @@ package com.iomete.cleanup.untrackedtablefolders.audit
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
+import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import jakarta.enterprise.context.ApplicationScoped
 
 @ApplicationScoped
@@ -121,11 +122,20 @@ class CleanupAuditDiagnosticDetailsBuilder {
             return emptyMap()
         }
 
+        // Cleanup roots are chosen before planning, so they are recorded even when planning failed.
+        val cleanupRootDetails =
+            buildMap {
+                if (scanPlan.cleanupRoots.isNotEmpty()) {
+                    put("cleanup_roots", scanPlan.cleanupRoots.joinToString("\n"))
+                }
+                scanPlan.managedRootStatus?.let { put("managed_root_status", it) }
+            }
+
         if (scanPlan.planningError != null) {
             return mapOf(
                 "scan_plan_status" to "failed",
                 "scan_plan_error" to scanPlan.planningError.take(MAX_SCAN_PLAN_ERROR_LENGTH),
-            )
+            ) + cleanupRootDetails
         }
 
         val rootLines =
@@ -158,7 +168,17 @@ class CleanupAuditDiagnosticDetailsBuilder {
 
         scanPlan.restNamespaceRootStatus?.let { details["rest_namespace_root"] = it }
 
-        return details
+        // Plan roots are normalized; the counts follow the order of cleanup_roots.
+        val folderCountByRoot = scanPlan.roots.filter { it.root.cleanupRoot }.associate { it.root.location to it.listedFolderCount }
+        val cleanupRootFolderCounts =
+            scanPlan.cleanupRoots.mapNotNull { root ->
+                folderCountByRoot[runCatching { StoragePathUtils.normalizeLocation(root) }.getOrNull()]?.let { "$root=$it" }
+            }
+        if (cleanupRootFolderCounts.isNotEmpty()) {
+            details["cleanup_root_folder_counts"] = cleanupRootFolderCounts.joinToString("\n")
+        }
+
+        return details + cleanupRootDetails
     }
 
     fun inspectionOutcomeDetails(inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>>): Map<String, String> =

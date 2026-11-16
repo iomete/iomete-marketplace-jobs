@@ -40,8 +40,8 @@ Folders that exist in storage but are not claimed by the catalog can become clea
 For each configured database, the job:
 
 1. Loads the database and active table metadata through Spark SQL.
-2. Resolves the object-storage folder to scan.
-3. Lists immediate child folders under that scan root.
+2. Resolves the object-storage folder to scan, and a [second folder](#second-cleanup-root) when the database's tables sit in both of its folders.
+3. Lists immediate child folders under each scan root.
 4. Excludes protected paths.
 5. Applies age and candidate-count safety checks.
 6. Reports candidates in dry-run mode, or deletes them when deletion mode is explicitly enabled.
@@ -259,7 +259,7 @@ Rules:
 - The folder part must not contain `/`.
 - Catalog prefixes are not supported in this field.
 - The entry is converted to a full physical path internally and then handled together with `exclude_paths`.
-- The same folder name is also excluded under every [additional storage root](#additional-storage-roots-report-only) the job lists for reporting.
+- The same folder name is also excluded under a [second cleanup root](#second-cleanup-root) and under every [additional storage root](#additional-storage-roots-report-only) the job lists for reporting.
 
 | Input | Supported? | Notes |
 |---|---:|---|
@@ -346,7 +346,7 @@ This setting limits **candidate folders**, not individual files.
 
 It is a **blast-radius guardrail**. It does not prove deletion is safe. It forces manual review when the number of candidates is larger than expected.
 
-If the job finds more candidates than this limit, it skips cleanup for that database and writes a `SKIPPED` audit row with `status_reason=too_many_candidate_folders`. The log report lists the folders that went over the limit, so they can be reviewed before the limit is raised.
+If the job finds more candidates than this limit, it skips cleanup for that database and writes a `SKIPPED` audit row with `status_reason=too_many_candidate_folders`. When a database has a [second cleanup root](#second-cleanup-root), candidates from both roots count toward one limit. The log report lists the folders that went over the limit, so they can be reviewed before the limit is raised.
 
 For example, with this setting:
 
@@ -412,7 +412,7 @@ The job has several independent fail-safe layers. These are intentionally redund
 
 - Dry-run mode can report candidates without deleting anything.
 - Deletion requires both `dry_run=false` and `delete_enabled=true`; changing only one flag cannot delete data.
-- Only immediate child folders under the resolved scan root are considered.
+- Only immediate child folders under the cleanup roots are considered.
 - Active catalog table locations are protected. A folder that equals, contains, or sits inside one is never a candidate.
 - Configured `exclude_paths` and `exclude_database_folders` are protected the same way.
 - A database location that is a bucket root, or that equals or contains the catalog warehouse root, is never scanned.
@@ -666,7 +666,10 @@ The row keeps this status and reason. For `scan_root_outside_database_boundary`,
 `diagnostic_details`. A rejected bucket-root or warehouse-root database location is never one of them.
 Nothing is deleted.
 
-When tables sit under more than one parent location, the job keeps the conservative fallback and scans only the database location. Table locations outside the scanned root are not checked in that run, and the job reports this instead of hiding it:
+When tables sit under more than one parent location, the job falls back to the database location. It adds
+the same folder without `.db` as a [second cleanup root](#second-cleanup-root) only when that folder is
+proven to be this database's. Table locations outside the scanned roots are not checked in that run, and the
+job reports this instead of hiding it:
 
 - The summary log lists them under `TABLE LOCATIONS OUTSIDE THE SCANNED ROOT`.
 - A `SUCCESS` audit row gets `status_reason=partial_scan_coverage`.
@@ -676,9 +679,44 @@ When tables sit under more than one parent location, the job keeps the conservat
   `0` means the scan covered every table location. No count means the job failed before it got
   that far.
 
-The scan root above is the **cleanup root**. It is the only place where folders can be deleted. Deletion
-is also blocked when no table the job can see is stored under the cleanup root. See
-[Cleanup root with no visible table](#cleanup-root-with-no-visible-table).
+The scan root above is the **cleanup root**. Together with a second cleanup root, it is the only place
+where folders can be deleted. Deletion is also blocked when no table the job can see is stored under a
+cleanup root. See [Cleanup root with no visible table](#cleanup-root-with-no-visible-table).
+
+### Second cleanup root
+
+A database can keep tables in two folders: its location `<warehouse>/<database>.db`, and the REST
+namespace folder `<warehouse>/<database>`. When the tables sit under more than one parent location, the
+job adds `<warehouse>/<database>` as a second cleanup root only when all of these hold:
+
+- the database location ends in `.db`, and the other folder is the same path without `.db`;
+- the catalog derives `<warehouse>/<database>` as this database's REST namespace folder
+  (`rest_namespace_root=derived`);
+- at least one table the job can see has its verified location inside that folder, and no table
+  location is that folder or above it. A folder named only for an unresolved table never counts.
+
+If the database location holds no visible table, the second folder is the only cleanup root. Otherwise
+both are. The bucket-root and warehouse-root checks above apply to both folders. No setting turns this on
+or off.
+
+With two cleanup roots:
+
+- Each folder is listed one level deep. A folder that does not exist has no candidates. A folder counts as
+  existing when any object sits under it, so a folder without a directory marker object is still found.
+- If one folder cannot be listed, nothing in it is deleted and the other folder is still cleaned. Coverage
+  is `partial`, and the folder shows `listing_failed`. If neither folder can be listed, the row is `FAILED`.
+- Candidates from both folders count toward one `max_candidate_folders_per_database` limit.
+- Exclusions, the [checks of other databases and catalogs](#tables-of-other-databases-and-catalogs), their
+  final read and the pre-delete recheck apply to both folders. An unresolved table, or other storage that
+  cannot be read under either folder, blocks deletion in both.
+- `storage_scan_location` is the first folder that was listed. `diagnostic_details` lists both.
+
+When the second folder does not qualify, it stays a [report-only root](#additional-storage-roots-report-only),
+and `managed_root_status` gives the reason.
+
+Upgrading from 0.1.5: a database with tables in both folders now also deletes orphans in
+`<warehouse>/<database>`, and the candidate limit counts both folders. Run dry-run first and review the
+candidates.
 
 ### Additional storage roots (report only)
 
@@ -865,12 +903,13 @@ Storage root keys follow `scan_plan_status`:
 - No `scan_plan_status` means planning was not attempted, for example a database skipped before its
   storage was checked.
 - `scan_plan_status=failed` means planning threw. `scan_plan_error` holds the error, and no other storage
-  root key is written. The row keeps the status it would have had anyway.
+  root key is written except `cleanup_roots` and `managed_root_status`. The row keeps the status it would
+  have had anyway.
 - `scan_plan_status=planned` comes with the keys below.
 - `scan_roots_sample` has one line per root: `<location>=<role>:<status>:visible_tables=<n>`, where
-  role is `cleanup`, `report_only`, `report_only_approved` or `not_scanned`. The cleanup root comes first,
+  role is `cleanup`, `report_only`, `report_only_approved` or `not_scanned`. Cleanup roots come first,
   then listed roots, then not-scanned roots with the most visible tables first.
-- `scan_plan_coverage` is `complete` when every table the job can see is stored under the cleanup root and
+- `scan_plan_coverage` is `complete` when every table the job can see is stored under a cleanup root and
   every listing worked. Otherwise it is `partial`. A table under a report-only root still makes it
   `partial`, because folders there are never deleted. An unresolved table also makes it `partial`,
   because its location is unknown, even when a known folder is shown for it. So a `SUCCESS` row with
@@ -880,6 +919,14 @@ Storage root keys follow `scan_plan_status`:
   [What deletion mode can and cannot prove](#what-deletion-mode-can-and-cannot-prove).
 - `ownership_basis=visible_catalog_tables` records that ownership was checked only against the tables the
   job can see in the catalog.
+- `cleanup_roots` lists the cleanup roots that were listed, one per line. The first one is also
+  `storage_scan_location`. `cleanup_root_folder_counts` has one `<location>=<child folders>` line for
+  each of them that exists.
+- `managed_root_status` says whether `<warehouse>/<database>` is a
+  [second cleanup root](#second-cleanup-root): `not_applicable` (every visible table is under the first
+  cleanup root, or the database location has no `.db` suffix), `used`, or `refused:<reason>`. The reasons
+  are `rest_root_not_derived`, `rest_root_differs`, `no_visible_table`, `table_at_or_above_root` and
+  `listing_failed`.
 
 Path lists are sampled to avoid writing very large audit rows.
 
@@ -950,8 +997,9 @@ no row in the audit table, so use the job log for that database.
 ## Cleanup root with no visible table
 
 When tables sit under more than one parent location, the cleanup root falls back to the database
-location. If no table the job can see is stored under that location, nothing in it can be checked
-against a known table. The database is then recorded as `BLOCKED` with
+location, unless the folder without `.db` replaces it as described in
+[Second cleanup root](#second-cleanup-root). If no table the job can see is stored under the cleanup root,
+nothing in it can be checked against a known table. The database is then recorded as `BLOCKED` with
 `status_reason=cleanup_root_has_no_visible_table`, and nothing is deleted. This also applies in dry-run
 and when there are no candidates. The candidates are still listed in the audit row and the log, and the
 log's `DELETION` section gives the reason.
@@ -1245,6 +1293,7 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T37 | Another database's existing Iceberg table changes its `write.data.path` to a candidate folder after the first read, before deletion | That folder is kept and recorded as `folder_kept_at_final_check`; unrelated orphans are still deleted |
 | T38 | Another catalog of the job session has no `warehouse` setting, or a blank one, and a table stored under the cleanup root | The catalog is read, at the first read and the final read, and that folder is never deleted. An IOMETE-managed REST catalog with no `warehouse`, or a catalog that cannot be read, gives `BLOCKED` with `other_database_storage_unknown` |
 | T39 | A JDBC catalog is registered in the job session | It is not read and does not block deletion |
+| T40 | A database has two cleanup roots, and another catalog of the job session has a table in `<warehouse>/<database>`, or cannot be read there | That folder is never deleted; a read that fails under either root gives `BLOCKED` with `other_database_storage_unknown`, and nothing is deleted in either root |
 
 ---
 

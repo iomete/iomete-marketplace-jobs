@@ -68,6 +68,10 @@ class InMemoryS3FileSystem : FileSystem() {
         @Volatile
         var failCloseFor: String? = null
 
+        /** Like S3A, a prefix that holds objects is a directory even without a marker object for it. */
+        @Volatile
+        var impliedDirectories: Boolean = false
+
         fun reset() {
             stores.clear()
             opened.clear()
@@ -82,6 +86,7 @@ class InMemoryS3FileSystem : FileSystem() {
             listStatusCalls.clear()
             getFileStatusCalls.clear()
             failCloseFor = null
+            impliedDirectories = false
         }
 
         fun store(endpoint: String): MutableMap<String, Entry> =
@@ -157,9 +162,15 @@ class InMemoryS3FileSystem : FileSystem() {
         val target = key(path)
         getFileStatusCalls.merge(target, 1, Int::plus)
         statusFailures[target]?.let { throw it }
-        val entry = entries()[target] ?: throw FileNotFoundException("No such path: $target")
+        val entry =
+            entries()[target]
+                ?: impliedDirectory(target)
+                ?: throw FileNotFoundException("No such path: $target")
         return toStatus(target, entry)
     }
+
+    private fun impliedDirectory(path: String): Entry? =
+        Entry(true, 0, 0L).takeIf { impliedDirectories && entries().keys.any { it.startsWith("$path/") } }
 
     override fun listStatus(path: Path): Array<FileStatus> {
         val parent = key(path)
@@ -168,10 +179,23 @@ class InMemoryS3FileSystem : FileSystem() {
             throw java.io.IOException("simulated listing failure: $parent")
         }
         listFailures[parent]?.let { throw it }
-        entries()[parent] ?: throw FileNotFoundException("No such path: $parent")
+        entries()[parent] ?: impliedDirectory(parent) ?: throw FileNotFoundException("No such path: $parent")
 
-        return entries()
-            .filterKeys { it != parent && it.startsWith("$parent/") && !it.removePrefix("$parent/").contains('/') }
+        val explicitChildren =
+            entries().filterKeys { it != parent && it.startsWith("$parent/") && !it.removePrefix("$parent/").contains('/') }
+        val impliedChildren =
+            if (impliedDirectories) {
+                entries().keys
+                    .filter { it.startsWith("$parent/") }
+                    .map { "$parent/" + it.removePrefix("$parent/").substringBefore('/') }
+                    .filterNot { it in explicitChildren }
+                    .distinct()
+                    .associateWith { Entry(true, 0, 0L) }
+            } else {
+                emptyMap()
+            }
+
+        return (explicitChildren + impliedChildren)
             .map { (childPath, entry) -> toStatus(childPath, entry) }
             .sortedBy { it.path.toString() }
             .toTypedArray()

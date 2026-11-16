@@ -8,6 +8,7 @@ import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.catalog.DatabaseNotFoundException
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredTable
+import com.iomete.cleanup.untrackedtablefolders.catalog.RestNamespaceRoot
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
@@ -987,6 +988,42 @@ class CleanupUntrackedTableFoldersServiceTest {
             )
         }
         verifyNoOtherAuditCalls(except = "recordDeletionFailed")
+    }
+
+    // A real listing returns child paths spelled like the root it was given.
+    @Test
+    fun `an s3 database location with both cleanup roots sends one spelling to storage`() {
+        val service = serviceFor(applicationConfig(dryRun = false, deleteEnabled = true, databases = listOf("sales")))
+        every { catalogDiscoveryService.sharedWarehouseRoots(any()) } returns listOf("s3://bucket/lake")
+        every { catalogDiscoveryService.discoverDatabase("spark_catalog", "sales") } returns
+            discoveredDatabase(
+                database = "sales",
+                location = "s3://bucket/lake/sales.db",
+                activeTableLocations = listOf("s3://bucket/lake/sales.db/t_hive", "s3://bucket/lake/sales/t_rest"),
+            )
+        every { catalogDiscoveryService.restNamespaceRoot("spark_catalog", "sales") } returns
+            RestNamespaceRoot("s3://bucket/lake/sales", "derived")
+        every { objectStorageDiscoveryService.listImmediateChildFoldersIfPresent(any(), any()) } answers {
+            val root = secondArg<String>()
+            when {
+                root.endsWith("/sales.db") -> listOf(storageFolder("$root/t_hive"), storageFolder("$root/orphan"))
+                root.endsWith("/sales") -> listOf(storageFolder("$root/t_rest"), storageFolder("$root/orphan"))
+                else -> emptyList()
+            }
+        }
+
+        service.run()
+
+        val candidates = listOf("s3://bucket/lake/sales.db/orphan", "s3://bucket/lake/sales/orphan")
+        verify(exactly = 1) { candidateSizeStatCollector.collectPerFolder("spark_catalog", candidates) }
+        verify(exactly = 1) {
+            candidateDeletionGate.deleteCandidates(
+                catalog = "spark_catalog",
+                database = "sales",
+                reconciliation = match { reconciliation -> reconciliation.folders.map { it.path } == candidates },
+                excludedPaths = any(),
+            )
+        }
     }
 
     private fun oldStats(): StorageSizeStats =

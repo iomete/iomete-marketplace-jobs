@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.storage
 
 import jakarta.enterprise.context.ApplicationScoped
+import org.apache.hadoop.fs.Path
 import org.jboss.logging.Logger
 
 // IOMETE stores lakehouse data in S3-compatible storage, Google Cloud Storage, or Azure storage.
@@ -13,6 +14,18 @@ enum class UnsafeScanRootReason(val code: String) {
     SCAN_ROOT_OUTSIDE_DATABASE_BOUNDARY("scan_root_outside_database_boundary"),
     INVALID_STORAGE_LOCATION("invalid_storage_location"),
 }
+
+const val MANAGED_ROOT_NOT_APPLICABLE = "not_applicable"
+const val MANAGED_ROOT_USED = "used"
+const val MANAGED_ROOT_REFUSED_PREFIX = "refused:"
+
+fun managedRootRefused(reason: String): String = MANAGED_ROOT_REFUSED_PREFIX + reason
+
+data class CleanupRoots(
+    // The resolved root first when it is kept. Every location may delete.
+    val locations: List<String>,
+    val managedRootStatus: String,
+)
 
 class UnsafeScanRootException(
     val reason: UnsafeScanRootReason,
@@ -37,11 +50,12 @@ class StorageScanLocationResolver {
             sharedWarehouseRoots = sharedWarehouseRoots,
         )
 
+        // s3:// and s3a:// spellings of one folder are one parent. The first spelling in sort order is kept.
         val inferredScanLocations =
             activeTableLocations
                 .mapNotNull { location -> parsed(location) { StoragePathUtils.parentLocation(location) } }
-                .distinct()
                 .sorted()
+                .distinctBy { location -> parsed(location) { StoragePathUtils.normalizeLocation(location) } }
 
         val resolvedScanLocation =
             when (inferredScanLocations.size) {
@@ -67,6 +81,49 @@ class StorageScanLocationResolver {
         )
 
         return resolvedScanLocation
+    }
+
+    // When tables leave the resolved root, the database folder without `.db` becomes a second cleanup root, but
+    // only where this catalog itself puts the database's tables and a verified table is stored. A location
+    // guessed for an unresolved table is never passed here. resolve() has already checked the twin against
+    // bucket and warehouse roots.
+    fun cleanupRoots(
+        resolvedScanLocation: String,
+        databaseLocation: String,
+        activeTableLocations: List<String>,
+        derivedRestNamespaceRoot: () -> String?,
+    ): CleanupRoots {
+        val resolvedRoot = StoragePathUtils.normalizeLocation(resolvedScanLocation)
+        val primaryOnly = { status: String -> CleanupRoots(listOf(resolvedScanLocation), status) }
+
+        val tablesOutside = activeTableLocations.filterNot { StoragePathUtils.isSameOrChildLocation(it, resolvedRoot) }
+        val twin =
+            StoragePathUtils.allowedDatabaseRoots(databaseLocation).singleOrNull { it != resolvedRoot }
+        if (tablesOutside.isEmpty() || resolvedRoot != StoragePathUtils.normalizeLocation(databaseLocation) || twin == null) {
+            return primaryOnly(MANAGED_ROOT_NOT_APPLICABLE)
+        }
+
+        val restRoot = derivedRestNamespaceRoot()?.let(StoragePathUtils::normalizeLocation)
+        val refusal =
+            when {
+                restRoot == null -> "rest_root_not_derived"
+                restRoot != twin -> "rest_root_differs"
+                activeTableLocations.any { StoragePathUtils.isSameOrChildLocation(twin, it) } -> "table_at_or_above_root"
+                tablesOutside.none { StoragePathUtils.isSameOrChildLocation(it, twin) } -> "no_visible_table"
+                else -> null
+            }
+        if (refusal != null) {
+            logger.info("Not using $twin as a second cleanup root for databaseLocation=$databaseLocation: $refusal")
+            return primaryOnly(managedRootRefused(refusal))
+        }
+
+        val primaryHoldsTable = tablesOutside.size < activeTableLocations.size
+        // The twin keeps the resolved root's scheme, so candidates from both roots stay one filesystem target.
+        val twinLocation = Path(resolvedScanLocation.trim()).toUri().scheme?.let { "$it:${twin.substringAfter(':')}" } ?: twin
+        return CleanupRoots(
+            locations = if (primaryHoldsTable) listOf(resolvedScanLocation, twinLocation) else listOf(twinLocation),
+            managedRootStatus = MANAGED_ROOT_USED,
+        )
     }
 
     private fun validateDatabaseBoundary(

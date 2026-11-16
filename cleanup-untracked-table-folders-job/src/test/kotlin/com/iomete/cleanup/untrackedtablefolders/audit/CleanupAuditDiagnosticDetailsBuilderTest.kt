@@ -251,4 +251,50 @@ class CleanupAuditDiagnosticDetailsBuilderTest {
         assertFalse(details.containsKey("folder_not_found_count"))
         assertEquals(emptyMap<String, String>(), builder.notFoundAtDeletionDetails(emptyList()))
     }
+
+    @Test
+    fun `cleanup roots are written in order with their folder counts and kept when planning fails`() {
+        val planned =
+            ScanPlanReport(
+                roots =
+                    listOf(
+                        ScanRootResult(PlannedScanRoot("s3a://b/lake/sales", setOf(ScanRootSource.REST_NAMESPACE), cleanupRoot = true), ScanRootOutcome.SCANNED, 1, listedFolderCount = 3),
+                        ScanRootResult(PlannedScanRoot("s3a://b/lake/sales.db", setOf(ScanRootSource.DATABASE_LOCATION), cleanupRoot = true), ScanRootOutcome.SCANNED, 1, listedFolderCount = 2),
+                    ),
+                uncoveredTableLocations = emptyList(),
+                cleanupRoots = listOf("s3a://b/lake/sales.db", "s3a://b/lake/sales"),
+                managedRootStatus = "used",
+            )
+
+        val details = builder.scanPlanDetails(planned)
+
+        assertEquals("s3a://b/lake/sales.db\ns3a://b/lake/sales", details["cleanup_roots"])
+        assertEquals("s3a://b/lake/sales.db=2\ns3a://b/lake/sales=3", details["cleanup_root_folder_counts"])
+        assertEquals("used", details["managed_root_status"])
+
+        val failed =
+            builder.scanPlanDetails(
+                ScanPlanReport(
+                    roots = emptyList(),
+                    uncoveredTableLocations = emptyList(),
+                    planningError = "boom",
+                    cleanupRoots = listOf("s3a://b/lake/sales.db"),
+                    managedRootStatus = "not_applicable",
+                ),
+            )
+        assertEquals(
+            mapOf(
+                "scan_plan_status" to "failed",
+                "scan_plan_error" to "boom",
+                "cleanup_roots" to "s3a://b/lake/sales.db",
+                "managed_root_status" to "not_applicable",
+            ),
+            failed,
+        )
+
+        val refusedDatabase = builder.scanPlanDetails(ScanPlanReport(roots = emptyList(), uncoveredTableLocations = emptyList()))
+        assertFalse("cleanup_roots" in refusedDatabase)
+        assertFalse("managed_root_status" in refusedDatabase)
+        assertFalse("cleanup_root_folder_counts" in refusedDatabase)
+    }
 }
