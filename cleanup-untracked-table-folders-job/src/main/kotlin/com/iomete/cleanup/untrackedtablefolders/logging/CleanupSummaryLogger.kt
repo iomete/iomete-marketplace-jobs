@@ -446,6 +446,13 @@ class CleanupSummaryLogger {
                 "files a table uses outside its own folder",
             ),
         )
+        // One entry per line: an entry names a catalog and can hold commas.
+        checks.unreadableStorage.take(MAX_LOG_PATH_SAMPLE_SIZE).forEachIndexed { index, entry ->
+            add((if (index == 0) "  Unreadable" else "").padEnd(OWNERSHIP_LABEL_WIDTH) + entry)
+        }
+        if (checks.unreadableStorage.size > MAX_LOG_PATH_SAMPLE_SIZE) {
+            add(" ".repeat(OWNERSHIP_LABEL_WIDTH) + "... truncated ${checks.unreadableStorage.size - MAX_LOG_PATH_SAMPLE_SIZE} more")
+        }
     }
 
     private fun MutableList<String>.addWrapped(
@@ -565,7 +572,10 @@ class CleanupSummaryLogger {
                     "checked against a known table.",
                 )
             DeletionBlockReason.OTHER_DATABASE_STORAGE_UNKNOWN ->
-                listOf("The storage of other databases could not be established, so it cannot be protected.")
+                listOf(
+                    "The storage of other databases could not be established, so it cannot be protected.",
+                    "OWNERSHIP CHECKS names what could not be read. The WARN log has the details.",
+                )
             DeletionBlockReason.OTHER_TABLE_UNRESOLVED ->
                 listOf(
                     "A table of another database or catalog could not be resolved to its storage, so its files",

@@ -34,6 +34,18 @@ class CleanupAuditDiagnosticDetailsBuilderTest {
         )
         val listed = details.getValue("ownership_checks").split(",") + details.getValue("ownership_not_checked").split(",")
         assertEquals(listed.distinct(), listed)
+        assertFalse("ownership_unreadable_sample" in details)
+        assertFalse("ownership_unreadable_truncated" in details)
+    }
+
+    @Test
+    fun `what could not be read is a bounded sample with a truncation flag`() {
+        val unreadable = (0..MAX_AUDIT_PATH_SAMPLE_SIZE).map { "catalog=c$it: the database list could not be read (ConnectException)" }
+
+        val details = builder.ownershipCheckDetails(OwnershipChecks(unreadableStorage = unreadable))
+
+        assertEquals(unreadable.take(MAX_AUDIT_PATH_SAMPLE_SIZE).joinToString("\n"), details["ownership_unreadable_sample"])
+        assertEquals("true", details["ownership_unreadable_truncated"])
     }
 
     @Test
