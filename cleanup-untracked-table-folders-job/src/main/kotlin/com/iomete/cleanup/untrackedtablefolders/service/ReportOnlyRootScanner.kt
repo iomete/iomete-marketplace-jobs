@@ -29,6 +29,8 @@ class ReportOnlyRootScanner {
         activeTableLocations: List<String>,
         // Keyed by normalized location. A cleanup root missing here was scanned.
         cleanupRootListings: Map<String, CleanupRootListing> = emptyMap(),
+        // Can hold locations that are not visible tables, such as a JDBC table's. A folder there is still not reported.
+        ownedLocations: List<String> = activeTableLocations,
     ): ScanPlanReport {
         val acceptedRootLocations = roots.filter { it.cleanupRoot || it.reportOnly }.map { it.location }
 
@@ -47,7 +49,7 @@ class ReportOnlyRootScanner {
                         ScanRootResult(root, listing?.outcome ?: ScanRootOutcome.SCANNED, visibleTableCount, listedFolderCount = listing?.folderCount)
                     }
                     !root.reportOnly -> ScanRootResult(root, ScanRootOutcome.NOT_SCANNED, visibleTableCount)
-                    else -> scanReportOnlyRoot(catalog, database, root, visibleTableCount, acceptedRootLocations, activeTableLocations)
+                    else -> scanReportOnlyRoot(catalog, database, root, visibleTableCount, acceptedRootLocations, ownedLocations)
                 }
             }
 
@@ -84,7 +86,7 @@ class ReportOnlyRootScanner {
         root: PlannedScanRoot,
         visibleTableCount: Int,
         acceptedRootLocations: List<String>,
-        activeTableLocations: List<String>,
+        ownedLocations: List<String>,
     ): ScanRootResult {
         val folders =
             try {
@@ -103,7 +105,7 @@ class ReportOnlyRootScanner {
         val unmatchedFolders =
             untrackedFolderCandidateDetector.unmatchedFolders(
                 storageFolders = ownFolders,
-                activeTableLocations = activeTableLocations,
+                activeTableLocations = ownedLocations,
                 excludedPaths = excludePathResolver.effectiveExcludedPaths(database, root.location),
             )
 

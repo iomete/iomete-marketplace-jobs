@@ -46,6 +46,7 @@ data class NoVerifiedLocationSummary(
     val unresolvedTableNames: List<String>,
     val dryRun: Boolean,
     val unresolvedTableDetails: Map<String, UnresolvedTableDetail> = emptyMap(),
+    val verifiedTableCount: Int = 0,
 )
 
 data class TooManyFoldersSummary(
@@ -119,7 +120,7 @@ class CleanupSummaryLogger {
                 summary.database,
                 summary.dryRun,
                 summary.catalogTableCount,
-                verifiedTableCount = 0,
+                summary.verifiedTableCount,
                 summary.unresolvedTableNames,
                 summary.unresolvedTableDetails,
                 OwnershipChecks(),
@@ -130,8 +131,13 @@ class CleanupSummaryLogger {
             add("")
             add("  Database location                                ${summary.discoveredDatabaseLocation}")
             add("")
-            add("  Storage was not scanned. No table has a verified location, so storage folders")
-            add("  cannot be compared with the catalog.")
+            add("  Storage was not scanned. No table that stores files has a verified location, so")
+            add("  storage folders cannot be compared with the catalog.")
+            // This report is written only when no table that stores files has a location, so these are JDBC tables.
+            if (summary.verifiedTableCount > 0) {
+                add("  The verified locations here are JDBC table locations from the catalog. They hold")
+                add("  no table files and do not show which storage folders a table owns.")
+            }
 
             add("")
             add("DELETION")

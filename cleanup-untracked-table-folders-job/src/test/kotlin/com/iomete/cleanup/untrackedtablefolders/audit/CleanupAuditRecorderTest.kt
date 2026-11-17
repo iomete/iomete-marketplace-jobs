@@ -432,7 +432,7 @@ class CleanupAuditRecorderTest {
         // Written before other storage is read (database_not_found here as at the first read), so these rows state only
         // this database's checks.
         recorder.recordDatabaseNotFound("run", "analytics", Instant.EPOCH, IllegalStateException("missing"))
-        recorder.recordNoActiveTables("run", Instant.EPOCH, "example_catalog", "analytics", db, emptyList())
+        recorder.recordNoActiveTables("run", Instant.EPOCH, "example_catalog", "analytics", db, emptyList(), 0, emptyList())
         recorder.recordDatabaseLocationMissing("run", Instant.EPOCH, "example_catalog", "analytics", null, 1, emptyList(), tables, "missing", emptyList())
         recorder.recordUnsafeScanRoot("run", Instant.EPOCH, "example_catalog", "analytics", db, 1, emptyList(), tables, "unsafe", "unsafe", emptyList())
 

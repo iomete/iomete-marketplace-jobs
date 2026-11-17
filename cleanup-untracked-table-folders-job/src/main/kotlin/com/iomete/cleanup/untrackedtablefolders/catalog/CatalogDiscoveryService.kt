@@ -21,6 +21,9 @@ data class DiscoveredDatabase(
     val tables: List<DiscoveredTable>,
 ) {
     val unresolvedTables: List<DiscoveredTable> get() = tables.filter { it.isUnresolved }
+
+    // Only these pick and anchor cleanup roots and count toward coverage. Every table location stays protected.
+    val fileTableLocations: List<String> get() = tables.filter { it.storesFiles }.mapNotNull { it.location }
 }
 
 // status is derived, unrecognized_uri or no_warehouse; location is set only when derived.
@@ -42,6 +45,7 @@ data class DiscoveredTable(
     // file. It is not verified, so it only keeps that folder out of the unmatched list and must never select a scan
     // root or anchor ownership.
     val knownLocation: String? = null,
+    val provider: String? = null,
 ) {
     init {
         require(knownLocation == null || unresolvedReason != null) { "knownLocation is only for unresolved tables" }
@@ -50,6 +54,9 @@ data class DiscoveredTable(
     // A null location means the catalog object owns no storage, such as a view. Unresolved means
     // the table owns storage we could not locate, so its folder cannot be identified.
     val isUnresolved: Boolean get() = unresolvedReason != null
+
+    // The metastore gives a JDBC table a default location, but its rows live in another database, so no folder holds them.
+    val storesFiles: Boolean get() = provider?.lowercase() !in JDBC_PROVIDERS
 
     val qualifiedName: String get() = "$catalog.$database.$table"
 }
@@ -83,6 +90,18 @@ private const val REST_CATALOG_SERVICE_HOST = "iom-rest-catalog"
 
 // The class IOMETE sets for a JDBC catalog. It is the only catalog type the platform creates without table storage.
 private const val JDBC_CATALOG_CLASS = "org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog"
+
+// Spark's names for its JDBC data source, plus the SQL Server connector the IOMETE docs use, lowercased.
+private val JDBC_PROVIDERS =
+    setOf(
+        "jdbc",
+        "org.apache.spark.sql.jdbc",
+        "org.apache.spark.sql.jdbc.defaultsource",
+        "org.apache.spark.sql.execution.datasources.jdbc",
+        "org.apache.spark.sql.execution.datasources.jdbc.defaultsource",
+        "org.apache.spark.sql.execution.datasources.jdbc.jdbcrelationprovider",
+        "com.microsoft.sqlserver.jdbc.spark",
+    )
 
 // iom-core gives computes <base>/internal/catalogs/<catalog>. iom-rest-catalog also serves the same catalogs at
 // /catalogs/<catalog>, which is accepted only on its own in-cluster service host.
@@ -148,6 +167,7 @@ private val ICEBERG_WRITE_PATH_PROPERTIES =
 private data class TableStorage(
     val location: String?,
     val writeLocations: List<String>,
+    val provider: String? = null,
 )
 
 // Typed errors only: a denied lookup's message can name a table that looks like this error class.
@@ -323,6 +343,7 @@ class CatalogDiscoveryService {
                     isTemporary = isTemporary,
                     location = storage.location,
                     writeLocations = storage.writeLocations,
+                    provider = storage.provider,
                 )
             } catch (th: TableLocationUnresolvedException) {
                 logger.warn(
@@ -469,7 +490,7 @@ class CatalogDiscoveryService {
         }
         val provider = describeValue(details, "Provider")
         if (provider != null && !provider.equals("iceberg", ignoreCase = true)) {
-            return TableStorage(location, emptyList())
+            return TableStorage(location, emptyList(), provider)
         }
 
         val properties =
@@ -505,7 +526,7 @@ class CatalogDiscoveryService {
             )
         }
 
-        return TableStorage(location = location, writeLocations = writeLocations)
+        return TableStorage(location = location, writeLocations = writeLocations, provider = provider)
     }
 
     // Iceberg catalogs cache each table they load (cache-enabled is on by default, and the copy expires only after it

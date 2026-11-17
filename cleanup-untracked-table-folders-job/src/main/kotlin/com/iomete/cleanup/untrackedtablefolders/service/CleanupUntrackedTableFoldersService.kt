@@ -107,7 +107,7 @@ class CleanupUntrackedTableFoldersService {
                 )
                 discoveredDatabase.tables.forEach { table ->
                     logger.info(
-                        "Active table discovered: catalog=${table.catalog}, database=${table.database}, table=${table.table}, isTemporary=${table.isTemporary}, location=${table.location}"
+                        "Active table discovered: catalog=${table.catalog}, database=${table.database}, table=${table.table}, isTemporary=${table.isTemporary}, location=${table.location}, provider=${table.provider}"
                     )
                 }
 
@@ -127,10 +127,11 @@ class CleanupUntrackedTableFoldersService {
                     unresolvedTableNames.forEach { logger.warn("Unresolved catalog table: $it") }
                 }
 
-                // With no verified location there is nothing to compare folders against, so scanning cannot change the outcome.
-                if (unresolvedTableNames.isNotEmpty() && discoveredDatabase.tables.all { it.location == null }) {
+                // With no verified location of a table that stores files, there is nothing to compare folders against,
+                // so scanning cannot change the outcome.
+                if (unresolvedTableNames.isNotEmpty() && discoveredDatabase.fileTableLocations.isEmpty()) {
                     logger.warn(
-                        "Not scanning storage because no table has a verified storage location. " +
+                        "Not scanning storage because no table that stores files has a verified storage location. " +
                             "catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, totalCatalogTables=${discoveredDatabase.tables.size}"
                     )
 
@@ -143,6 +144,7 @@ class CleanupUntrackedTableFoldersService {
                             unresolvedTableNames = unresolvedTableNames,
                             dryRun = config.dryRun,
                             unresolvedTableDetails = unresolvedTableDetails,
+                            verifiedTableCount = discoveredDatabase.tables.count { it.location != null },
                         )
                     )
 
@@ -156,7 +158,10 @@ class CleanupUntrackedTableFoldersService {
                             storageScanLocation = "",
                             activeTableCount = discoveredDatabase.tables.size.toLong(),
                             unresolvedTables = unresolvedTableNames,
-                            activeTableLocations = emptyList(),
+                            activeTableLocations =
+                                discoveredDatabase.tables
+                                    .mapNotNull { it.location }
+                                    .sorted(),
                             storageFolderPaths = emptyList(),
                             potentiallyUntrackedFolderPaths = emptyList(),
                             cutoffTime = null,
@@ -167,10 +172,10 @@ class CleanupUntrackedTableFoldersService {
                     return@forEach
                 }
 
-                if (discoveredDatabase.tables.mapNotNull { it.location }.isEmpty()) {
+                if (discoveredDatabase.fileTableLocations.isEmpty()) {
                     logger.warn(
-                        "Skipping cleanup because database has no active tables with discoverable locations in the catalog. " +
-                                "Cleanup requires at least one active table location to anchor the safety check. " +
+                        "Skipping cleanup because database has no active table that stores files at a discoverable location in the catalog. " +
+                                "Cleanup requires at least one such table location to anchor the safety check. " +
                                 "catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}, totalCatalogTables=${discoveredDatabase.tables.size}"
                     )
 
@@ -182,6 +187,11 @@ class CleanupUntrackedTableFoldersService {
                             databaseName = discoveredDatabase.database,
                             discoveredDatabaseLocation = discoveredDatabase.location,
                             excludedPaths = excludePathResolver.normalizedConfiguredExcludePaths(),
+                            activeTableCount = discoveredDatabase.tables.count { it.location != null }.toLong(),
+                            activeTableLocations =
+                                discoveredDatabase.tables
+                                    .mapNotNull { it.location }
+                                    .sorted(),
                         )
                     }
 
@@ -216,8 +226,7 @@ class CleanupUntrackedTableFoldersService {
                         try {
                             storageScanLocationResolver.resolve(
                                 databaseLocation = discoveredDatabase.location,
-                                activeTableLocations =
-                                    discoveredDatabase.tables.mapNotNull { it.location },
+                                activeTableLocations = discoveredDatabase.fileTableLocations,
                                 sharedWarehouseRoots = sharedWarehouseRoots,
                             )
                         } catch (th: UnsafeScanRootException) {
@@ -252,12 +261,13 @@ class CleanupUntrackedTableFoldersService {
                         }
                     val activeTableLocations =
                         discoveredDatabase.tables.mapNotNull { it.location }.sorted()
+                    val fileTableLocations = discoveredDatabase.fileTableLocations.sorted()
 
                     val cleanupRoots =
                         storageScanLocationResolver.cleanupRoots(
                             resolvedScanLocation = resolvedScanLocation,
                             databaseLocation = discoveredDatabase.location,
-                            activeTableLocations = activeTableLocations,
+                            activeTableLocations = fileTableLocations,
                             derivedRestNamespaceRoot = { derivedRestNamespaceRoot(discoveredDatabase) },
                         )
                     logger.info(
@@ -300,7 +310,7 @@ class CleanupUntrackedTableFoldersService {
                     )
 
                     val unscannedTableLocations =
-                        activeTableLocations.filterNot { tableLocation ->
+                        fileTableLocations.filterNot { tableLocation ->
                             listedRootLocations.any { StoragePathUtils.isSameOrChildLocation(tableLocation, it) }
                         }
 
@@ -332,7 +342,7 @@ class CleanupUntrackedTableFoldersService {
 
                     // Without a visible table under it, a cleanup root gives nothing to check ownership against.
                     val cleanupRootHasVisibleTable =
-                        listedRootLocations.all { root -> activeTableLocations.any { StoragePathUtils.isSameOrChildLocation(it, root) } }
+                        listedRootLocations.all { root -> fileTableLocations.any { StoragePathUtils.isSameOrChildLocation(it, root) } }
 
                     val effectiveExcludedPaths =
                         listedRootLocations
@@ -1003,7 +1013,7 @@ class CleanupUntrackedTableFoldersService {
     ): ScanPlanReport {
         val catalog = discoveredDatabase.catalog
         val database = discoveredDatabase.database
-        val activeTableLocations = discoveredDatabase.tables.mapNotNull { it.location }.sorted()
+        val activeTableLocations = discoveredDatabase.fileTableLocations.sorted()
 
         return try {
             val restRoot = catalogDiscoveryService.restNamespaceRoot(catalog, database)
@@ -1030,6 +1040,7 @@ class CleanupUntrackedTableFoldersService {
                     roots = roots,
                     activeTableLocations = activeTableLocations,
                     cleanupRootListings = cleanupRootListings,
+                    ownedLocations = discoveredDatabase.tables.mapNotNull { it.location },
                 )
                 .copy(
                     restNamespaceRootStatus = restRoot?.status,

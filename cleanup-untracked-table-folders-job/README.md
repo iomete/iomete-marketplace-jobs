@@ -762,6 +762,39 @@ still own them, so treat them as items to review, not as orphans.
 Approval never overrides these checks, and a root listed because of approval is shown with the role
 `report_only_approved`. The log prints at most 25 not-scanned roots. The audit counts are always complete.
 
+### JDBC tables
+
+A table that uses Spark's JDBC data source keeps its rows in another database. The metastore still gives
+it a default location, usually `<database location>/<table>`, but no files are stored there. The job treats
+a table as a JDBC table when its provider is one of these, in any letter case:
+
+- `jdbc`
+- `org.apache.spark.sql.jdbc` or `org.apache.spark.sql.jdbc.DefaultSource`
+- `org.apache.spark.sql.execution.datasources.jdbc`, or the same name followed by `.DefaultSource` or
+  `.JdbcRelationProvider`
+- `com.microsoft.sqlserver.jdbc.spark`, the SQL Server connector
+
+Every other provider, including one the job does not recognize, counts as a table that stores files.
+
+A JDBC table does not choose the scan root, the cleanup roots or the report-only roots. It is not the
+visible table a cleanup root needs, and it does not count toward coverage. Its location stays protected: a
+folder there is never a candidate, is not listed under report-only roots, and is checked again right before
+deletion. A JDBC table of another database or catalog protects its location the same way.
+`active_table_count` and `active_table_locations_sample` still include JDBC tables.
+
+Upgrading from 0.1.5 can change the result for a database with JDBC tables, in both directions:
+
+- Folders that were not cleaned before can become candidates. When the tables that store files all sit
+  in one folder, that folder becomes the cleanup root even if a JDBC table sits elsewhere, and its child
+  folders can be deleted. Check that `exclude_database_folders` still names the folders you want to keep.
+- A database can be skipped or blocked, or clean less. A database with only JDBC tables is `SKIPPED` with
+  `no_active_tables_in_database`. A cleanup root that holds only JDBC tables gives `BLOCKED` with
+  `cleanup_root_has_no_visible_table`. If the other tables sit outside the database's storage, the database
+  is `SKIPPED` with `scan_root_outside_database_boundary`. A `<database>.db` folder that was a cleanup root
+  only because of a JDBC table becomes report-only.
+
+Run the job with `dry_run=true` after upgrading, and review the candidates and audit rows before deleting.
+
 ---
 
 ## Audit table
@@ -942,6 +975,7 @@ Its state is unknown: it may be fully present, partly deleted, or gone.
 | Database processed successfully | `SUCCESS` | Includes dry-run runs with zero candidates |
 | Database processed, but some table locations are outside the scanned root | `SUCCESS` | `status_reason=partial_scan_coverage` |
 | Database location is missing | `SKIPPED` | Storage discovery is skipped |
+| No table stores files at a known location, for example the database has no tables, or only views or [JDBC tables](#jdbc-tables) | `SKIPPED` | `status_reason=no_active_tables_in_database`; storage is not listed. `active_table_count` still counts the JDBC tables |
 | Too many candidate folders | `SKIPPED` | Candidate count exceeded configured limit. Unresolved tables are reported on the same row |
 | Configured database does not exist | `SKIPPED` | Logged as a warning with `status_reason=database_not_found` |
 | Database location or scan root is unsafe | `SKIPPED` | Storage is never listed; see [Object-storage scan root](#object-storage-scan-root) for the reasons |
@@ -1127,8 +1161,8 @@ This row still reports both conditions: `unresolved_table_count` carries the unr
 `candidate_folder_count` stays `0`. Folder contents are not inspected. Raising the limit will not
 make these folders deletable, because the database then becomes `BLOCKED`.
 
-If no table in the database has a verified location, there is nothing to compare folders against, so
-the job does not access storage and does not check the folder limit. It logs a short report and writes
+If no table that stores files has a verified location, for example when the other tables are
+[JDBC tables](#jdbc-tables), there is nothing to compare folders against, so the job does not access storage and does not check the folder limit. It logs a short report and writes
 a `BLOCKED` row with `status_reason=unresolved_catalog_ownership`. On this row `storage_scan_location`
 is empty, `cutoff_time` is null, and the folder counts are `0` because no folder was listed.
 
@@ -1294,6 +1328,7 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T38 | Another catalog of the job session has no `warehouse` setting, or a blank one, and a table stored under the cleanup root | The catalog is read, at the first read and the final read, and that folder is never deleted. An IOMETE-managed REST catalog with no `warehouse`, or a catalog that cannot be read, gives `BLOCKED` with `other_database_storage_unknown` |
 | T39 | A JDBC catalog is registered in the job session | It is not read and does not block deletion |
 | T40 | A database has two cleanup roots, and another catalog of the job session has a table in `<warehouse>/<database>`, or cannot be read there | That folder is never deleted; a read that fails under either root gives `BLOCKED` with `other_database_storage_unknown`, and nothing is deleted in either root |
+| T41 | A database has a JDBC table in `<database>.db` and its other tables in `<warehouse>/<database>` | The JDBC table's folder is never a candidate and does not make `<database>.db` a cleanup root; with only JDBC tables, `SKIPPED` with `no_active_tables_in_database` |
 
 ---
 

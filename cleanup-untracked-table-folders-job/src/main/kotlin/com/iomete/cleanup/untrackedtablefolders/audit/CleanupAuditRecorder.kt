@@ -85,6 +85,8 @@ class CleanupAuditRecorder {
         databaseName: String,
         discoveredDatabaseLocation: String?,
         excludedPaths: List<String>,
+        activeTableCount: Long,
+        activeTableLocations: List<String>,
     ) {
         writeAuditRecord(
             runId = runId,
@@ -93,11 +95,11 @@ class CleanupAuditRecorder {
             databaseName = databaseName,
             status = STATUS_SKIPPED,
             statusReason = "no_active_tables_in_database",
-            errorMessage = "Database has no active table locations; cleanup skipped to avoid deleting an unanchored storage root.",
+            errorMessage = "Database has no active table that stores files at a known location; cleanup skipped to avoid deleting an unanchored storage root.",
             discoveredDatabaseLocation = discoveredDatabaseLocation,
-            activeTableCount = 0,
+            activeTableCount = activeTableCount,
             excludedPaths = excludedPaths,
-            diagnosticDetails = auditDiagnosticDetailsBuilder.build(activeTableLocations = emptyList()),
+            diagnosticDetails = auditDiagnosticDetailsBuilder.build(activeTableLocations = activeTableLocations),
         )
     }
 
