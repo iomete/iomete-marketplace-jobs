@@ -388,6 +388,35 @@ class CleanupSummaryLoggerTest {
     }
 
     @Test
+    fun `the ownership checks section names each read that failed on its own line`() {
+        val failed =
+            OwnershipChecks(
+                otherDatabaseFolders = true,
+                unreadableStorage =
+                    listOf(
+                        "catalog=remote: the database list could not be read (ConnectException)",
+                        "catalog=views, database=reports: the tables could not be read (IllegalStateException)",
+                    ),
+            )
+        val reports =
+            listOf(
+                logger.buildReportLines(summary().copy(ownershipChecks = failed)),
+                logger.buildTooManyFoldersReportLines(tooManySummary(unresolvedTableNames = emptyList()).copy(ownershipChecks = failed)),
+            )
+
+        reports.forEach { lines ->
+            val section = lines.joinToString("\n").substringAfter("OWNERSHIP CHECKS\n\n").substringBefore("\n  See ").lines()
+            assertEquals(
+                listOf(
+                    "  Unreadable   catalog=remote: the database list could not be read (ConnectException)",
+                    "               catalog=views, database=reports: the tables could not be read (IllegalStateException)",
+                ),
+                section.takeLast(2),
+            )
+        }
+    }
+
+    @Test
     fun `unresolved tables are listed with their reason and any known folder`() {
         val report =
             logger.buildReportLines(

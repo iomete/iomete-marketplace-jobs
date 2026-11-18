@@ -486,7 +486,8 @@ If any of these may not hold, run in dry-run, review the candidates, and protect
 
 Every audit row states which of these checks ran for its database, in `diagnostic_details`.
 `ownership_checks` lists the checks that ran, and `ownership_not_checked` lists the rest. A check that
-was skipped or failed is listed as not checked, so a row never claims a check that did not run.
+was skipped or failed is listed as not checked, so a row never claims a check that did not run. When the
+storage of other databases is unknown, `ownership_unreadable_sample` says why.
 
 | In `ownership_checks` | Listed when |
 |---|---|
@@ -882,6 +883,8 @@ It may include values such as:
 ```text
 ownership_checks
 ownership_not_checked
+ownership_unreadable_sample
+ownership_unreadable_truncated
 active_table_locations_sample
 storage_folder_paths_sample
 candidate_folder_paths_sample
@@ -1095,6 +1098,20 @@ no `warehouse`: it stores each database under `<warehouse>/<database>`, and that
 The first read is shared by every configured database. A read that fails, or that could not read a
 database location or found an unresolved table, is not kept, so the next database reads again. Reading costs about one catalog lookup per table. The log reports how many tables
 were checked and how long it took. When every folder already has an owner, nothing is read.
+
+Within one database, the database and table lists are read once and reused under both cleanup roots.
+Once the storage under one root is unknown, the other root is not read, because the database is blocked
+either way. So a catalog that cannot be reached costs one wait per database, not one per root. A catalog whose server
+does not answer can take minutes to fail, depending on its connection timeout. Before reading, the log
+lists each other catalog and why it is read: it has no warehouse setting, its warehouse is not a storage
+path, or its warehouse is in the same bucket.
+
+When the storage of other databases is unknown, the row's `diagnostic_details` says why in
+`ownership_unreadable_sample`, for example `catalog=sales_rest: the database list could not be read
+(ConnectException)`. It names the first thing that could not be read or used, because reading stops
+there, so a second problem shows up only once the first is fixed. Only the class of an error is recorded
+there. The WARN log has the details. The report shows the same entry as `Unreadable` under
+`OWNERSHIP CHECKS`.
 
 Another database can claim a folder while the run is going. So right before a database deletes, the job
 reads all of this again, with nothing reused from the first read. Iceberg catalogs cache the tables they

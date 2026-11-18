@@ -119,6 +119,11 @@ class OwnershipProtectionFlowTest {
         assertTrue("  Reason: other_database_storage_unknown" in flow.summaryLines())
         assertTrue("default_folders_of_other_databases" in notChecked(record))
         assertTrue("other_database_tables" in notChecked(record))
+        assertEquals(
+            "catalog=$CATALOG, database=hidden_location: the location could not be read",
+            record.diagnosticDetails["ownership_unreadable_sample"],
+        )
+        assertTrue("  Unreadable   catalog=$CATALOG, database=hidden_location: the location could not be read" in flow.summaryLines())
     }
 
     @Test
@@ -129,8 +134,15 @@ class OwnershipProtectionFlowTest {
 
         flow.run()
 
-        assertEquals("other_database_storage_unknown", flow.auditRecords.single().statusReason)
+        val record = flow.auditRecords.single()
+        assertEquals("other_database_storage_unknown", record.statusReason)
         assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+        // Only the class of the cause is recorded. Its message can hold connection details.
+        assertEquals(
+            "catalog=$CATALOG: the database list could not be read (IllegalStateException)",
+            record.diagnosticDetails["ownership_unreadable_sample"],
+        )
+        assertEquals("false", record.diagnosticDetails["ownership_unreadable_truncated"])
     }
 
     @Test
@@ -421,6 +433,10 @@ class OwnershipProtectionFlowTest {
         assertTrue("default_folders_of_visible_other_databases" in checks(record))
         assertTrue("other_database_tables" in notChecked(record))
         assertTrue("same_bucket_session_catalogs" in notChecked(record))
+        assertEquals(
+            "catalog=$CATALOG, database=archive: the tables could not be read (IllegalStateException)",
+            record.diagnosticDetails["ownership_unreadable_sample"],
+        )
     }
 
     @Test

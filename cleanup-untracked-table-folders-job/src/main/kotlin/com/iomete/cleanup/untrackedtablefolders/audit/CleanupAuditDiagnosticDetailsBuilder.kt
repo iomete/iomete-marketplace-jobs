@@ -64,7 +64,7 @@ class CleanupAuditDiagnosticDetailsBuilder {
 
     // Stated on every row so a clean result is never read as proof that no table anywhere uses the folder.
     fun ownershipCheckDetails(checks: OwnershipChecks): Map<String, String> =
-        mapOf(
+        unreadableStorageDetails(checks.unreadableStorage) + mapOf(
             "ownership_checks" to
                 listOfNotNull(
                     "visible_tables_of_this_database",
@@ -88,6 +88,16 @@ class CleanupAuditDiagnosticDetailsBuilder {
                     "files_outside_table_folders",
                 ).joinToString(","),
         )
+
+    private fun unreadableStorageDetails(unreadableStorage: List<String>): Map<String, String> =
+        if (unreadableStorage.isEmpty()) {
+            emptyMap()
+        } else {
+            mapOf(
+                "ownership_unreadable_sample" to auditPathSample(unreadableStorage),
+                "ownership_unreadable_truncated" to isAuditPathSampleTruncated(unreadableStorage).toString(),
+            )
+        }
 
     fun unresolvedTableDetails(unresolvedTables: List<String>): Map<String, String> =
         if (unresolvedTables.isEmpty()) {

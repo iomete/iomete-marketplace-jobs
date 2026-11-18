@@ -670,6 +670,267 @@ class AutomaticMultiRootFlowTest {
         assertTrue("final_recheck_before_deletion" in notChecked(record))
     }
 
+    // A catalog whose server cannot be reached can take minutes to fail. The read fails under the folder with .db, so
+    // the folder without .db is not read and the catalog is tried once.
+    @Test
+    fun `a catalog that cannot be reached is tried once for both folders, blocks both and is named on the row`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive")
+        folders(REST_FOLDER, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"))
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("remote" to emptyList())
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("remote") } throws
+            IllegalStateException("catalog init failed", java.net.ConnectException("Connection timed out"))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("other_database_storage_unknown", record.statusReason)
+        assertTrue(record.deletedFolders.isEmpty())
+        assertTrue(flow.objectExists("$DB_FOLDER/orphan_hive/part-0.parquet"))
+        assertTrue(flow.objectExists("$REST_FOLDER/orphan_rest/part-0.parquet"))
+        verify(exactly = 1) { flow.catalogDiscoveryService.visibleDatabaseLocations("remote") }
+        val unreadable = "catalog=remote: the database list could not be read (ConnectException)"
+        assertEquals(unreadable, record.diagnosticDetails["ownership_unreadable_sample"])
+        assertTrue("same_bucket_session_catalogs" in notChecked(record))
+        val summary = flow.summaryLines()
+        assertTrue("  Unreadable   $unreadable" in summary)
+        assertTrue("  OWNERSHIP CHECKS names what could not be read. The WARN log has the details." in summary)
+    }
+
+    @Test
+    fun `an error class without a simple name is named in full`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive")
+        folders(REST_FOLDER, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"))
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("remote" to emptyList())
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("remote") } throws object : IllegalStateException("denied") {}
+
+        flow.run()
+
+        val sample = flow.auditRecords.single().diagnosticDetails["ownership_unreadable_sample"].orEmpty()
+        assertTrue(sample.startsWith("catalog=remote: the database list could not be read (com.iomete."), sample)
+        assertFalse(sample.endsWith("()"), sample)
+    }
+
+    @Test
+    fun `a REST namespace folder that cannot be read names its own database`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive")
+        folders(REST_FOLDER, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"))
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("views" to listOf(WAREHOUSE))
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("views") } returns
+            mapOf("default" to WAREHOUSE, "archive" to "s3a://other/archive")
+        every { flow.catalogDiscoveryService.restNamespaceRoot("views", "archive") } throws IllegalStateException("denied")
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("other_database_storage_unknown", record.statusReason)
+        verify { flow.catalogDiscoveryService.tableLocationIfExists("views", "default", "sales.db") }
+        assertEquals(
+            "catalog=views, database=archive: the REST namespace folder could not be read (IllegalStateException)",
+            record.diagnosticDetails["ownership_unreadable_sample"],
+        )
+    }
+
+    @Test
+    fun `a table location that cannot be compared names that table`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive")
+        folders(REST_FOLDER, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"))
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations(CATALOG) } returns
+            mapOf("sales" to DB_FOLDER, "archive" to "s3a://other/archive", "reports" to "s3a://other/reports")
+        every { flow.catalogDiscoveryService.discoverTables(CATALOG, "archive") } returns
+            listOf(DiscoveredTable(CATALOG, "archive", "blank", false, location = " "))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("other_database_storage_unknown", record.statusReason)
+        verify { flow.catalogDiscoveryService.discoverTables(CATALOG, "reports") }
+        assertEquals(
+            "table $CATALOG.archive.blank: the location could not be read (IllegalArgumentException)",
+            record.diagnosticDetails["ownership_unreadable_sample"],
+        )
+    }
+
+    @Test
+    fun `a database location that cannot be read names that database, not the database list`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive")
+        folders(REST_FOLDER, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"))
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("views" to listOf(WAREHOUSE))
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("views") } returns mapOf("archive" to " ")
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("other_database_storage_unknown", record.statusReason)
+        assertEquals(
+            "catalog=views, database=archive: the location could not be read (IllegalArgumentException)",
+            record.diagnosticDetails["ownership_unreadable_sample"],
+        )
+    }
+
+    @Test
+    fun `a database location that cannot be read after another database was read names its own database`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive")
+        folders(REST_FOLDER, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"))
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("views" to listOf(WAREHOUSE))
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("views") } returns
+            mapOf("default" to WAREHOUSE, "archive" to " ")
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("other_database_storage_unknown", record.statusReason)
+        verify { flow.catalogDiscoveryService.tableLocationIfExists("views", "default", "sales.db") }
+        assertEquals(
+            "catalog=views, database=archive: the location could not be read (IllegalArgumentException)",
+            record.diagnosticDetails["ownership_unreadable_sample"],
+        )
+    }
+
+    // The lookup for the folder with .db fails first. The folder without .db would need a different lookup that could
+    // fail the same slow way, so it is not made: the database is blocked either way.
+    @Test
+    fun `when other storage under the first folder is unknown the second folder is not read`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive")
+        folders(REST_FOLDER, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"))
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("views" to listOf(WAREHOUSE))
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("views") } returns mapOf("default" to WAREHOUSE)
+        every { flow.catalogDiscoveryService.tableLocationIfExists("views", "default", "sales.db") } throws IllegalStateException("denied")
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("other_database_storage_unknown", record.statusReason)
+        assertTrue(record.deletedFolders.isEmpty())
+        verify(exactly = 0) { flow.catalogDiscoveryService.tableLocationIfExists("views", "default", "sales") }
+        assertEquals(
+            "catalog=views: table default.sales.db could not be read (IllegalStateException)",
+            record.diagnosticDetails["ownership_unreadable_sample"],
+        )
+    }
+
+    // The final check reads everything again, fresh. Within it, a failure under the first folder is not repeated for
+    // the second.
+    @Test
+    fun `a catalog that fails at the final check is tried once there and blocks both folders`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive")
+        folders(REST_FOLDER, "t_rest", "remote_t", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"))
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("remote" to emptyList())
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("remote") } returns mapOf("reports" to "s3a://bucket/remote/reports") andThenThrows
+            IllegalStateException("catalog init failed", java.net.ConnectException("Connection timed out"))
+        every { flow.catalogDiscoveryService.discoverTables("remote", "reports") } returns
+            listOf(DiscoveredTable("remote", "reports", "remote_t", false, location = "$REST_FOLDER/remote_t"))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("other_database_storage_unknown", record.statusReason)
+        assertTrue(record.deletedFolders.isEmpty())
+        assertTrue(flow.objectExists("$DB_FOLDER/orphan_hive/part-0.parquet"))
+        assertTrue(flow.objectExists("$REST_FOLDER/orphan_rest/part-0.parquet"))
+        // One complete read shared by both folders, then one failed read at the final check.
+        verify(exactly = 2) { flow.catalogDiscoveryService.visibleDatabaseLocations("remote") }
+        assertTrue("visible_storage_of_same_bucket_session_catalogs" in checks(record))
+        assertTrue("final_recheck_before_deletion" in notChecked(record))
+        assertEquals(
+            "catalog=remote: the database list could not be read (ConnectException)",
+            record.diagnosticDetails["ownership_unreadable_sample"],
+        )
+    }
+
+    @Test
+    fun `when other storage under the first folder is unknown at the final check the second folder is not read there`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive")
+        folders(REST_FOLDER, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"))
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("views" to listOf(WAREHOUSE))
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("views") } returns mapOf("default" to WAREHOUSE)
+        every { flow.catalogDiscoveryService.tableLocationIfExists("views", "default", "sales.db") } returns null andThenThrows
+            IllegalStateException("denied")
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("other_database_storage_unknown", record.statusReason)
+        assertTrue(record.deletedFolders.isEmpty())
+        assertTrue("final_recheck_before_deletion" in notChecked(record))
+        // Only the first read looks up the folder without .db. The final check stops at the folder with .db.
+        verify(exactly = 1) { flow.catalogDiscoveryService.tableLocationIfExists("views", "default", "sales") }
+    }
+
+    @Test
+    fun `when this catalog's storage under the first folder is unknown the second folder is not read`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive")
+        folders(REST_FOLDER, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"))
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations(CATALOG) } returns mapOf("sales" to DB_FOLDER, "default" to WAREHOUSE)
+        every { flow.catalogDiscoveryService.tableLocationIfExists(CATALOG, "default", "sales.db") } throws IllegalStateException("denied")
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("other_database_storage_unknown", record.statusReason)
+        assertTrue(record.deletedFolders.isEmpty())
+        verify(exactly = 0) { flow.catalogDiscoveryService.tableLocationIfExists(CATALOG, "default", "sales") }
+        assertEquals(
+            "catalog=$CATALOG: table default.sales.db could not be read (IllegalStateException)",
+            record.diagnosticDetails["ownership_unreadable_sample"],
+        )
+    }
+
+    // An unresolved table leaves the paths known, so the second folder is still read. Its tables come from the read
+    // made for the first folder.
+    @Test
+    fun `an unresolved table of another database is read once for both folders and blocks both`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive")
+        folders(REST_FOLDER, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"), dryRun = true)
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations(CATALOG) } returns
+            mapOf("sales" to DB_FOLDER, "archive" to "$WAREHOUSE/archive.db")
+        every { flow.catalogDiscoveryService.discoverTables(CATALOG, "archive") } returns
+            listOf(
+                DiscoveredTable(CATALOG, "archive", "broken", false, location = null, unresolvedReason = "metadata file is missing"),
+            )
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("BLOCKED", record.status)
+        assertEquals("other_table_unresolved", record.statusReason)
+        assertTrue(flow.objectExists("$DB_FOLDER/orphan_hive/part-0.parquet"))
+        assertTrue(flow.objectExists("$REST_FOLDER/orphan_rest/part-0.parquet"))
+        verify(exactly = 1) { flow.catalogDiscoveryService.discoverTables(CATALOG, "archive") }
+        // An unresolved table is reported as such, not as storage that could not be read.
+        assertNull(record.diagnosticDetails["ownership_unreadable_sample"])
+    }
+
+    @Test
+    fun `a run where every read succeeds names nothing as unreadable`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive")
+        folders(REST_FOLDER, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"))
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("SUCCESS", record.status)
+        assertNull(record.diagnosticDetails["ownership_unreadable_sample"])
+        assertNull(record.diagnosticDetails["ownership_unreadable_truncated"])
+        assertTrue(flow.summaryLines().none { it.startsWith("  Unreadable") })
+    }
+
     @Test
     fun `a table that another catalog places in the folder without db before the final check keeps that folder`() {
         folders(DB_FOLDER, "t_hive", "orphan_hive")
