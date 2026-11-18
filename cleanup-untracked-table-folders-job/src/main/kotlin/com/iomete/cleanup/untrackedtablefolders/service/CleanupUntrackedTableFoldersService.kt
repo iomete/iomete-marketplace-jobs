@@ -839,6 +839,7 @@ class CleanupUntrackedTableFoldersService {
             return locations
                 .filterKeys { it in otherDatabases }
                 .flatMap { (otherDatabase, location) ->
+                    reading = "catalog=$catalog, database=$otherDatabase: the location"
                     if (location == null) {
                         return unreadable.unknown("catalog=$catalog, database=$otherDatabase: the location could not be read")
                     }

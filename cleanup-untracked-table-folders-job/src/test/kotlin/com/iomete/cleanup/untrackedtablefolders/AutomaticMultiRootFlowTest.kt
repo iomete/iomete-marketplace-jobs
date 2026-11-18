@@ -755,6 +755,44 @@ class AutomaticMultiRootFlowTest {
         )
     }
 
+    @Test
+    fun `a database location that cannot be read names that database, not the database list`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive")
+        folders(REST_FOLDER, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"))
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("views" to listOf(WAREHOUSE))
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("views") } returns mapOf("archive" to " ")
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("other_database_storage_unknown", record.statusReason)
+        assertEquals(
+            "catalog=views, database=archive: the location could not be read (IllegalArgumentException)",
+            record.diagnosticDetails["ownership_unreadable_sample"],
+        )
+    }
+
+    @Test
+    fun `a database location that cannot be read after another database was read names its own database`() {
+        folders(DB_FOLDER, "t_hive", "orphan_hive")
+        folders(REST_FOLDER, "t_rest", "orphan_rest")
+        val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"))
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns mapOf("views" to listOf(WAREHOUSE))
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("views") } returns
+            mapOf("default" to WAREHOUSE, "archive" to " ")
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("other_database_storage_unknown", record.statusReason)
+        verify { flow.catalogDiscoveryService.tableLocationIfExists("views", "default", "sales.db") }
+        assertEquals(
+            "catalog=views, database=archive: the location could not be read (IllegalArgumentException)",
+            record.diagnosticDetails["ownership_unreadable_sample"],
+        )
+    }
+
     // The lookup for the folder with .db fails first. The folder without .db would need a different lookup that could
     // fail the same slow way, so it is not made: the database is blocked either way.
     @Test
