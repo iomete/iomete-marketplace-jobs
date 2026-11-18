@@ -80,7 +80,7 @@ testing {
 }
 
 dependencies {
-    implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.22.4")
+    implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.23.0")
 
     implementation("org.slf4j:slf4j-api:2.0.20")
     runtimeOnly("org.apache.logging.log4j:log4j-slf4j2-impl:2.26.1")
