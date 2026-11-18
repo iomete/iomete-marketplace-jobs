@@ -90,7 +90,7 @@ dependencies {
     compileOnly("org.apache.spark:spark-sql_2.12:$sparkVersion")
     compileOnly("org.apache.hadoop:hadoop-aws:$hadoopAwsVersion")
 
-    testImplementation("io.mockk:mockk:1.14.11")
+    testImplementation("io.mockk:mockk:1.14.12")
     testImplementation("org.apache.spark:spark-sql_2.12:$sparkVersion")
     // Pin the shaded Hadoop client to the base image's version (overrides Spark's transitive 3.3.4).
     testImplementation("org.apache.hadoop:hadoop-client-api:$hadoopAwsVersion")
