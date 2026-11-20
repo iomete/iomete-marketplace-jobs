@@ -6,7 +6,9 @@ import com.iomete.catalogsync.CoreClient.CatalogDetails
 import com.iomete.catalogsync.SparkSessionProvider
 import com.iomete.catalogsync.config.ApplicationConfig
 import com.iomete.catalogsync.config.CatalogExclusionRule
+import com.iomete.catalogsync.config.CatalogInclusionRule
 import com.iomete.catalogsync.config.ExclusionRules
+import com.iomete.catalogsync.config.InclusionRules
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -49,6 +51,7 @@ class MetadataScraperTest {
         mockTableMetadataExtractor = mockk()
 
         every { mockSparkSessionProvider.getSession(any()) } returns mockSparkSession
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules()
         every { mockApplicationConfig.exclusionRules } returns ExclusionRules()
         every { mockSparkSession.sparkContext() } returns mockSparkContext
         every { mockSparkContext.applicationId() } returns "app-test-123"
@@ -184,6 +187,51 @@ class MetadataScraperTest {
 
         verify(exactly = 0) { mockSparkMetadataReader.getSchemas(mockSparkSession, "excluded_catalog") }
         verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "test_catalog" }) }
+    }
+
+    @Test
+    fun `run syncs only the included catalogs`() {
+        val otherCatalog = CatalogDetails(name = "other_catalog", type = listOf("INTERNAL"))
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules(
+            catalogs = CatalogInclusionRule(names = listOf("test_catalog", "missing_catalog")),
+        )
+        recreateScraper()
+
+        every { mockCoreServiceClient.catalogs() } returns listOf(otherCatalog, testCatalog)
+        every { mockSparkMetadataReader.getSchemas(mockSparkSession, "test_catalog") } returns emptyList()
+        every { mockCatalogServiceClient.indexCatalog(any()) } returns mockk<Response>()
+
+        scraper.run()
+
+        verify(exactly = 0) { mockSparkMetadataReader.getSchemas(mockSparkSession, "other_catalog") }
+        verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "test_catalog" }) }
+        verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    @Test
+    fun `run applies exclusion rules to included catalogs`() {
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules(
+            catalogs = CatalogInclusionRule(names = listOf("test_catalog")),
+        )
+        every { mockApplicationConfig.exclusionRules } returns ExclusionRules(
+            catalogs = CatalogExclusionRule(names = listOf("test_catalog")),
+        )
+        recreateScraper()
+
+        every { mockCoreServiceClient.catalogs() } returns listOf(testCatalog)
+
+        scraper.run()
+
+        verify(exactly = 0) { mockSparkMetadataReader.getSchemas(any(), any()) }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    private fun recreateScraper() {
+        scraper.shutdown()
+        scraper = MetadataScraper(
+            mockSparkSessionProvider, mockApplicationConfig, mockSparkMetadataReader,
+            mockTableMetadataExtractor, mockCoreServiceClient, mockCatalogServiceClient, "default",
+        )
     }
 
     @Test

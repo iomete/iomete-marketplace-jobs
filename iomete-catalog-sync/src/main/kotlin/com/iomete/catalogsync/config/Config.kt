@@ -11,8 +11,22 @@ import java.io.File
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class ApplicationConfig(
+    @field:JsonProperty("inclusion_rules")
+    val inclusionRules: InclusionRules = InclusionRules(),
     @field:JsonProperty("exclusion_rules")
     val exclusionRules: ExclusionRules = ExclusionRules(),
+)
+
+/**
+ * Limits the sync to the listed assets. An empty list means no limit, so every catalog is synced.
+ * Exclusion rules still apply to whatever is included.
+ */
+data class InclusionRules(
+    val catalogs: CatalogInclusionRule = CatalogInclusionRule(),
+)
+
+data class CatalogInclusionRule(
+    val names: List<String> = emptyList(),
 )
 
 data class ExclusionRules(
