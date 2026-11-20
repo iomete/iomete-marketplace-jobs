@@ -6,6 +6,8 @@ import com.fasterxml.jackson.module.kotlin.readValue
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import java.io.File
 
 class ApplicationConfigFactoryTest {
 
@@ -54,11 +56,35 @@ class ApplicationConfigFactoryTest {
     fun `2_1_2 - file not found fallback returns defaults`() {
         val config = ApplicationConfig()
 
+        assertEquals(emptyList<String>(), config.inclusionRules.catalogs.names)
         assertEquals(emptyList<String>(), config.exclusionRules.catalogs.names)
         assertEquals(emptyMap<String, String>(), config.exclusionRules.catalogs.filterByProperties)
         assertEquals(emptyMap<String, String>(), config.exclusionRules.schemas.filterByProperties)
         assertEquals(emptyMap<String, String>(), config.exclusionRules.tables.filterByProperties)
         assertEquals(mapOf("iomete.governance.index" to "false"), config.exclusionRules.defaultRule.filterByProperties)
+    }
+
+    @Test
+    fun `2_1_6 - load inclusion rules next to exclusion rules`() {
+        val json = """
+        {
+          "inclusion_rules": {
+            "catalogs": {
+              "names": ["only_this_catalog"]
+            }
+          },
+          "exclusion_rules": {
+            "catalogs": {
+              "names": ["cat1"]
+            }
+          }
+        }
+        """.trimIndent()
+
+        val config = mapper.readValue<ApplicationConfig>(json)
+
+        assertEquals(listOf("only_this_catalog"), config.inclusionRules.catalogs.names)
+        assertEquals(listOf("cat1"), config.exclusionRules.catalogs.names)
     }
 
     @Test
@@ -114,5 +140,35 @@ class ApplicationConfigFactoryTest {
         val config = mapper.readValue<ApplicationConfig>(json)
 
         assertEquals(listOf("cat1"), config.exclusionRules.catalogs.names)
+    }
+
+    @Test
+    fun `2_1_7 - factory fails on a config file it cannot parse`(@TempDir dir: File) {
+        val file = File(dir, "application.json").apply { writeText("""{ not valid json }""") }
+
+        assertThrows(IllegalStateException::class.java) {
+            ApplicationConfigFactory().load(file)
+        }
+    }
+
+    @Test
+    fun `2_1_8 - factory fails on an unknown key inside a rule`(@TempDir dir: File) {
+        val file = File(dir, "application.json").apply {
+            writeText("""{"inclusion_rules": {"catalogs": {"name": ["only_this_catalog"]}}}""")
+        }
+
+        assertThrows(IllegalStateException::class.java) {
+            ApplicationConfigFactory().load(file)
+        }
+    }
+
+    @Test
+    fun `2_1_9 - factory reads a valid config file and defaults a missing one`(@TempDir dir: File) {
+        val file = File(dir, "application.json").apply {
+            writeText("""{"inclusion_rules": {"catalogs": {"names": ["only_this_catalog"]}}}""")
+        }
+
+        assertEquals(listOf("only_this_catalog"), ApplicationConfigFactory().load(file).inclusionRules.catalogs.names)
+        assertEquals(ApplicationConfig(), ApplicationConfigFactory().load(File(dir, "missing.json")))
     }
 }
