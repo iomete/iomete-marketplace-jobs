@@ -116,6 +116,46 @@ class RulesHelperTest {
     }
 
     @Test
+    fun `enforceCatalogInclusionRules with empty names list includes every catalog`() {
+        val inclusionRules = InclusionRules()
+        val catalog = CoreClient.CatalogDetails(name = "any_catalog", type = emptyList())
+
+        assertDoesNotThrow {
+            inclusionRules.enforceCatalogInclusionRules(catalog)
+        }
+    }
+
+    @Test
+    fun `enforceCatalogInclusionRules keeps a listed catalog`() {
+        val inclusionRules = InclusionRules(catalogs = CatalogInclusionRule(names = listOf("first", "second")))
+        val catalog = CoreClient.CatalogDetails(name = "second", type = emptyList())
+
+        assertDoesNotThrow {
+            inclusionRules.enforceCatalogInclusionRules(catalog)
+        }
+    }
+
+    @Test
+    fun `enforceCatalogInclusionRules skips a catalog that is not listed`() {
+        val inclusionRules = InclusionRules(catalogs = CatalogInclusionRule(names = listOf("wanted")))
+        val catalog = CoreClient.CatalogDetails(name = "other", type = emptyList())
+
+        assertThrows<ExcludedItemException> {
+            inclusionRules.enforceCatalogInclusionRules(catalog)
+        }
+    }
+
+    @Test
+    fun `enforceCatalogInclusionRules is case-sensitive for names`() {
+        val inclusionRules = InclusionRules(catalogs = CatalogInclusionRule(names = listOf("wanted")))
+        val catalog = CoreClient.CatalogDetails(name = "Wanted", type = emptyList())
+
+        assertThrows<ExcludedItemException> {
+            inclusionRules.enforceCatalogInclusionRules(catalog)
+        }
+    }
+
+    @Test
     fun `enforceCatalogExclusionRules is case-sensitive for names`() {
         val exclusionRules = ExclusionRules(catalogs = CatalogExclusionRule(names = listOf("excluded_catalog")))
         val catalog = CoreClient.CatalogDetails(name = "Excluded_Catalog", type = emptyList())

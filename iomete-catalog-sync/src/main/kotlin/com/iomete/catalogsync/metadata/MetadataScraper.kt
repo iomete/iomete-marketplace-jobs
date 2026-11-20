@@ -7,6 +7,7 @@ import com.iomete.catalogsync.SparkSessionProvider
 import com.iomete.catalogsync.config.ApplicationConfig
 import com.iomete.catalogsync.config.ExcludedItemException
 import com.iomete.catalogsync.config.enforceCatalogExclusionRules
+import com.iomete.catalogsync.config.enforceCatalogInclusionRules
 import com.iomete.catalogsync.config.enforceSchemaExclusionRules
 import com.iomete.catalogsync.config.ignoreExcluded
 import jakarta.annotation.PreDestroy
@@ -37,6 +38,7 @@ class MetadataScraper(
     @param:RestClient val coreServiceClient: CoreClient,
     @param:RestClient val catalogServiceClient: CatalogClient,
 ) {
+    private val inclusionRules = applicationConfig.inclusionRules
     private val exclusionRules = applicationConfig.exclusionRules
     private val schemaParallelism = System.getenv("SCHEMA_PARALLELISM")?.toIntOrNull()
         ?: Runtime.getRuntime().availableProcessors()
@@ -57,10 +59,13 @@ class MetadataScraper(
     fun run() {
         logger.info("Running process with application config: {}", applicationConfig)
 
-        coreServiceClient
-            .catalogs()
+        val catalogs = coreServiceClient.catalogs()
+        warnAboutUnknownIncludedCatalogs(catalogs)
+
+        catalogs
             .mapNotNull { catalog ->
                 ignoreExcluded {
+                    inclusionRules.enforceCatalogInclusionRules(catalog)
                     exclusionRules.enforceCatalogExclusionRules(catalog)
                     catalog // keep it if not excluded
                 }
@@ -146,6 +151,15 @@ class MetadataScraper(
                     logger.error("Failed to process catalog {}: {}", catalog.name, th.message, th)
                 }
             }
+    }
+
+    // A misspelt name in the inclusion list would otherwise sync nothing without saying why.
+    private fun warnAboutUnknownIncludedCatalogs(catalogs: List<CatalogDetails>) {
+        val known = catalogs.map { it.name }.toSet()
+        val unknown = inclusionRules.catalogs.names.filterNot { it in known }
+        if (unknown.isNotEmpty()) {
+            logger.warn("Included catalogs not found, skipping them: {}. Available catalogs: {}", unknown, known)
+        }
     }
 
     private fun processSchema(

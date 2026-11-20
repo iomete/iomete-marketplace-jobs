@@ -54,11 +54,35 @@ class ApplicationConfigFactoryTest {
     fun `2_1_2 - file not found fallback returns defaults`() {
         val config = ApplicationConfig()
 
+        assertEquals(emptyList<String>(), config.inclusionRules.catalogs.names)
         assertEquals(emptyList<String>(), config.exclusionRules.catalogs.names)
         assertEquals(emptyMap<String, String>(), config.exclusionRules.catalogs.filterByProperties)
         assertEquals(emptyMap<String, String>(), config.exclusionRules.schemas.filterByProperties)
         assertEquals(emptyMap<String, String>(), config.exclusionRules.tables.filterByProperties)
         assertEquals(mapOf("iomete.governance.index" to "false"), config.exclusionRules.defaultRule.filterByProperties)
+    }
+
+    @Test
+    fun `2_1_6 - load inclusion rules next to exclusion rules`() {
+        val json = """
+        {
+          "inclusion_rules": {
+            "catalogs": {
+              "names": ["only_this_catalog"]
+            }
+          },
+          "exclusion_rules": {
+            "catalogs": {
+              "names": ["cat1"]
+            }
+          }
+        }
+        """.trimIndent()
+
+        val config = mapper.readValue<ApplicationConfig>(json)
+
+        assertEquals(listOf("only_this_catalog"), config.inclusionRules.catalogs.names)
+        assertEquals(listOf("cat1"), config.exclusionRules.catalogs.names)
     }
 
     @Test
