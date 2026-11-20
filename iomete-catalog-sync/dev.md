@@ -89,21 +89,7 @@ You can provide additional job-specific configurations using ConfigMaps.
 ```
 /etc/configs/application.json
 ```
-* Sample Configuration (`application.json`):
-```json
-{
-    "catalog": {
-        // Catalogs to include in the catalog-sync run
-        // Acts as a whitelist. Defaults to an empty array.
-        // If left empty, all catalogs are included.
-        "include": [],
-        // Catalogs to exclude from the catalog-sync run
-        // Acts as a blacklist. Defaults to an empty array.
-        // Ignored if 'include' is non-empty.
-        "exclude": []
-    }
-}
-```
+* Configuration options and a sample `application.json`: see [Configuration](readme.md#configuration).
 * Reference Example:
 <!-- <kbd>![Catalog Sync job configurations](../doc/img/catalog-sync-create-conf.png)</kbd> -->
 
