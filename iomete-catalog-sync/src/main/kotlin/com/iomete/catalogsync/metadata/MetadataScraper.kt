@@ -62,7 +62,7 @@ class MetadataScraper(
         logger.info("Running process with application config: {}", applicationConfig)
 
         val catalogs = catalogsToSync()
-        warnAboutUnknownIncludedCatalogs(catalogs)
+        checkIncludedCatalogsExist(catalogs)
 
         catalogs
             .mapNotNull { catalog ->
@@ -173,9 +173,16 @@ class MetadataScraper(
     }
 
     // A misspelt name in the inclusion list would otherwise sync nothing without saying why.
-    private fun warnAboutUnknownIncludedCatalogs(catalogs: List<CatalogDetails>) {
+    // Some unknown names are only a warning; when none of them match, the run fails.
+    private fun checkIncludedCatalogsExist(catalogs: List<CatalogDetails>) {
+        val included = inclusionRules.catalogs.names
+        if (included.isEmpty()) return
+
         val known = catalogs.map { it.name }.toSet()
-        val unknown = inclusionRules.catalogs.names.filterNot { it in known }
+        val unknown = included.filterNot { it in known }
+        if (unknown.size == included.size) {
+            throw IllegalStateException("None of the included catalogs exist: $unknown. Available catalogs: $known")
+        }
         if (unknown.isNotEmpty()) {
             logger.warn("Included catalogs not found, skipping them: {}. Available catalogs: {}", unknown, known)
         }

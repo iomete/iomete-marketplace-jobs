@@ -63,21 +63,25 @@ class ApplicationConfigFactory {
 
     @Produces
     @ApplicationScoped
-    fun applicationConfig(): ApplicationConfig {
-        val configPath = "/etc/configs/application.json"
-        val file = File(configPath)
+    fun applicationConfig(): ApplicationConfig = load(File(CONFIG_PATH))
 
-        return if (file.exists()) {
-            logger.info("Reading JSON config from: {}", configPath)
-            try {
-                mapper.readValue(file)
-            } catch (e: Exception) {
-                logger.error("Failed to parse config file: {}", e.message)
-                ApplicationConfig()
-            }
-        } else {
-            logger.warn("Config file not found at {}. Using default values.", configPath)
-            ApplicationConfig()
+    // A file that is there but cannot be parsed fails the job: falling back to the defaults would
+    // sync every catalog, the opposite of what an inclusion list asks for.
+    internal fun load(file: File): ApplicationConfig {
+        if (!file.exists()) {
+            logger.warn("Config file not found at {}. Using default values.", file.path)
+            return ApplicationConfig()
         }
+
+        logger.info("Reading JSON config from: {}", file.path)
+        return try {
+            mapper.readValue(file)
+        } catch (e: Exception) {
+            throw IllegalStateException("Failed to parse config file ${file.path}: ${e.message}", e)
+        }
+    }
+
+    companion object {
+        const val CONFIG_PATH = "/etc/configs/application.json"
     }
 }

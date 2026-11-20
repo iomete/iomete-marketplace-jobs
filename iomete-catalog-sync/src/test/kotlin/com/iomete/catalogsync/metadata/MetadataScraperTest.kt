@@ -16,6 +16,7 @@ import jakarta.ws.rs.core.Response
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.SparkSession
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -206,6 +207,21 @@ class MetadataScraperTest {
         verify(exactly = 0) { mockSparkMetadataReader.getSchemas(mockSparkSession, "other_catalog") }
         verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "test_catalog" }) }
         verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    @Test
+    fun `run fails when none of the included catalogs exist`() {
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules(
+            catalogs = CatalogInclusionRule(names = listOf("missing_catalog")),
+        )
+        recreateScraper()
+
+        every { mockCoreServiceClient.catalogs() } returns listOf(testCatalog)
+
+        assertThrows(IllegalStateException::class.java) { scraper.run() }
+
+        verify(exactly = 0) { mockSparkMetadataReader.getSchemas(any(), any()) }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
     }
 
     @Test
