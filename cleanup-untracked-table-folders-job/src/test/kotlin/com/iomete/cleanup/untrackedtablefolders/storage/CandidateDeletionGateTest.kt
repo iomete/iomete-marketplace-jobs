@@ -347,11 +347,12 @@ class CandidateDeletionGateTest {
     fun `the snapshot age counts from the start of the read, so a slow read is followed by an earlier read again`() {
         put("orphan_a")
         put("orphan_b")
+        // Measured from its end, the read would be 150 s old before orphan_b, too young to be read again.
         otherStorage = {
-            clock.advance(Duration.ofMinutes(4))
+            clock.advance(Duration.ofMinutes(2))
             OtherStorageRecheck(emptyList(), emptyList())
         }
-        expireAfterFolder("$DB/orphan_a", Duration.ofMinutes(2))
+        expireAfterFolder("$DB/orphan_a", Duration.ofSeconds(150))
 
         val result = gate().deleteCandidates(CATALOG, "analytics", eligible("$DB/orphan_a", "$DB/orphan_b"), emptyList(), fence())
 
@@ -489,7 +490,7 @@ class CandidateDeletionGateTest {
 
         val stop = result.fence.stop!!
         assertEquals(FenceStopCause.RECHECK_TOO_SLOW, stop.cause)
-        assertTrue(stop.message.contains("longer than the 300 s limit"), stop.message)
+        assertTrue(stop.message.contains("more than the 150 s a read may use of the 300 s limit"), stop.message)
         assertEquals(2, reads)
         assertEquals(listOf("$DB/orphan_a"), result.deletedPaths)
         assertEquals(listOf("$DB/orphan_b"), result.fence.notAttemptedPaths)
@@ -543,8 +544,11 @@ class CandidateDeletionGateTest {
     fun `no delete starts with less than the start margin of the snapshot left, and its key stays remaining`() {
         put("orphan_a", "part-0.parquet", "part-1.parquet")
         put("orphan_b")
-        InMemoryS3FileSystem.beforeDelete = { path ->
-            if (path == "$DB/orphan_a/part-0.parquet") clock.advance(OWNERSHIP_SNAPSHOT_MAX_AGE.minusSeconds(29))
+        // The status read right before part-1's delete, after the point where ownership would be read again.
+        InMemoryS3FileSystem.beforeGetFileStatus = { path ->
+            if (path == "$DB/orphan_a/part-1.parquet" && InMemoryS3FileSystem.getFileStatusCalls[path] == 2) {
+                clock.advance(OWNERSHIP_SNAPSHOT_MAX_AGE.minusSeconds(29))
+            }
         }
 
         val result = gate().deleteCandidates(CATALOG, "analytics", eligible("$DB/orphan_a", "$DB/orphan_b"), emptyList(), fence())
@@ -568,15 +572,20 @@ class CandidateDeletionGateTest {
     fun `a delete still starts with exactly the start margin left`() {
         put("orphan_a", "part-0.parquet", "part-1.parquet")
         put("orphan_b")
-        InMemoryS3FileSystem.beforeDelete = { path ->
-            if (path == "$DB/orphan_a/part-0.parquet") clock.advance(OWNERSHIP_SNAPSHOT_MAX_AGE.minusSeconds(30))
+        // The status read right before part-1's delete, after the point where ownership would be read again.
+        InMemoryS3FileSystem.beforeGetFileStatus = { path ->
+            if (path == "$DB/orphan_a/part-1.parquet" && InMemoryS3FileSystem.getFileStatusCalls[path] == 2) {
+                clock.advance(OWNERSHIP_SNAPSHOT_MAX_AGE.minusSeconds(30))
+            }
         }
 
         val result = gate().deleteCandidates(CATALOG, "analytics", eligible("$DB/orphan_a", "$DB/orphan_b"), emptyList(), fence())
 
         assertNull(result.fence.stop)
         assertEquals(listOf("$DB/orphan_a", "$DB/orphan_b"), result.deletedPaths)
-        assertEquals(1, otherStorageReads)
+        assertTrue(InMemoryS3FileSystem.deleteCalls.contains("$DB/orphan_a/part-1.parquet" to false))
+        // The directory step that follows is past the point where ownership is read again.
+        assertEquals(2, otherStorageReads)
     }
 
     @Test
@@ -584,13 +593,15 @@ class CandidateDeletionGateTest {
         put("orphan_a")
         put("orphan_b")
         InMemoryS3FileSystem.putDirectory(COMPAT, "$DB/orphan_a")
-        InMemoryS3FileSystem.beforeDelete = { path ->
-            if (path == "$DB/orphan_a/part-0.parquet") clock.advance(OWNERSHIP_SNAPSHOT_MAX_AGE.minusSeconds(29))
+        // The status read of the directory itself, after the point where ownership would be read again.
+        InMemoryS3FileSystem.beforeGetFileStatus = { path ->
+            if (path == "$DB/orphan_a") clock.advance(OWNERSHIP_SNAPSHOT_MAX_AGE.minusSeconds(29))
         }
 
         val result = gate().deleteCandidates(CATALOG, "analytics", eligible("$DB/orphan_a", "$DB/orphan_b"), emptyList(), fence())
 
         assertEquals(FenceStopCause.SNAPSHOT_EXPIRED, result.fence.stop?.cause)
+        assertEquals(1, otherStorageReads)
         val partial = result.fence.partialFolder!!
         assertEquals(FolderDeletionOutcome.PARTIAL_STOPPED, partial.outcome)
         assertEquals(listOf("part-0.parquet"), partial.deletedKeys)

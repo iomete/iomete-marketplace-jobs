@@ -224,7 +224,7 @@ class FencedDeletionFlowTest {
 
         val record = flow.auditRecords.single()
         assertStopped(record, "recheck_too_slow", deleted = listOf(ORPHAN_A), notAttempted = listOf(ORPHAN_B))
-        assertTrue(record.errorMessage.orEmpty().contains("longer than the 300 s limit"), record.errorMessage)
+        assertTrue(record.errorMessage.orEmpty().contains("more than the 150 s a read may use of the 300 s limit"), record.errorMessage)
     }
 
     @Test
@@ -842,7 +842,7 @@ class FencedDeletionFlowTest {
     // margin, so the folder stops with every listed key deleted or remaining.
     @Test
     @Timeout(value = 20, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
-    fun `a folder too slow to delete within the limit stops at the start margin with every key deleted or remaining`() {
+    fun `a folder that takes longer than one ownership read is read again in its middle and deleted, each key once`() {
         val keys = (0 until 60).map { "part-%02d.parquet".format(it) }
         putFolder(ORPHAN_A, *keys.toTypedArray())
         putFolder(ORPHAN_B, "part-0.parquet")
@@ -853,25 +853,13 @@ class FencedDeletionFlowTest {
         flow.run()
 
         val record = flow.auditRecords.single()
-        val details = record.diagnosticDetails
-        assertStopped(record, "snapshot_expired_during_deletion", deleted = emptyList(), notAttempted = listOf(ORPHAN_B))
-        assertTrue(
-            record.errorMessage.orEmpty().contains("the ownership snapshot was within 150 ms of its 1500 ms limit during deletion, so no further delete was started"),
-            record.errorMessage,
-        )
-        assertEquals(ORPHAN_A, details["partially_deleted_folder_path"])
-        assertEquals("60", details["partially_deleted_folder_listed_object_count"])
-        assertEquals("0", details["partially_deleted_folder_unknown_state_object_count"], details.toString())
-        assertEquals("0", details["partially_deleted_folder_vanished_object_count"])
-        assertEquals("not_run", details["partially_deleted_folder_directory_cleanup"])
-        val deleted = details.getValue("partially_deleted_folder_deleted_object_count").toInt()
-        val remaining = details.getValue("partially_deleted_folder_remaining_object_count").toInt()
-        assertEquals(60, deleted + remaining)
-        assertTrue(deleted in 1..59, "deleted=$deleted")
-        val sent = InMemoryS3FileSystem.deleteCalls.map { it.first }
-        assertEquals(keys.take(deleted).map { "$ORPHAN_A/$it" }, sent, "only the deleted keys were sent, each once")
-        assertEquals(keys.drop(deleted).map { "$ORPHAN_A/$it" }.toSet(), InMemoryS3FileSystem.paths(ENDPOINT).filter { it.startsWith("$ORPHAN_A/") }.toSet())
-        assertTrue(flow.objectExists("$ORPHAN_B/part-0.parquet"))
+        assertEquals("SUCCESS" to null, record.status to record.statusReason, record.errorMessage)
+        assertEquals(listOf(ORPHAN_A, ORPHAN_B), record.deletedFolders)
+        assertTrue(record.diagnosticDetails.getValue("ownership_refresh_count").toInt() >= 1, record.diagnosticDetails.toString())
+        assertNoPartialFolder(record)
+        val sent = InMemoryS3FileSystem.deleteCalls.map { it.first }.filter { it.startsWith("$ORPHAN_A/part-") }
+        assertEquals(keys.map { "$ORPHAN_A/$it" }, sent, "every key was sent once, in order")
+        assertFalse(flow.objectExists("$ORPHAN_B/part-0.parquet"))
     }
 
     // An unlisted object makes the folder changed, which is a failure. The stop that ended the removal of empty

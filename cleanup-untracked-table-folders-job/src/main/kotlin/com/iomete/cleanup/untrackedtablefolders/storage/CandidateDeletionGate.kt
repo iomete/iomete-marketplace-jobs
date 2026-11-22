@@ -105,7 +105,16 @@ class CandidateDeletionGate {
         private val inspectionFingerprints = fence.inspectionFingerprints.mapKeys { StoragePathUtils.normalizeLocation(it.key) }
         private val maxAgeNanos = snapshotMaxAge.toNanos()
         private val startMargin = deleteStartMargin ?: minOf(DELETE_START_MARGIN, snapshotMaxAge.dividedBy(10))
+
+        // Read again while twice the start margin is left, so the status read before the next delete still fits.
+        // Reading only once the limit was passed came after the start margin had already stopped the run.
+        private val refreshAfterNanos = maxAgeNanos - 2 * startMargin.toNanos()
+
+        // A read that uses more than half the limit leaves little time to delete and would be repeated soon after,
+        // so it stops deletion instead.
+        private val usableReadNanos = maxAgeNanos / 2
         private var snapshotStartedAt: Long? = null
+        private var currentFolder: String? = null
 
         private fun snapshotAgeNanos(): Long = snapshotStartedAt?.let { ticker.nanos() - it } ?: Long.MAX_VALUE
 
@@ -122,10 +131,13 @@ class CandidateDeletionGate {
         ): BoundedCall<T> = BoundedCalls.run(operation, target, Duration.ofNanos(deadline - ticker.nanos()), block)
 
         /** Returns why deletion must stop, or null when the snapshot was read in full within the time limit. */
-        fun readSnapshot(beforeFolder: String?): FenceStop? {
+        fun readSnapshot(
+            beforeFolder: String?,
+            duringFolder: Boolean = false,
+        ): FenceStop? {
             val startedAt = ticker.nanos()
             val deadline = startedAt + maxAgeNanos
-            val where = beforeFolder?.let { " before folder=$it" }.orEmpty()
+            val where = beforeFolder?.let { if (duringFolder) " during the deletion of folder=$it" else " before folder=$it" }.orEmpty()
 
             fun tooSlow(timedOut: CallTimedOutException?): FenceStop =
                 FenceStop(
@@ -133,7 +145,7 @@ class CandidateDeletionGate {
                     if (timedOut?.started == true) {
                         "the ownership recheck$where did not finish within the ${limitText()} limit"
                     } else {
-                        "the ownership recheck$where took ${Duration.ofNanos(ticker.nanos() - startedAt).seconds} s, longer than the ${limitText()} limit"
+                        "the ownership recheck$where took ${Duration.ofNanos(ticker.nanos() - startedAt).seconds} s, more than the ${text(Duration.ofNanos(usableReadNanos))} a read may use of the ${limitText()} limit"
                     },
                     timedOut,
                 )
@@ -183,7 +195,7 @@ class CandidateDeletionGate {
                 )
             }
 
-            if (ticker.nanos() - startedAt > maxAgeNanos) {
+            if (ticker.nanos() - startedAt > usableReadNanos) {
                 return tooSlow(null)
             }
             snapshotStartedAt = startedAt
@@ -191,11 +203,35 @@ class CandidateDeletionGate {
         }
 
         override fun beforeListing(folderPath: String): FenceDecision {
-            if (snapshotAgeNanos() > maxAgeNanos) {
-                logger.info("Reading ownership again before folder=$folderPath: the snapshot is older than ${limitText()}")
+            currentFolder = folderPath
+            if (snapshotAgeNanos() > refreshAfterNanos) {
+                logger.info("Reading ownership again before folder=$folderPath: less than ${text(startMargin.multipliedBy(2))} of the ${limitText()} limit is left")
                 readSnapshot(beforeFolder = folderPath)?.let { return FenceDecision.Stop(it) }
             }
+            return ownership(folderPath)
+        }
 
+        // Within one folder the objects deleted so far stay deleted, so a protecting read stops the run there.
+        override fun beforeNextObject(): FenceStop? {
+            stopBeforeNextObject()?.let { return it }
+            val folderPath = currentFolder ?: return null
+            if (snapshotAgeNanos() <= refreshAfterNanos) {
+                return null
+            }
+            logger.info("Reading ownership again during the deletion of folder=$folderPath: less than ${text(startMargin.multipliedBy(2))} of the ${limitText()} limit is left")
+            readSnapshot(beforeFolder = folderPath, duringFolder = true)?.let { return it }
+            return when (val decision = ownership(folderPath)) {
+                FenceDecision.Proceed -> null
+                is FenceDecision.Stop -> decision.stop
+                is FenceDecision.Keep ->
+                    FenceStop(
+                        FenceStopCause.CLAIMED_DURING_DELETION,
+                        "ownership read again during the deletion of folder=$folderPath protects it (folder_kept_${decision.reason.code})",
+                    )
+            }
+        }
+
+        private fun ownership(folderPath: String): FenceDecision {
             val folder = StoragePathUtils.normalizeLocation(folderPath)
             val name = folder.substringAfterLast('/')
             val namedTable =

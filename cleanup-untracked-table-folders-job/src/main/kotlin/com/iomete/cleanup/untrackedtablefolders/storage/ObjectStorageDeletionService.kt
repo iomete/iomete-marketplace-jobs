@@ -355,7 +355,7 @@ class ObjectStorageDeletionService {
         }
         val paths = ArrayList<Path>(objects.size)
         for (listed in objects) {
-            fence.stopBeforeNextObject()?.let { return stop(FolderDeletionOutcome.PARTIAL_STOPPED, stop = it) }
+            fence.beforeNextObject()?.let { return stop(FolderDeletionOutcome.PARTIAL_STOPPED, stop = it) }
             val path =
                 try {
                     FolderObjectListing.objectPath(folder, listed.relativeKey)
@@ -379,7 +379,7 @@ class ObjectStorageDeletionService {
         objects.forEachIndexed { index, listed ->
             val key = listed.relativeKey
             val path = paths[index]
-            fence.stopBeforeNextObject()?.let { return stop(FolderDeletionOutcome.PARTIAL_STOPPED, stop = it) }
+            fence.beforeNextObject()?.let { return stop(FolderDeletionOutcome.PARTIAL_STOPPED, stop = it) }
 
             val current =
                 when (val status = status(catalog, fileSystem, path, fence)) {
@@ -623,6 +623,7 @@ class ObjectStorageDeletionService {
 
         private fun removeDirectory(directory: Path): Boolean {
             val dir = directory.toString()
+            fence.beforeNextObject()?.let { return halt(dir, stop = it) }
             // S3A deletes an object named like the directory before its marker, so only a directory status is deleted.
             // One written at that name after this read is still deleted; nothing here can close that window.
             when (val before = status(catalog, fileSystem, directory, fence)) {

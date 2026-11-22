@@ -4,8 +4,9 @@ import java.time.Duration
 
 /**
  * How old the ownership snapshot may be while a delete runs, measured from the start of the read on a monotonic
- * clock. Before each folder an older snapshot is read again, and deletion stops when that read is not done within
- * this time. No delete call starts once the snapshot is within [DELETE_START_MARGIN] of this age, and each read and
+ * clock. The snapshot is read again once less than twice [DELETE_START_MARGIN] of this age is left, before a folder
+ * or between the objects and directories of one, and deletion stops when a read takes more than half this time.
+ * No delete call starts once the snapshot is within [DELETE_START_MARGIN] of this age, and each read and
  * delete is waited for only until the snapshot reaches it. Inside a delete call the storage client reads the object's
  * status and may retry before and after it sends the request, so the request can go out at any time until the call
  * returns or the wait ends. A delete the job stopped waiting for may still land later, with no bound on when.
@@ -29,6 +30,12 @@ interface FolderDeletionFence {
     fun checkListing(listing: FolderListing.Listed): FenceDecision = FenceDecision.Proceed
 
     fun stopBeforeNextObject(): FenceStop? = null
+
+    /**
+     * Called before each object's status read and before each directory's. Unlike [stopBeforeNextObject], it may read
+     * ownership again and check the folder against that read, so a folder can go on past the age of one read.
+     */
+    fun beforeNextObject(): FenceStop? = stopBeforeNextObject()
 
     /** Checked right before each object or directory delete is sent. */
     fun stopBeforeDelete(): FenceStop? = stopBeforeNextObject()
@@ -81,6 +88,9 @@ enum class FenceStopCause(val code: String) {
     OWN_DATABASE_RECHECK_FAILED("own_database_recheck_failed"),
     RECHECK_TOO_SLOW("recheck_too_slow"),
     NAME_PROBE_FAILED("name_probe_failed"),
+
+    /** Ownership read again in the middle of a folder protects that folder; the objects deleted before stay deleted. */
+    CLAIMED_DURING_DELETION("claimed_during_deletion"),
 
     /** The snapshot passed its age limit during deletion, or was too close to it to start another delete. */
     SNAPSHOT_EXPIRED("snapshot_expired_during_deletion"),

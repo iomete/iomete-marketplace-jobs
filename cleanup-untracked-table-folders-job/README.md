@@ -533,7 +533,7 @@ none of these claims it:
 - `exclude_paths` and `exclude_database_folders`.
 
 In deletion mode, the job reads ownership again right before it deletes the first folder of a
-database, and again before a later folder once that read is more than 5 minutes old. Each folder also
+database, and again once that read is more than 4 minutes old, before a later folder or inside one. Each folder also
 gets its own checks right before it is deleted. See [Deletion fence](#deletion-fence). A table created
 in a candidate folder after the last ownership read is not seen, unless it is a table of this database
 with the folder's name. For an object the job counted as deleted, that window ends at most 5 minutes
@@ -628,8 +628,14 @@ databases, catalogs and tables, as at the first read, and the tables of this dat
 reused from the first read. What any read protects stays protected. So a folder is checked against
 everything that any of these reads found.
 
-Before each later folder, the job reads ownership again only when the last read started more than 5
-minutes ago. The job measures this age on a clock that a change of the system time cannot move. A
+The job reads ownership again when the last read started more than 4 minutes ago. That is the 5-minute
+limit minus twice the 30-second start margin, so the status read before the next delete still fits.
+It checks this before each later folder, and inside a folder before each status read of an object or
+directory. A read inside a folder checks that folder again, as steps 2 and 3 below do. If the folder
+is now protected, deletion stops with `claimed_during_deletion`. The objects deleted before stay
+deleted, and the rest stay in `remaining`. A read that takes more than 2.5 minutes, half the limit,
+stops deletion with `recheck_too_slow`. It would leave little time to delete, and the next read would
+come soon after. The job measures this age on a clock that a change of the system time cannot move. A
 table created in a candidate folder after the last read is not seen before deletion when it is in
 another database, or has another name than the folder. See [Time limit](#time-limit) for how long that
 window lasts.
@@ -638,7 +644,7 @@ window lasts.
 
 For each folder, in path order, the job:
 
-1. Reads ownership again, if the last read started more than 5 minutes ago.
+1. Reads ownership again, if the last read started more than 4 minutes ago.
 2. Looks up a table of this database with the folder's name, and reads its storage as the full read
    does. If its location or one of its Iceberg write paths is in the folder, the folder is kept. If its
    storage cannot be established, for example because `gc.enabled` is not true or a location provider
@@ -649,7 +655,9 @@ For each folder, in path order, the job:
    usable modification time, or if an object is newer than the cutoff of this run.
 6. Reads every listed object back by its own name. If one is not found, or two listed objects have the
    same name, the folder is kept and nothing in it is deleted.
-7. Deletes the listed objects one at a time. Before each delete, it reads the object's status again.
+7. Deletes the listed objects one at a time. Before each status read here, and in steps 6 and 8, it
+   reads ownership again when the last read started more than 4 minutes ago, as above. Before each
+   delete, it reads the object's status again.
    The size and ETag must match the listing, and the modification time must match to the second. Right
    before the delete, it checks that at least 30 seconds of the ownership read's 5 minutes are left. It
    waits for the delete only until the ownership read is 5 minutes old.
@@ -735,7 +743,8 @@ The job also stops when a check that the next delete needs cannot be done. The r
 | `other_storage_incomplete` | An ownership read of other databases, catalogs or tables failed, or found storage it could not establish, such as an unresolved table. |
 | `own_database_recheck_failed` | The tables of this database could not be read again. |
 | `own_tables_unresolved` | A table of this database could not be resolved to a storage location at an ownership read. |
-| `recheck_too_slow` | An ownership read took longer than 5 minutes. The job stopped waiting and ignored the result. |
+| `recheck_too_slow` | An ownership read took longer than 2.5 minutes, half the 5-minute limit. A read still running at 5 minutes is not waited for, and its result is ignored. |
+| `claimed_during_deletion` | Ownership read again in the middle of a folder protects that folder. The objects deleted before stay deleted, and the rest stay in `remaining`. |
 | `name_probe_failed` | The lookup of a table named like the folder failed, found a location or write path with no scheme and bucket, or found a table whose storage cannot be established. |
 | `snapshot_expired_during_deletion` | The ownership read became more than 5 minutes old while a folder was being deleted, including while its empty directories were removed, or less than 30 seconds of the 5 minutes were left before the next delete. |
 | `read_timed_out` | A storage or catalog read needed before the next delete was still running when the ownership read reached its 5-minute limit, or a delete or read was not started because no time was left. The job stopped waiting and ignored the result. |
@@ -791,9 +800,10 @@ job sets no timeout or retry setting of the storage client or the catalog client
 apply inside each call.
 
 The 5-minute limit is fixed in the code. It and the 30-second margin are provisional: neither has been
-measured on a real deployment yet. A full ownership read has to finish within it. If it does
-not, every deletion run stops at the first read with `recheck_too_slow`, and nothing is deleted. The
-time left for deleting after a read is 5 minutes minus 30 seconds minus the time the read took. To see
+measured on a real deployment yet. A full ownership read has to finish within 2.5 minutes, half the
+limit. If it does not, every deletion run stops at the first read with `recheck_too_slow`, and nothing
+is deleted. After a read, deleting goes on until the read is 4 minutes old, and the job then reads
+again. So a read of R minutes leaves about 4 minus R minutes of deleting per read. To see
 how long a read takes, look at the log line "Checked N table(s) of other databases ... in X ms". It
 leaves out the reads of database locations. `ownership_refresh_count` on the row says how many times
 ownership was read again during deletion.
@@ -1618,7 +1628,7 @@ there. The WARN log has the details. The report shows the same entry as `Unreada
 
 Another database can claim a folder while the run is going. So right before a database deletes its
 first folder, the job reads all of this again, with nothing reused from the first read. It reads again
-before a later folder once that read is more than 5 minutes old. See [Deletion fence](#deletion-fence).
+once that read is more than 4 minutes old, before a later folder or inside one. See [Deletion fence](#deletion-fence).
 Iceberg catalogs cache the tables they load, so before every table read the job drops that table's
 cached copy, and the read comes from the catalog. This also applies to the read of the database's own
 tables in the fence. If the copy cannot be dropped, the read fails. A candidate folder that is now
@@ -1871,7 +1881,7 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T46 | Before the first deletion run, on the target storage | A listing and a HEAD of the same object agree on size and ETag, and on modification time to the second. If not, deletion stops at the first object with `deletion_failed` and nothing is deleted |
 | T47 | Deletion mode, 3 folders older than 72 hours, 9 folders 48 hours old, `max_candidate_folders_per_database=10` | `SKIPPED` with `too_many_candidate_folders`; nothing deleted. With a limit of `12`, the 3 old folders are deleted and `too_new_count=9` |
 | T48 | Every folder with no verified owner is held, for example because each is too new or empty | `SUCCESS`, nothing deleted; one warning names each reason and its count; `held_folder_counts` has the same counts |
-| T49 | Deletion mode, and the first ownership read of the fence takes more than 5 minutes | `FAILED` with `unexpected_error`; nothing deleted; `error_message` says the ownership recheck took longer than the limit |
+| T49 | Deletion mode, and the first ownership read of the fence takes more than 2.5 minutes | `FAILED` with `unexpected_error`; nothing deleted; `error_message` says the ownership recheck took more than the 150 s a read may use of the 300 s limit |
 | T50 | Deletion mode, and the ownership read fails after one folder was deleted | `FAILED` with `deletion_stopped_at_recheck`; `deleted_folders` lists that folder; `deletion_stop_cause` and `folder_not_attempted_paths_sample` are on the row |
 | T51 | Dry run on the target image, with a candidate folder whose name holds a quote and `${x}` | `candidate_folders` on the audit row holds the folder path exactly as it is in storage |
 
@@ -1989,11 +1999,12 @@ bullet is a release blocker.
   reads every listed key back by its own name, so a folder that holds one is kept as
   `folder_kept_key_not_addressable` and nothing in it is deleted.
 - **Fails closed.** Deleting object by object sends about five storage requests per object, one after
-  another. A folder near the 10,000-object limit can take several minutes, and may not finish within the
-  5-minute limit of one ownership read. The job starts no delete in the last 30 seconds of that limit. Such a
-  folder is left partly deleted, and deletion stops with `deletion_stopped_at_recheck` and
-  `deletion_stop_cause=snapshot_expired_during_deletion`. The row lists exactly which objects were deleted and
-  which remain. One delete call can take longer than those 30 seconds, for example while the storage client
+  another. A folder near the 10,000-object limit can take several minutes, longer than one ownership read
+  may be used. The job then reads ownership again in the middle of the folder and goes on. If that read
+  fails, is too slow or protects the folder, the folder is left partly deleted, and deletion stops with
+  `deletion_stopped_at_recheck` and the cause. The job starts no delete in the last 30 seconds of a read's
+  5 minutes, which stops the folder the same way with `snapshot_expired_during_deletion`. The row lists
+  exactly which objects were deleted and which remain. One delete call can take longer than those 30 seconds, for example while the storage client
   retries. The folder then ends as `deletion_failed` instead. That object is in `unknown_state`, and its
   delete may still land after the limit, as the next bullet says. The limit is provisional. See
   [Object limit](#object-limit).
