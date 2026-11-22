@@ -4,7 +4,10 @@ import com.iomete.cleanup.untrackedtablefolders.candidate.StorageFolderReconcili
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
+import com.iomete.cleanup.untrackedtablefolders.storage.DeletionFence
+import com.iomete.cleanup.untrackedtablefolders.storage.FenceStopCause
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDeletionService
+import com.iomete.cleanup.untrackedtablefolders.storage.OtherStorageRecheck
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageFolder
 import io.mockk.every
 import io.mockk.mockk
@@ -22,7 +25,10 @@ import org.apache.spark.sql.internal.SessionState
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 
 private const val TABLE = "`c`.`sales`.`events`"
 private const val LOCATION = "s3a://b/lake/sales.db/events"
@@ -51,6 +57,17 @@ class TableOwnershipDiscoveryTest {
 
         assertEquals("s3a://b/lake/sales.db/events", table.location)
         assertEquals(listOf("s3a://b/lake/sales.db/events_data"), table.writeLocations)
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = ["write.data.path", "write.metadata.path", "write.object-storage.path", "write.folder-storage.path"])
+    fun `each Iceberg write path property is a write path of the table`(property: String) {
+        listsOneTable(provider = "iceberg")
+        rows("SHOW TBLPROPERTIES $TABLE", property to " s3a://b/lake/sales.db/orphan_b ", "write.other.path" to "s3a://b/lake/sales.db/not_a_write_path")
+
+        val table = discovery.discoverTables("c", "sales").single()
+
+        assertEquals(listOf("s3a://b/lake/sales.db/orphan_b"), table.writeLocations)
     }
 
     @Test
@@ -215,10 +232,19 @@ class TableOwnershipDiscoveryTest {
             }
 
         assertEquals(1, discovery.discoverDatabase("c", "sales").unresolvedTables.size)
-        assertThrows(IllegalStateException::class.java) {
-            gate.deleteCandidates("c", "sales", StorageFolderReconciliation.DeletionEligible(listOf(StorageFolder(LOCATION))), emptyList())
-        }
-        verify(exactly = 0) { deletion.deleteFoldersRecursively(any(), any()) }
+        val result =
+            gate.deleteCandidates(
+                "c",
+                "sales",
+                StorageFolderReconciliation.DeletionEligible(listOf(StorageFolder(LOCATION))),
+                emptyList(),
+                DeletionFence(emptyMap(), Long.MAX_VALUE) { OtherStorageRecheck(emptyList(), emptyList()) },
+            )
+        assertEquals(FenceStopCause.OWN_TABLES_UNRESOLVED, result.fence.stop?.cause)
+        assertTrue(result.fence.stop!!.message.startsWith("Refusing to delete: 1 catalog table(s)"), result.fence.stop!!.message)
+        assertEquals(emptyList<String>(), result.deletedPaths)
+        assertEquals(listOf(LOCATION), result.fence.notAttemptedPaths)
+        verify(exactly = 0) { deletion.deleteFolders(any(), any(), any()) }
     }
 
     @Test
@@ -336,6 +362,63 @@ class TableOwnershipDiscoveryTest {
         assertNull(discovery.tableLocationIfExists("c", "default", "events"))
         assertThrows(IllegalStateException::class.java) { discovery.tableLocationIfExists("c", "default", "orders") }
         assertThrows(IllegalStateException::class.java) { discovery.tableLocationIfExists("c", "default", "table_or_view_not_found") }
+    }
+
+    @Test
+    fun `a table found by name is read as the full read does, with its write paths`() {
+        describes(TABLE, listOf(column("id", "bigint")) + details("Location" to "s3a://b/lake/sales.db/events_v2", "Provider" to "iceberg"))
+        rows("SHOW TBLPROPERTIES $TABLE", "write.data.path" to " s3a://b/lake/sales.db/events/data ", "write.other.path" to "s3a://b/lake/sales.db/other")
+
+        assertEquals(
+            NamedTableStorage.Found("s3a://b/lake/sales.db/events_v2", listOf("s3a://b/lake/sales.db/events/data")),
+            discovery.tableStorageIfExists("c", "sales", "events"),
+        )
+        verify(exactly = 1) { tableCatalog.invalidateTable(Identifier.of(arrayOf("sales"), "events")) }
+    }
+
+    @Test
+    fun `a table looked up by name is not found when it is missing, a view has no location, and any other failure is thrown`() {
+        every { spark.sql("DESCRIBE EXTENDED `c`.`sales`.`gone`") } throws NoSuchTableException("sales", "gone")
+        every { spark.sql("DESCRIBE EXTENDED `c`.`sales`.`gone_too`") } throws IllegalStateException("lookup failed", NotFoundError())
+        describes("`c`.`sales`.`view`", details("Type" to "VIEW", "View Text" to "SELECT 1"))
+        every { spark.sql("DESCRIBE EXTENDED `c`.`sales`.`denied`") } throws IllegalStateException("access denied")
+        listOf("hive_table", "parquet_table").forEach {
+            describes("`c`.`sales`.`$it`", details("Location" to "s3a://b/lake/sales.db/$it", "Provider" to it.substringBefore('_')))
+        }
+
+        assertEquals(NamedTableStorage.NotFound, discovery.tableStorageIfExists("c", "sales", "gone"))
+        assertEquals(NamedTableStorage.NotFound, discovery.tableStorageIfExists("c", "sales", "gone_too"))
+        assertEquals(NamedTableStorage.Found(null), discovery.tableStorageIfExists("c", "sales", "view"))
+        assertThrows(IllegalStateException::class.java) { discovery.tableStorageIfExists("c", "sales", "denied") }
+        assertEquals(NamedTableStorage.Found("s3a://b/lake/sales.db/hive_table"), discovery.tableStorageIfExists("c", "sales", "hive_table"))
+        assertEquals(NamedTableStorage.Found("s3a://b/lake/sales.db/parquet_table"), discovery.tableStorageIfExists("c", "sales", "parquet_table"))
+    }
+
+    @Test
+    fun `a table found by name whose storage cannot be established is unresolved`() {
+        val names = listOf("gc_off", "custom_provider", "bad_write_path", "unreadable", "no_location", "unqualified", "no_details", "missing_metadata")
+        listOf("gc_off", "custom_provider", "bad_write_path", "unreadable").forEach { name ->
+            describes("`c`.`sales`.`$name`", details("Location" to "s3a://b/lake/sales.db/$name", "Provider" to "iceberg"))
+        }
+        rows("SHOW TBLPROPERTIES `c`.`sales`.`gc_off`", "gc.enabled" to "false")
+        rows("SHOW TBLPROPERTIES `c`.`sales`.`custom_provider`", "write.location-provider.impl" to "com.example.Provider")
+        rows("SHOW TBLPROPERTIES `c`.`sales`.`bad_write_path`", "write.data.path" to "/lake/sales.db/data")
+        every { spark.sql("SHOW TBLPROPERTIES `c`.`sales`.`unreadable`") } throws IllegalStateException("denied")
+        describes("`c`.`sales`.`no_location`", details("Type" to "MANAGED", "Provider" to "iceberg"))
+        describes("`c`.`sales`.`unqualified`", details("Location" to "/lake/sales.db/unqualified", "Provider" to "hive"))
+        describes("`c`.`sales`.`no_details`", listOf(column("id", "bigint")))
+        every { spark.sql("DESCRIBE EXTENDED `c`.`sales`.`missing_metadata`") } throws
+            IllegalStateException("Location does not exist: s3a://b/lake/sales.db/missing_metadata/metadata/00003-x.metadata.json")
+
+        names.forEach { name ->
+            assertTrue(discovery.tableStorageIfExists("c", "sales", name) is NamedTableStorage.Unresolved, name)
+        }
+    }
+
+    @Test
+    fun `a table name with a backtick is unresolved and never put in SQL text`() {
+        assertTrue(discovery.tableStorageIfExists("c", "sales", "a`b") is NamedTableStorage.Unresolved)
+        verify(exactly = 0) { spark.sql(any()) }
     }
 
     private class NotFoundError : RuntimeException("not found"), SparkThrowable {

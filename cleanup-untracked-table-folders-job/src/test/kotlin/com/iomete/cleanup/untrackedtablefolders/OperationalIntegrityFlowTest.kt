@@ -36,7 +36,7 @@ class OperationalIntegrityFlowTest {
     @Test
     fun `a failed deletion reports the folders already deleted before it`() {
         database("a", orphans = listOf("orphan_1", "orphan_2", "orphan_3"))
-        InMemoryS3FileSystem.failDeleteFor = location("a", "orphan_2")
+        InMemoryS3FileSystem.failDeleteFor = "${location("a", "orphan_2")}/part-0.parquet"
         val flow = flow(listOf("a"))
 
         flow.run()
@@ -46,13 +46,14 @@ class OperationalIntegrityFlowTest {
         assertEquals(listOf(location("a", "orphan_1")), record.deletedFolders)
         assertEquals(1, record.deletedFolderCount)
         assertFalse(flow.objectExists("${location("a", "orphan_1")}/part-0.parquet"))
+        assertTrue(flow.objectExists("${location("a", "orphan_2")}/part-0.parquet"))
         assertTrue(flow.objectExists("${location("a", "orphan_3")}/part-0.parquet"))
     }
 
     @Test
     fun `a refused delete stops deletion and keeps earlier confirmed deletions`() {
         database("a", orphans = listOf("orphan_1", "orphan_2", "orphan_3"))
-        InMemoryS3FileSystem.refuseDeleteFor = location("a", "orphan_2")
+        InMemoryS3FileSystem.refuseDeleteFor = "${location("a", "orphan_2")}/part-0.parquet"
         val flow = flow(listOf("a"))
 
         flow.run()
@@ -60,6 +61,7 @@ class OperationalIntegrityFlowTest {
         val record = flow.auditRecords.single()
         assertEquals("FAILED", record.status)
         assertEquals(listOf(location("a", "orphan_1")), record.deletedFolders)
+        assertTrue(flow.objectExists("${location("a", "orphan_2")}/part-0.parquet"))
         assertTrue(flow.objectExists("${location("a", "orphan_3")}/part-0.parquet"))
     }
 
@@ -202,7 +204,7 @@ class OperationalIntegrityFlowTest {
     @Test
     fun `a partial deletion keeps partial scan coverage`() {
         database("a", orphans = listOf("orphan_1", "orphan_2"), tablesOutsideRoot = listOf("s3a://bucket/other/events"))
-        InMemoryS3FileSystem.failDeleteFor = location("a", "orphan_2")
+        InMemoryS3FileSystem.failDeleteFor = "${location("a", "orphan_2")}/part-0.parquet"
         val flow = flow(listOf("a"))
 
         flow.run()
@@ -216,7 +218,7 @@ class OperationalIntegrityFlowTest {
     @Test
     fun `a partial deletion reports the size of the folders it deleted`() {
         database("a", orphans = listOf("orphan_1", "orphan_2"))
-        InMemoryS3FileSystem.failDeleteFor = location("a", "orphan_2")
+        InMemoryS3FileSystem.failDeleteFor = "${location("a", "orphan_2")}/part-0.parquet"
         val flow = flow(listOf("a"))
 
         flow.run()
@@ -259,7 +261,7 @@ class OperationalIntegrityFlowTest {
     @Test
     fun `excluded folders are never deleted around a partial deletion`() {
         database("a", orphans = listOf("orphan_1", "orphan_2", "orphan_keep"))
-        InMemoryS3FileSystem.failDeleteFor = location("a", "orphan_2")
+        InMemoryS3FileSystem.failDeleteFor = "${location("a", "orphan_2")}/part-0.parquet"
         val flow = flow(listOf("a"), excludePaths = listOf(location("a", "orphan_keep")))
 
         flow.run()

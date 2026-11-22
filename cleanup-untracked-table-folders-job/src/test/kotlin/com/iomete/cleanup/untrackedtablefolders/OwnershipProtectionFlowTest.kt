@@ -603,7 +603,7 @@ class OwnershipProtectionFlowTest {
         assertTrue("visible_tables_of_other_databases" in checks(record))
         assertTrue("final_recheck_before_deletion" in notChecked(record))
         val ownership = lines.joinToString("\n").substringAfter("OWNERSHIP CHECKS").substringBefore("CATALOG")
-        assertTrue(ownership.substringAfter("Not checked").contains("a final read of other storage right before deleting"))
+        assertTrue(ownership.substringAfter("Not checked").contains("a read of other storage at most 5 minutes old at each delete"))
         assertFalse(ownership.substringBefore("Not checked").contains("final read"))
     }
 

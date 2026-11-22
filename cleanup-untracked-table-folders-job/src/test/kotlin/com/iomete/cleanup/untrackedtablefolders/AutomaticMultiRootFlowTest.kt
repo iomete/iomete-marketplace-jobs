@@ -373,7 +373,7 @@ class AutomaticMultiRootFlowTest {
     fun `a failed delete in the second root keeps the deletions already made`() {
         folders(DB_FOLDER, "t_hive", "orphan_hive")
         folders(REST_FOLDER, "t_rest", "orphan_rest")
-        InMemoryS3FileSystem.failDeleteFor = "$REST_FOLDER/orphan_rest"
+        InMemoryS3FileSystem.failDeleteFor = "$REST_FOLDER/orphan_rest/part-0.parquet"
         val flow = flow(tables = listOf("$DB_FOLDER/t_hive", "$REST_FOLDER/t_rest"))
 
         flow.run()

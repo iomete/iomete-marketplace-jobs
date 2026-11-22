@@ -193,18 +193,19 @@ class DeletionSafetyFlowTest {
     }
 
     @Test
-    fun `a refused recursive delete stops further deletion`() {
+    fun `a refused object delete stops further deletion`() {
         putFolder("s3a://bucket/lake/sales.db")
         putFolder("s3a://bucket/lake/sales.db/orders", "part-0.parquet")
         listOf("orphan_a", "orphan_b", "orphan_c").forEach {
             putFolder("s3a://bucket/lake/sales.db/$it", "part-0.parquet")
         }
-        InMemoryS3FileSystem.refuseDeleteFor = "s3a://bucket/lake/sales.db/orphan_b"
+        InMemoryS3FileSystem.refuseDeleteFor = "s3a://bucket/lake/sales.db/orphan_b/part-0.parquet"
         val flow = flow(deleteEnabled = true)
         flow.catalogReturns(database("sales", "s3a://bucket/lake/sales.db", "s3a://bucket/lake/sales.db/orders"))
 
         flow.run()
 
+        assertTrue(flow.objectExists("s3a://bucket/lake/sales.db/orphan_b/part-0.parquet"))
         assertTrue(flow.objectExists("s3a://bucket/lake/sales.db/orphan_c/part-0.parquet"))
         assertEquals("FAILED", flow.auditRecords.single().status)
     }

@@ -5,11 +5,14 @@ enum class CandidateInspectionOutcome(val code: String) {
     STATISTICS_UNAVAILABLE("statistics_unavailable"),
     EMPTY_FOLDER("empty_folder"),
     UNKNOWN_AGE("unknown_age"),
+    TOO_MANY_OBJECTS("too_many_objects"),
 }
 
 data class CandidateFolderStatistics(
     val statsByFolder: Map<String, StorageSizeStats>,
     val absentFolderPaths: Set<String> = emptySet(),
+    val tooManyObjectsFolderPaths: Set<String> = emptySet(),
+    val fingerprintsByFolder: Map<String, FolderFingerprint> = emptyMap(),
 ) {
     // Null means the folder has objects of known age, so only the age cutoff decides.
     fun outcome(folderPath: String): CandidateInspectionOutcome? {
@@ -18,6 +21,7 @@ data class CandidateFolderStatistics(
 
         return when {
             folderPath in absentFolderPaths -> CandidateInspectionOutcome.FOLDER_NOT_FOUND
+            folderPath in tooManyObjectsFolderPaths -> CandidateInspectionOutcome.TOO_MANY_OBJECTS
             stats == null -> CandidateInspectionOutcome.STATISTICS_UNAVAILABLE
             stats.objectCount == 0L -> CandidateInspectionOutcome.EMPTY_FOLDER
             // S3A directory mtimes are synthetic, so only a readable object can prove a folder is old.

@@ -6,6 +6,7 @@ import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecorder
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditTableService
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
+import com.iomete.cleanup.untrackedtablefolders.catalog.NamedTableStorage
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
@@ -16,17 +17,25 @@ import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollect
 import com.iomete.cleanup.untrackedtablefolders.storage.CatalogStorageTestHarness
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.InMemoryS3FileSystem
+import com.iomete.cleanup.untrackedtablefolders.storage.OWNERSHIP_SNAPSHOT_MAX_AGE
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationPlanner
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationResolver
+import com.iomete.cleanup.untrackedtablefolders.storage.Ticker
 import io.mockk.Runs
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 import io.mockk.spyk
+import org.apache.hadoop.conf.Configuration
+import java.time.Duration
 
 /** Real cleanup flow over [InMemoryS3FileSystem]; only catalog discovery and the audit table are faked. */
 class CleanupFlowHarness(
     config: ApplicationConfig,
+    catalogProperties: Map<String, String> = CatalogStorageTestHarness.s3CompatibleCatalogProperties(),
+    sparkHadoopConfiguration: Configuration = CatalogStorageTestHarness.baseHadoopConfiguration(),
+    ticker: Ticker = Ticker.SYSTEM,
+    snapshotMaxAge: Duration = OWNERSHIP_SNAPSHOT_MAX_AGE,
 ) {
     val catalogDiscoveryService: CatalogDiscoveryService = mockk()
     val auditRecords = mutableListOf<CleanupAuditRecord>()
@@ -35,7 +44,8 @@ class CleanupFlowHarness(
     private val auditTableService: CleanupAuditTableService = mockk(relaxed = true)
     private val storage =
         CatalogStorageTestHarness(
-            catalogProperties = mapOf(config.catalog to CatalogStorageTestHarness.s3CompatibleCatalogProperties()),
+            catalogProperties = mapOf(config.catalog to catalogProperties),
+            sparkHadoopConfiguration = sparkHadoopConfiguration,
         )
 
     val service: CleanupUntrackedTableFoldersService
@@ -46,6 +56,7 @@ class CleanupFlowHarness(
         every { catalogDiscoveryService.knownWarehouseRoots() } returns emptyList()
         every { catalogDiscoveryService.visibleDatabaseLocations(any()) } returns emptyMap()
         every { catalogDiscoveryService.tableLocationIfExists(any(), any(), any()) } returns null
+        every { catalogDiscoveryService.tableStorageIfExists(any(), any(), any()) } returns NamedTableStorage.NotFound
         every { catalogDiscoveryService.sessionCatalogWarehouses() } returns emptyMap()
         every { catalogDiscoveryService.discoverTables(any(), any()) } returns emptyList()
 
@@ -82,6 +93,8 @@ class CleanupFlowHarness(
                         gate.config = config
                         gate.catalogDiscoveryService = catalogDiscoveryService
                         gate.objectStorageDeletionService = storage.deletionService()
+                        gate.ticker = ticker
+                        gate.snapshotMaxAge = snapshotMaxAge
                     }
                 it.storageScanLocationPlanner = StorageScanLocationPlanner()
                 it.reportOnlyRootScanner =

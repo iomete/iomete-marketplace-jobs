@@ -1,15 +1,16 @@
 package com.iomete.cleanup.untrackedtablefolders.audit
 
+import com.iomete.cleanup.untrackedtablefolders.logging.SafeLogger
 import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
-import java.sql.Timestamp
 import java.time.Instant
-import org.jboss.logging.Logger
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 @ApplicationScoped
 class CleanupAuditTableService {
-    private val logger = Logger.getLogger(CleanupAuditTableService::class.java)
+    private val logger = SafeLogger.getLogger(CleanupAuditTableService::class.java)
 
     @Inject
     lateinit var sparkSessionProvider: SparkSessionProvider
@@ -182,8 +183,36 @@ class CleanupAuditTableService {
     private fun sqlNullableString(value: String?): String =
         value?.let { sqlString(it) } ?: "CAST(NULL AS STRING)"
 
+    // Spark has no '' escape: it reads two literals and joins them, which drops the quote. So a backslash is written
+    // as \\ and a quote as \'. A dollar sign is written as \u0024, so no ${...} substitution in any parser of the chain
+    // can see one. An asterisk is written as \u002A, so the text holds no '/*' for the comment pattern the Iceberg
+    // parser runs over the whole statement, which is slow on an unclosed one. Control, format and separator
+    // characters, and unpaired surrogates, are written as \uXXXX, so the statement text, wherever Spark or a plugin
+    // logs it, holds none of them raw.
     private fun sqlString(value: String): String =
-        "'${value.replace("\\", "\\\\").replace("'", "''")}'"
+        buildString(value.length + 2) {
+            append('\'')
+            var index = 0
+            while (index < value.length) {
+                val codePoint = value.codePointAt(index)
+                val end = index + Character.charCount(codePoint)
+                when {
+                    codePoint == '\\'.code -> append("\\\\")
+                    codePoint == '\''.code -> append("\\'")
+                    codePoint == '$'.code || codePoint == '*'.code || isHidden(codePoint) ->
+                        (index until end).forEach { append("\\u%04X".format(value[it].code)) }
+                    else -> append(value, index, end)
+                }
+                index = end
+            }
+            append('\'')
+        }
+
+    private fun isHidden(codePoint: Int): Boolean =
+        when (Character.getType(codePoint).toByte()) {
+            Character.CONTROL, Character.FORMAT, Character.LINE_SEPARATOR, Character.PARAGRAPH_SEPARATOR, Character.SURROGATE -> true
+            else -> false
+        }
 
     private fun sqlStringArray(values: List<String>): String =
         if (values.isEmpty()) {
@@ -208,8 +237,9 @@ class CleanupAuditTableService {
             }
         }
 
+    // The zone is part of the text, so the stored instant depends on neither the JVM nor the session time zone.
     private fun sqlTimestamp(value: Instant): String =
-        "TIMESTAMP '${Timestamp.from(value)}'"
+        "TIMESTAMP '${AUDIT_TIMESTAMP_FORMAT.format(value)}'"
 
     private fun sqlNullableTimestamp(value: Instant?): String =
         value?.let { sqlTimestamp(it) } ?: "CAST(NULL AS TIMESTAMP)"
@@ -220,6 +250,10 @@ class CleanupAuditTableService {
     companion object {
         const val AUDIT_TABLE_NAME =
             "spark_catalog.iomete_system_db.cleanup_untracked_table_folder_runs"
+
+        // Microseconds, the precision Spark stores; the rest is cut, as Spark cuts it.
+        private val AUDIT_TIMESTAMP_FORMAT: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss.SSSSSSXXX").withZone(ZoneOffset.UTC)
 
         private val AUDIT_TABLE_COLUMNS: List<Pair<String, String>> = listOf(
             "run_id" to "STRING",

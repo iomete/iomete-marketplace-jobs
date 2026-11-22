@@ -1,5 +1,6 @@
 package com.iomete.cleanup.untrackedtablefolders.catalog
 
+import com.iomete.cleanup.untrackedtablefolders.logging.SafeLogger
 import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
 import com.iomete.cleanup.untrackedtablefolders.storage.CatalogStorageProperties
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
@@ -11,7 +12,6 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
 import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.connector.catalog.TableCatalog
-import org.jboss.logging.Logger
 import scala.collection.JavaConverters
 
 data class DiscoveredDatabase(
@@ -24,6 +24,22 @@ data class DiscoveredDatabase(
 
     // Only these pick and anchor cleanup roots and count toward coverage. Every table location stays protected.
     val fileTableLocations: List<String> get() = tables.filter { it.storesFiles }.mapNotNull { it.location }
+}
+
+/** What a lookup of one table by name found. */
+sealed interface NamedTableStorage {
+    data object NotFound : NamedTableStorage
+
+    /** A null location is a view. */
+    data class Found(
+        val location: String?,
+        val writeLocations: List<String> = emptyList(),
+    ) : NamedTableStorage
+
+    /** The table exists, but the storage it may use cannot be established, as for an unresolved table. */
+    data class Unresolved(
+        val reason: String,
+    ) : NamedTableStorage
 }
 
 // status is derived, unrecognized_uri or no_warehouse; location is set only when derived.
@@ -66,6 +82,23 @@ private class TableLocationUnresolvedException(
     cause: Throwable,
     val knownLocation: String? = null,
 ) : RuntimeException(reason, cause)
+
+// A name part that holds a backtick is never put in SQL text. Doubling it would be wrong for SHOW NAMESPACES output,
+// which already quotes some names, and a raw one moves where Spark splits the name, so it could name another object.
+private class UnsupportedIdentifierException(
+    message: String,
+) : IllegalArgumentException(message)
+
+// The backtick-quoted multipart name for catalog SQL text.
+private fun sqlName(vararg parts: Pair<String, String>): String {
+    parts.firstOrNull { (_, name) -> '`' in name }?.let { (kind, _) ->
+        throw UnsupportedIdentifierException(
+            "The $kind name contains a backtick, so the job does not put it in SQL text: " +
+                parts.joinToString(", ") { (part, name) -> "$part=$name" },
+        )
+    }
+    return parts.joinToString(".") { (_, name) -> "`$name`" }
+}
 
 class DatabaseNotFoundException(
     val catalog: String,
@@ -195,7 +228,7 @@ private fun isDatabaseNotFoundError(error: Throwable): Boolean {
 
 @ApplicationScoped
 class CatalogDiscoveryService {
-    private val logger = Logger.getLogger(CatalogDiscoveryService::class.java)
+    private val logger = SafeLogger.getLogger(CatalogDiscoveryService::class.java)
 
     @Inject
     lateinit var sparkSessionProvider: SparkSessionProvider
@@ -310,11 +343,12 @@ class CatalogDiscoveryService {
     ): List<DiscoveredTable> {
         logger.info("Discovering active tables for catalog=$catalog database=$database")
 
+        val name = sqlName("catalog" to catalog, "database" to database)
         val spark = sparkSessionProvider.getOrCreate()
 
         val rows =
             try {
-                spark.sql("SHOW TABLES FROM `$catalog`.`$database`").collectAsList()
+                spark.sql("SHOW TABLES FROM $name").collectAsList()
             } catch (th: Throwable) {
                 if (isDatabaseNotFoundError(th)) {
                     throw DatabaseNotFoundException(
@@ -335,7 +369,7 @@ class CatalogDiscoveryService {
             val isTemporary = row.getBoolean(2)
 
             try {
-                val storage = discoverTableStorage(catalog = catalog, database = database, table = tableName)
+                val storage = checkNotNull(discoverTableStorage(catalog = catalog, database = database, table = tableName))
                 DiscoveredTable(
                     catalog = catalog,
                     database = database,
@@ -367,8 +401,9 @@ class CatalogDiscoveryService {
     // A database whose location cannot be read maps to null.
     fun visibleDatabaseLocations(catalog: String): Map<String, String?> {
         val startedAt = System.nanoTime()
+        val name = sqlName("catalog" to catalog)
         val spark = sparkSessionProvider.getOrCreate()
-        val databases = spark.sql("SHOW NAMESPACES IN `$catalog`").collectAsList().map { it.getString(0) }
+        val databases = spark.sql("SHOW NAMESPACES IN $name").collectAsList().map { it.getString(0) }
         logger.info("Reading the locations of ${databases.size} visible database(s) in catalog=$catalog to protect their storage")
 
         val locations =
@@ -394,11 +429,12 @@ class CatalogDiscoveryService {
         database: String,
         table: String,
     ): String? {
+        val name = sqlName("catalog" to catalog, "database" to database, "table" to table)
         val spark = sparkSessionProvider.getOrCreate()
         dropCachedTable(spark, catalog, database, table)
         val rows =
             try {
-                spark.sql("DESCRIBE EXTENDED `$catalog`.`$database`.`$table`").collectAsList()
+                spark.sql("DESCRIBE EXTENDED $name").collectAsList()
             } catch (th: Throwable) {
                 if (isTableNotFoundError(th)) {
                     return null
@@ -412,12 +448,27 @@ class CatalogDiscoveryService {
         return location
     }
 
+    // Reads the table as the full read of a database does, so a write path into a folder, or a setting that lets the
+    // table use files outside its declared paths, counts the same. Any failure other than a missing table is thrown.
+    fun tableStorageIfExists(
+        catalog: String,
+        database: String,
+        table: String,
+    ): NamedTableStorage =
+        try {
+            discoverTableStorage(catalog = catalog, database = database, table = table, missingAsNull = true)
+                ?.let { NamedTableStorage.Found(it.location, it.writeLocations) }
+                ?: NamedTableStorage.NotFound
+        } catch (th: TableLocationUnresolvedException) {
+            NamedTableStorage.Unresolved(th.reason)
+        }
+
     private fun discoverDatabaseLocation(
         catalog: String,
         database: String,
     ): String? {
+        val qualifiedDatabaseName = sqlName("catalog" to catalog, "database" to database)
         val spark = sparkSessionProvider.getOrCreate()
-        val qualifiedDatabaseName = "`$catalog`.`$database`"
 
         val rows =
             try {
@@ -445,19 +496,30 @@ class CatalogDiscoveryService {
     }
 
     // A path without a scheme and bucket resolves against the writer's default filesystem, which the job cannot know.
+    // With missingAsNull, a table that does not exist gives null instead of an error.
     private fun discoverTableStorage(
         catalog: String,
         database: String,
         table: String,
-    ): TableStorage {
+        missingAsNull: Boolean = false,
+    ): TableStorage? {
+        if ('`' in table) {
+            throw TableLocationUnresolvedException(
+                "The table name contains a backtick, so the job does not put it in SQL text and cannot read its location",
+                UnsupportedIdentifierException("backtick in table name"),
+            )
+        }
+        val qualifiedTableName = sqlName("catalog" to catalog, "database" to database, "table" to table)
         val spark = sparkSessionProvider.getOrCreate()
-        val qualifiedTableName = "`$catalog`.`$database`.`$table`"
         dropCachedTable(spark, catalog, database, table)
 
         val rows =
             try {
                 spark.sql("DESCRIBE EXTENDED $qualifiedTableName").collectAsList()
             } catch (th: Throwable) {
+                if (missingAsNull && isTableNotFoundError(th)) {
+                    return null
+                }
                 if (isMetadataNotFoundError(th)) {
                     throw TableLocationUnresolvedException(th.message ?: th::class.java.name, th, missingMetadataTableFolder(th))
                 }

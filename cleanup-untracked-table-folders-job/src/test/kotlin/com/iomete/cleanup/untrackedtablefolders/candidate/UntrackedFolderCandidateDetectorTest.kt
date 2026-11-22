@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.candidate
 
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateFolderStatistics
+import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageFolder
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -337,7 +338,9 @@ class UntrackedFolderCandidateDetectorTest {
                 cutoffTimeMillis = 200,
             )
 
-        assertEquals(listOf("s3a://bucket/db/older", "s3a://bucket/db/at_cutoff"), result.folders.map { it.path })
+        assertEquals(listOf("s3a://bucket/db/older", "s3a://bucket/db/at_cutoff"), result.reconciliation.folders.map { it.path })
+        assertEquals(emptyList<String>(), result.tooNewPaths)
+        assertEquals(emptyMap<CandidateInspectionOutcome, List<String>>(), result.inspectionOutcomes)
     }
 
     @Test
@@ -349,7 +352,49 @@ class UntrackedFolderCandidateDetectorTest {
                 cutoffTimeMillis = 200,
             )
 
-        assertEquals(emptyList<String>(), result.folders.map { it.path })
+        assertEquals(emptyList<String>(), result.reconciliation.folders.map { it.path })
+        assertEquals(listOf("s3a://bucket/db/fresh"), result.tooNewPaths)
+    }
+
+    @Test
+    fun `the age check returns the folders it kept out, by reason, without changing which folders pass`() {
+        val folderStatistics =
+            CandidateFolderStatistics(
+                statsByFolder =
+                    mapOf(
+                        "s3a://bucket/db/old" to stats(newestObjectModificationTimeMillis = 100),
+                        "s3a://bucket/db/young_b" to stats(newestObjectModificationTimeMillis = 300),
+                        "s3a://bucket/db/young_a" to stats(newestObjectModificationTimeMillis = 201),
+                        "s3a://bucket/db/empty" to StorageSizeStats(objectCount = 0, totalSizeBytes = 0),
+                        "s3a://bucket/db/no_time" to stats(newestObjectModificationTimeMillis = 0),
+                    ),
+                absentFolderPaths = setOf("s3a://bucket/db/gone"),
+                tooManyObjectsFolderPaths = setOf("s3a://bucket/db/crowded"),
+            )
+
+        val result =
+            detector.applyAgeCutoff(
+                reconciliation =
+                    deletionEligibleFolders(
+                        "s3a://bucket/db/crowded", "s3a://bucket/db/empty", "s3a://bucket/db/gone", "s3a://bucket/db/no_time",
+                        "s3a://bucket/db/old", "s3a://bucket/db/unreadable", "s3a://bucket/db/young_a", "s3a://bucket/db/young_b",
+                    ),
+                folderStatistics = folderStatistics,
+                cutoffTimeMillis = 200,
+            )
+
+        assertEquals(listOf("s3a://bucket/db/old"), result.reconciliation.folders.map { it.path })
+        assertEquals(listOf("s3a://bucket/db/young_a", "s3a://bucket/db/young_b"), result.tooNewPaths)
+        assertEquals(
+            mapOf(
+                CandidateInspectionOutcome.TOO_MANY_OBJECTS to listOf("s3a://bucket/db/crowded"),
+                CandidateInspectionOutcome.EMPTY_FOLDER to listOf("s3a://bucket/db/empty"),
+                CandidateInspectionOutcome.FOLDER_NOT_FOUND to listOf("s3a://bucket/db/gone"),
+                CandidateInspectionOutcome.UNKNOWN_AGE to listOf("s3a://bucket/db/no_time"),
+                CandidateInspectionOutcome.STATISTICS_UNAVAILABLE to listOf("s3a://bucket/db/unreadable"),
+            ),
+            result.inspectionOutcomes,
+        )
     }
 
     @Test
@@ -372,7 +417,7 @@ class UntrackedFolderCandidateDetectorTest {
                 cutoffTimeMillis = 200,
             )
 
-        assertEquals(emptyList<String>(), result.folders.map { it.path })
+        assertEquals(emptyList<String>(), result.reconciliation.folders.map { it.path })
     }
 
     @Test
@@ -395,7 +440,7 @@ class UntrackedFolderCandidateDetectorTest {
                 cutoffTimeMillis = 200,
             )
 
-        assertEquals(listOf("s3a://bucket/db/old"), result.folders.map { it.path })
+        assertEquals(listOf("s3a://bucket/db/old"), result.reconciliation.folders.map { it.path })
     }
 
     @Test
@@ -415,9 +460,11 @@ class UntrackedFolderCandidateDetectorTest {
                 cutoffTimeMillis = 200,
             )
 
-        assertTrue(result is StorageFolderReconciliation.OwnershipUnverified)
-        assertEquals(2, (result as StorageFolderReconciliation.OwnershipUnverified).unresolvedTableCount)
-        assertEquals(listOf("s3a://bucket/db/old"), result.folders.map { it.path })
+        val reconciliation = result.reconciliation
+        assertTrue(reconciliation is StorageFolderReconciliation.OwnershipUnverified)
+        assertEquals(2, (reconciliation as StorageFolderReconciliation.OwnershipUnverified).unresolvedTableCount)
+        assertEquals(listOf("s3a://bucket/db/old"), result.reconciliation.folders.map { it.path })
+        assertEquals(listOf("s3a://bucket/db/fresh"), result.tooNewPaths)
     }
 
     private fun deletionEligibleFolders(vararg paths: String): StorageFolderReconciliation =

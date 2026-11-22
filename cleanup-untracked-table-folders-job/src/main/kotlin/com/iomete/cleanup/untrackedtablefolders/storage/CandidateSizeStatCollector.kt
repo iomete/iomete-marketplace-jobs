@@ -1,14 +1,14 @@
 package com.iomete.cleanup.untrackedtablefolders.storage
 
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
+import com.iomete.cleanup.untrackedtablefolders.logging.SafeLogger
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
-import org.jboss.logging.Logger
 
 @ApplicationScoped
 class CandidateSizeStatCollector {
 
-    private val logger = Logger.getLogger(CandidateSizeStatCollector::class.java)
+    private val logger = SafeLogger.getLogger(CandidateSizeStatCollector::class.java)
 
     @Inject lateinit var config: ApplicationConfig
     @Inject lateinit var objectStorageDiscoveryService: ObjectStorageDiscoveryService
@@ -55,7 +55,19 @@ class CandidateSizeStatCollector {
             )
         }
 
-        return CandidateFolderStatistics(batch.statsByFolder, batch.absentFolderPaths)
+        if (batch.tooManyObjectsFolderPaths.isNotEmpty()) {
+            logger.warn(
+                "${batch.tooManyObjectsFolderPaths.size} candidate folder(s) hold more than $MAX_OBJECTS_PER_FOLDER objects. " +
+                    "They are kept as too_many_objects and are not deleted."
+            )
+        }
+
+        return CandidateFolderStatistics(
+            statsByFolder = batch.statsByFolder,
+            absentFolderPaths = batch.absentFolderPaths,
+            tooManyObjectsFolderPaths = batch.tooManyObjectsFolderPaths,
+            fingerprintsByFolder = batch.fingerprintsByFolder,
+        )
     }
 
     fun sum(stats: Iterable<StorageSizeStats>): StorageSizeStats =

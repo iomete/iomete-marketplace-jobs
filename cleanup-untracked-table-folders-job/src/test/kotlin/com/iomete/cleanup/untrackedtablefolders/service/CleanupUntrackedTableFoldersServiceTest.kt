@@ -3,11 +3,13 @@ package com.iomete.cleanup.untrackedtablefolders.service
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecorder
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditTableService
 import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
+import com.iomete.cleanup.untrackedtablefolders.audit.OwnershipChecks
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.catalog.DatabaseNotFoundException
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredTable
+import com.iomete.cleanup.untrackedtablefolders.catalog.NamedTableStorage
 import com.iomete.cleanup.untrackedtablefolders.catalog.RestNamespaceRoot
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
@@ -18,7 +20,11 @@ import com.iomete.cleanup.untrackedtablefolders.storage.CandidateFolderStatistic
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
 import com.iomete.cleanup.untrackedtablefolders.storage.CatalogStorageOperationException
+import com.iomete.cleanup.untrackedtablefolders.storage.DeletionFence
+import com.iomete.cleanup.untrackedtablefolders.storage.DeletionFenceReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
+import com.iomete.cleanup.untrackedtablefolders.storage.FenceStop
+import com.iomete.cleanup.untrackedtablefolders.storage.FenceStopCause
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.storage.SizeStatsBatch
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageFolder
@@ -28,6 +34,7 @@ import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.spyk
 import io.mockk.verify
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -37,6 +44,8 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.assertThrows
 import com.iomete.cleanup.untrackedtablefolders.storage.PartialDeletionException
 import com.iomete.cleanup.untrackedtablefolders.service.AuditIntegrityLostException
+import java.time.Duration
+import java.time.Instant
 
 /**
  * Wiring/integration test for [CleanupUntrackedTableFoldersService.run].
@@ -74,12 +83,13 @@ class CleanupUntrackedTableFoldersServiceTest {
             )
         }
         every { candidateSizeStatCollector.sum(any()) } returns StorageSizeStats.ZERO
-        every { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) } returns CandidateDeletionResult()
+        every { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) } returns CandidateDeletionResult()
         every { catalogDiscoveryService.sharedWarehouseRoots(any()) } returns listOf("s3a://warehouse-bucket/warehouse")
         every { catalogDiscoveryService.restNamespaceRoot(any(), any()) } returns null
         every { catalogDiscoveryService.knownWarehouseRoots() } returns emptyList()
         every { catalogDiscoveryService.visibleDatabaseLocations(any()) } returns emptyMap()
         every { catalogDiscoveryService.tableLocationIfExists(any(), any(), any()) } returns null
+        every { catalogDiscoveryService.tableStorageIfExists(any(), any(), any()) } returns NamedTableStorage.NotFound
         every { catalogDiscoveryService.sessionCatalogWarehouses() } returns emptyMap()
         every { catalogDiscoveryService.discoverTables(any(), any()) } returns emptyList()
     }
@@ -107,6 +117,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                     reconciliation.folders.map { it.path } == listOf("s3a://bucket/db/orphan")
                 },
                 excludedPaths = any(),
+                fence = any(),
             )
         }
         verify(exactly = 1) {
@@ -152,6 +163,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 database = "analytics",
                 reconciliation = any(),
                 excludedPaths = any(),
+                fence = any(),
             )
         } returns CandidateDeletionResult(deletedPaths = listOf("s3a://bucket/db/orphan_a", "s3a://bucket/db/orphan_b"))
 
@@ -181,6 +193,94 @@ class CleanupUntrackedTableFoldersServiceTest {
     }
 
     @Test
+    fun `the deletion fence re-checks age against the row's effective cutoff, not the configured age`() {
+        // olderThanHours is 0 in these tests, so deletion mode raises it to the 72 hour minimum.
+        val service = serviceFor(applicationConfig(dryRun = false, deleteEnabled = true, databases = listOf("analytics")))
+        every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
+            discoveredDatabase(activeTableLocations = listOf("s3a://bucket/db/active_table"))
+        every { objectStorageDiscoveryService.listImmediateChildFolders(any(), "s3a://bucket/db") } returns
+            listOf(storageFolder("s3a://bucket/db/active_table"), storageFolder("s3a://bucket/db/orphan"))
+        val fence = slot<DeletionFence>()
+        every { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), capture(fence)) } returns
+            CandidateDeletionResult(deletedPaths = listOf("s3a://bucket/db/orphan"))
+        val cutoffTime = slot<Instant>()
+        val startedAt = Instant.now()
+
+        service.run()
+
+        val endedAt = Instant.now()
+        verify(exactly = 1) {
+            cleanupAuditRecorder.recordSuccess(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                cutoffTime = capture(cutoffTime),
+                excludedPaths = any(),
+                unscannedTableLocations = any(),
+                scanPlan = any(),
+                inspectionOutcomes = any(),
+                notFoundAtDeletionPaths = any(),
+                keptAtFinalCheckPaths = any(),
+                ownershipChecks = any(),
+                wouldBeHeldByDeletionFloorPaths = any(),
+                deletionFence = any(),
+            )
+        }
+        assertEquals(cutoffTime.captured.toEpochMilli(), fence.captured.cutoffTimeMillis)
+        val minimumAge = Duration.ofHours(72)
+        assertTrue(cutoffTime.captured in startedAt.minus(minimumAge)..endedAt.minus(minimumAge), cutoffTime.captured.toString())
+    }
+
+    @Test
+    fun `a fence stop after a deletion writes one deletion-stopped row and no other row`() {
+        val service = serviceFor(applicationConfig(dryRun = false, deleteEnabled = true, databases = listOf("analytics")))
+        every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
+            discoveredDatabase(activeTableLocations = listOf("s3a://bucket/db/active_table"))
+        every { objectStorageDiscoveryService.listImmediateChildFolders(any(), "s3a://bucket/db") } returns
+            listOf(storageFolder("s3a://bucket/db/active_table"), storageFolder("s3a://bucket/db/orphan_a"), storageFolder("s3a://bucket/db/orphan_b"))
+        val fenceReport =
+            DeletionFenceReport(
+                notAttemptedPaths = listOf("s3a://bucket/db/orphan_b"),
+                stop = FenceStop(FenceStopCause.SNAPSHOT_EXPIRED, "the ownership snapshot became older than 300 s during deletion"),
+            )
+        every { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) } returns
+            CandidateDeletionResult(deletedPaths = listOf("s3a://bucket/db/orphan_a"), fence = fenceReport)
+
+        service.run()
+
+        verify(exactly = 1) {
+            cleanupAuditRecorder.recordDeletionStopped(
+                runId = any(),
+                databaseStartTime = any(),
+                catalogName = "spark_catalog",
+                databaseName = "analytics",
+                discoveredDatabaseLocation = any(),
+                storageScanLocation = any(),
+                activeTableCount = any(),
+                activeTableLocations = any(),
+                storageFolderPaths = any(),
+                candidateFolderPaths = listOf("s3a://bucket/db/orphan_a", "s3a://bucket/db/orphan_b"),
+                candidateSizeStats = any(),
+                deletedFolderPaths = listOf("s3a://bucket/db/orphan_a"),
+                deletedSizeStats = any(),
+                cutoffTime = any(),
+                excludedPaths = any(),
+                unscannedTableLocations = any(),
+                scanPlan = any(),
+                inspectionOutcomes = any(),
+                notFoundAtDeletionPaths = emptyList(),
+                error =
+                    match {
+                        it.message ==
+                            "Deletion stopped at a safety recheck after 1 deleted folder(s): the ownership snapshot became older than 300 s during deletion"
+                    },
+                ownershipChecks = any(),
+                deletionFence = fenceReport,
+                tooNewPaths = emptyList(),
+            )
+        }
+        verifyNoOtherAuditCalls(except = "recordDeletionStopped")
+    }
+
+    @Test
     fun `empty database records SKIPPED and never invokes deletion gate`() {
         val service = serviceFor(
             applicationConfig(dryRun = false, deleteEnabled = true, databases = listOf("empty_db")),
@@ -207,7 +307,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 activeTableLocations = emptyList(),
             )
         }
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) }
         verify(exactly = 0) { objectStorageDiscoveryService.listImmediateChildFolders(any(), any()) }
         verifyNoOtherAuditCalls(except = "recordNoActiveTables")
     }
@@ -242,7 +342,7 @@ class CleanupUntrackedTableFoldersServiceTest {
             )
         }
         verify(exactly = 0) { objectStorageDiscoveryService.listImmediateChildFolders(any(), any()) }
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) }
         verifyNoOtherAuditCalls(except = "recordDatabaseLocationMissing")
     }
 
@@ -268,7 +368,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 error = any(),
             )
         }
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) }
         verifyNoOtherAuditCalls(except = "recordDatabaseNotFound")
     }
 
@@ -297,7 +397,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 ownershipChecks = any(),
             )
         }
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) }
         verifyNoOtherAuditCalls(except = "recordFailed")
     }
 
@@ -382,7 +482,7 @@ class CleanupUntrackedTableFoldersServiceTest {
 
         service.run()
 
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) }
         verify(exactly = 1) {
             cleanupAuditRecorder.recordOwnershipUnverified(
                 runId = any(),
@@ -429,7 +529,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         verify(exactly = 1) {
             candidateSizeStatCollector.collectPerFolder("spark_catalog", listOf("s3a://bucket/db/old_1"))
         }
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) }
         verifyNoOtherAuditCalls(except = "recordOwnershipUnverified")
     }
 
@@ -450,8 +550,10 @@ class CleanupUntrackedTableFoldersServiceTest {
 
         service.run()
 
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
-        verify(exactly = 0) { cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) }
+        verify(exactly = 0) {
+            cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), keptAtFinalCheckPaths = any(), ownershipChecks = any(), wouldBeHeldByDeletionFloorPaths = any(), deletionFence = any(), tooNewPaths = any())
+        }
     }
 
     @Test
@@ -524,7 +626,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         }
         verify(exactly = 0) { objectStorageDiscoveryService.listImmediateChildFolders(any(), any()) }
         verify(exactly = 0) { objectStorageDiscoveryService.listImmediateChildFoldersIfPresent(any(), any()) }
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) }
         verifyNoOtherAuditCalls(except = "recordUnsafeScanRoot")
     }
 
@@ -547,8 +649,59 @@ class CleanupUntrackedTableFoldersServiceTest {
                 database = "analytics",
                 reconciliation = any(),
                 excludedPaths = listOf("s3a://bucket/db/keep"),
+                fence = any(),
             )
         }
+    }
+
+    // The gate runs each read of other storage on a worker it may stop waiting for, and accepts only reads it used.
+    @Test
+    fun `a read of other storage that the gate does not accept is never recorded on the row`() {
+        val checks = runWithOtherStorageReads(accept = listOf(false, false))
+
+        assertEquals(false, checks.first.finalRecheck)
+        assertEquals(0, checks.second.ownershipRefreshCount)
+    }
+
+    @Test
+    fun `only the reads of other storage that the gate accepts count as rechecks`() {
+        val checks = runWithOtherStorageReads(accept = listOf(true, false, true))
+
+        assertEquals(true, checks.first.finalRecheck)
+        assertEquals(1, checks.second.ownershipRefreshCount)
+    }
+
+    private fun runWithOtherStorageReads(accept: List<Boolean>): Pair<OwnershipChecks, DeletionFenceReport> {
+        val service = serviceFor(applicationConfig(dryRun = false, deleteEnabled = true, databases = listOf("analytics")))
+        every { catalogDiscoveryService.discoverDatabase("spark_catalog", "analytics") } returns
+            discoveredDatabase(activeTableLocations = listOf("s3a://bucket/db/active_table"))
+        every { objectStorageDiscoveryService.listImmediateChildFolders(any(), "s3a://bucket/db") } returns
+            listOf(storageFolder("s3a://bucket/db/active_table"), storageFolder("s3a://bucket/db/orphan"))
+        every { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) } answers {
+            val fence = arg<DeletionFence>(4)
+            accept.forEach { accepted ->
+                val read = fence.readOtherStorage()
+                assertTrue(read.complete)
+                if (accepted) read.accept()
+            }
+            CandidateDeletionResult(deletedPaths = listOf("s3a://bucket/db/orphan"))
+        }
+        val ownershipChecks = slot<OwnershipChecks>()
+        val deletionFence = slot<DeletionFenceReport>()
+
+        service.run()
+
+        verify(exactly = 1) {
+            cleanupAuditRecorder.recordSuccess(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                keptAtFinalCheckPaths = any(),
+                ownershipChecks = capture(ownershipChecks),
+                wouldBeHeldByDeletionFloorPaths = any(),
+                deletionFence = capture(deletionFence),
+            )
+        }
+        verifyNoOtherAuditCalls(except = "recordSuccess")
+        return ownershipChecks.captured to deletionFence.captured
     }
 
     @Test
@@ -560,7 +713,7 @@ class CleanupUntrackedTableFoldersServiceTest {
             discoveredDatabase(activeTableLocations = listOf("s3a://bucket/db/active_table"))
         every { objectStorageDiscoveryService.listImmediateChildFolders(any(), "s3a://bucket/db") } returns
             listOf(storageFolder("s3a://bucket/db/active_table"), storageFolder("s3a://bucket/db/orphan_a"), storageFolder("s3a://bucket/db/orphan_b"))
-        every { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) } throws
+        every { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) } throws
             PartialDeletionException(listOf("s3a://bucket/db/orphan_a"), "s3a://bucket/db/orphan_b", IllegalStateException("simulated"))
 
         service.run()
@@ -604,8 +757,8 @@ class CleanupUntrackedTableFoldersServiceTest {
         assertTrue(secondSummary.none { "eligible for cleanup" in it })
         assertTrue("  Reason: audit_integrity_lost" in secondSummary)
 
-        verify(exactly = 1) { candidateDeletionGate.deleteCandidates(any(), "first", any(), any()) }
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), "second", any(), any()) }
+        verify(exactly = 1) { candidateDeletionGate.deleteCandidates(any(), "first", any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), "second", any(), any(), any()) }
         verify(exactly = 1) {
             cleanupAuditRecorder.recordDeletionBlocked(
                 reason = DeletionBlockReason.AUDIT_INTEGRITY_LOST,
@@ -650,6 +803,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                     reconciliation.folders.map { it.path } == listOf("s3a://bucket/db/orphan")
                 },
                 excludedPaths = any(),
+                fence = any(),
             )
         }
         verify(exactly = 1) {
@@ -712,6 +866,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                     reconciliation.folders.map { it.path } == listOf("s3a://bucket/db/orphan")
                 },
                 excludedPaths = any(),
+                fence = any(),
             )
         }
         verify(exactly = 1) {
@@ -825,7 +980,7 @@ class CleanupUntrackedTableFoldersServiceTest {
 
         service.run()
 
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) }
         verify(exactly = 1) {
             cleanupAuditRecorder.recordFailed(
                 runId = any(),
@@ -871,7 +1026,7 @@ class CleanupUntrackedTableFoldersServiceTest {
 
         service.run()
 
-        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) }
+        verify(exactly = 0) { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) }
         verify(exactly = 1) {
             cleanupAuditRecorder.recordOwnershipUnverified(
                 runId = any(),
@@ -918,7 +1073,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                     ),
                 absentFolderPaths = setOf("s3a://bucket/db/gone_at_inspection"),
             )
-        every { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) } returns
+        every { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) } returns
             CandidateDeletionResult(
                 deletedPaths = listOf("s3a://bucket/db/orphan"),
                 notFoundPaths = listOf("s3a://bucket/db/gone_at_deletion"),
@@ -966,7 +1121,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 storageFolder("s3a://bucket/db/gone"),
                 storageFolder("s3a://bucket/db/orphan_b"),
             )
-        every { candidateDeletionGate.deleteCandidates(any(), any(), any(), any()) } throws
+        every { candidateDeletionGate.deleteCandidates(any(), any(), any(), any(), any()) } throws
             PartialDeletionException(
                 deletedPaths = emptyList(),
                 failedPath = "s3a://bucket/db/orphan_b",
@@ -1024,6 +1179,7 @@ class CleanupUntrackedTableFoldersServiceTest {
                 database = "sales",
                 reconciliation = match { reconciliation -> reconciliation.folders.map { it.path } == candidates },
                 excludedPaths = any(),
+                fence = any(),
             )
         }
     }
@@ -1055,7 +1211,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         }
         if (except != "recordOwnershipUnverified") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordOwnershipUnverified(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
+                cleanupAuditRecorder.recordOwnershipUnverified(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any(), wouldBeHeldByDeletionFloorPaths = any(), tooNewPaths = any())
             }
         }
         if (except != "recordTooManyCandidateFolders") {
@@ -1070,7 +1226,7 @@ class CleanupUntrackedTableFoldersServiceTest {
         }
         if (except != "recordDeletionFailed") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordDeletionFailed(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
+                cleanupAuditRecorder.recordDeletionFailed(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any(), deletionFence = any(), tooNewPaths = any())
             }
         }
         if (except != "recordFailed") {
@@ -1080,12 +1236,17 @@ class CleanupUntrackedTableFoldersServiceTest {
         }
         if (except != "recordSuccess") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
+                cleanupAuditRecorder.recordSuccess(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), keptAtFinalCheckPaths = any(), ownershipChecks = any(), wouldBeHeldByDeletionFloorPaths = any(), deletionFence = any(), tooNewPaths = any())
+            }
+        }
+        if (except != "recordDeletionStopped") {
+            verify(exactly = 0) {
+                cleanupAuditRecorder.recordDeletionStopped(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
             }
         }
         if (except != "recordDeletionBlocked") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordDeletionBlocked(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
+                cleanupAuditRecorder.recordDeletionBlocked(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any(), wouldBeHeldByDeletionFloorPaths = any(), deletionFence = any(), tooNewPaths = any())
             }
         }
     }

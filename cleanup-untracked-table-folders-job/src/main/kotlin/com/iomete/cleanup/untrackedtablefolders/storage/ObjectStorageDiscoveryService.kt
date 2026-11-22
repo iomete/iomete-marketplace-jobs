@@ -1,10 +1,10 @@
 package com.iomete.cleanup.untrackedtablefolders.storage
 
+import com.iomete.cleanup.untrackedtablefolders.logging.SafeLogger
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
-import org.jboss.logging.Logger
 import java.io.FileNotFoundException
 
 data class StorageFolder(
@@ -25,11 +25,85 @@ data class SizeStatsBatch(
     val statsByFolder: Map<String, StorageSizeStats>,
     val failures: Map<String, Throwable>,
     val absentFolderPaths: Set<String> = emptySet(),
+    val tooManyObjectsFolderPaths: Set<String> = emptySet(),
+    val fingerprintsByFolder: Map<String, FolderFingerprint> = emptyMap(),
 )
+
+// Exact-key deletion sends about four requests per object, one object at a time, and needs the whole key list in
+// memory, so a folder above this many objects is held, at inspection and again before deletion.
+const val MAX_OBJECTS_PER_FOLDER = 10_000
+
+sealed interface FolderListing {
+    val folderPath: String
+
+    data class Listed(
+        override val folderPath: String,
+        val objects: List<ListedObject>,
+    ) : FolderListing {
+        val fingerprint: FolderFingerprint = FolderFingerprint.of(objects)
+    }
+
+    /** The folder holds more than [maxObjects] objects. It is never treated as empty, unowned or deletable. */
+    data class TooManyObjects(
+        override val folderPath: String,
+        val maxObjects: Int,
+    ) : FolderListing
+}
+
+object FolderObjectListing {
+    /**
+     * Lists every object below [folderPath], stopping at the first object past [maxObjects]. A missing folder throws
+     * the filesystem's FileNotFoundException. An object outside the folder, a directory entry or a key that does not
+     * map back to its own path fails the listing, so no caller can act on it.
+     */
+    fun list(
+        fileSystem: FileSystem,
+        folderPath: String,
+        maxObjects: Int = MAX_OBJECTS_PER_FOLDER,
+    ): FolderListing {
+        require(maxObjects >= 0) { "maxObjects must be greater than or equal to 0" }
+
+        val folder = folderPrefix(folderPath)
+        val files = fileSystem.listFiles(Path(folderPath), true)
+        val objects = ArrayList<ListedObject>()
+
+        while (files.hasNext()) {
+            val status = files.next()
+            if (objects.size == maxObjects) {
+                return FolderListing.TooManyObjects(folderPath, maxObjects)
+            }
+            check(!status.isDirectory) { "Listing of $folder returned a directory entry: ${status.path}" }
+            objects += ListedObject(relativeKey(folder, status.path.toString()), status.len, status.modificationTime, etagOf(status))
+        }
+
+        return FolderListing.Listed(folderPath, objects)
+    }
+
+    fun folderPrefix(folderPath: String): String = Path(folderPath).toString().trimEnd('/')
+
+    // Hadoop's Path collapses "//", drops a trailing "/" and resolves "." and "..", so a key is used only if its path
+    // maps back to itself.
+    fun objectPath(
+        folder: String,
+        relativeKey: String,
+    ): Path {
+        val path = Path("$folder/$relativeKey")
+        check(path.toString() == "$folder/$relativeKey") { "Object key is not a plain path below $folder: $relativeKey" }
+        return path
+    }
+
+    private fun relativeKey(
+        folder: String,
+        objectPath: String,
+    ): String {
+        check(objectPath.startsWith("$folder/")) { "Listing of $folder returned an object outside it: $objectPath" }
+        return objectPath.substring(folder.length + 1).also { objectPath(folder, it) }
+    }
+}
 
 @ApplicationScoped
 class ObjectStorageDiscoveryService {
-    private val logger = Logger.getLogger(ObjectStorageDiscoveryService::class.java)
+    private val logger = SafeLogger.getLogger(ObjectStorageDiscoveryService::class.java)
 
     @Inject
     lateinit var catalogFileSystemProvider: CatalogFileSystemProvider
@@ -93,20 +167,35 @@ class ObjectStorageDiscoveryService {
             val statsByFolder = linkedMapOf<String, StorageSizeStats>()
             val failures = linkedMapOf<String, Throwable>()
             val absentFolderPaths = linkedSetOf<String>()
+            val tooManyObjectsFolderPaths = linkedSetOf<String>()
+            val fingerprintsByFolder = linkedMapOf<String, FolderFingerprint>()
 
             sortedFolderPaths.forEach { folderPath ->
                 logger.info("Collecting size statistics for candidate folder: $folderPath")
 
                 try {
-                    val folderStats =
+                    val listing =
                         catalogFileSystemProvider.runOperation(catalog, "collect size statistics", folderPath) {
-                            sizeOf(fileSystem, Path(folderPath))
+                            FolderObjectListing.list(fileSystem, folderPath)
                         }
 
-                    logger.info(
-                        "Collected size statistics for candidate folder=$folderPath: objectCount=${folderStats.objectCount}, totalSizeBytes=${folderStats.totalSizeBytes}"
-                    )
-                    statsByFolder[folderPath] = folderStats
+                    when (listing) {
+                        is FolderListing.TooManyObjects -> {
+                            logger.warn(
+                                "Candidate folder holds more than ${listing.maxObjects} objects and is kept as too_many_objects: path=$folderPath"
+                            )
+                            tooManyObjectsFolderPaths += folderPath
+                        }
+
+                        is FolderListing.Listed -> {
+                            val folderStats = sizeOf(listing)
+                            logger.info(
+                                "Collected size statistics for candidate folder=$folderPath: objectCount=${folderStats.objectCount}, totalSizeBytes=${folderStats.totalSizeBytes}"
+                            )
+                            statsByFolder[folderPath] = folderStats
+                            fingerprintsByFolder[folderPath] = listing.fingerprint
+                        }
+                    }
                 } catch (th: CatalogStorageOperationException) {
                     val failure = if (th.cause is FileNotFoundException) recheckNotFound(catalog, fileSystem, folderPath, th) else th
 
@@ -119,7 +208,7 @@ class ObjectStorageDiscoveryService {
                 }
             }
 
-            SizeStatsBatch(statsByFolder, failures, absentFolderPaths)
+            SizeStatsBatch(statsByFolder, failures, absentFolderPaths, tooManyObjectsFolderPaths, fingerprintsByFolder)
         }
     }
 
@@ -158,33 +247,16 @@ class ObjectStorageDiscoveryService {
         }
     }
 
-    private fun sizeOf(
-        fileSystem: FileSystem,
-        path: Path,
-    ): StorageSizeStats {
-        val files = fileSystem.listFiles(path, true)
-
-        var objectCount = 0L
-        var totalSizeBytes = 0L
-        var newestModificationTimeMillis = Long.MIN_VALUE
-        var hasInvalidModificationTime = false
-
-        while (files.hasNext()) {
-            val fileStatus = files.next()
-            objectCount += 1
-            totalSizeBytes += fileStatus.len
-            newestModificationTimeMillis = maxOf(newestModificationTimeMillis, fileStatus.modificationTime)
-            if (fileStatus.modificationTime <= 0) {
-                hasInvalidModificationTime = true
-            }
-        }
+    private fun sizeOf(listing: FolderListing.Listed): StorageSizeStats {
+        val objects = listing.objects
+        val fingerprint = listing.fingerprint
 
         return StorageSizeStats(
-            objectCount = objectCount,
-            totalSizeBytes = totalSizeBytes,
+            objectCount = fingerprint.objectCount,
+            totalSizeBytes = fingerprint.totalSizeBytes,
             // One object of unknown age makes the folder's age unknown, whatever the other objects report.
             newestObjectModificationTimeMillis =
-                newestModificationTimeMillis.takeIf { objectCount > 0 && !hasInvalidModificationTime },
+                fingerprint.newestModificationTimeMillis.takeIf { objects.none { it.modificationTimeMillis <= 0 } },
         )
     }
 }

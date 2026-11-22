@@ -1,8 +1,9 @@
 package com.iomete.cleanup.untrackedtablefolders.storage
 
+import com.iomete.cleanup.untrackedtablefolders.logging.SafeLogger
+import com.iomete.cleanup.untrackedtablefolders.logging.SafeText
 import jakarta.enterprise.context.ApplicationScoped
 import org.apache.hadoop.fs.Path
-import org.jboss.logging.Logger
 
 // IOMETE stores lakehouse data in S3-compatible storage, Google Cloud Storage, or Azure storage.
 private val SUPPORTED_STORAGE_SCHEMES = setOf("s3", "s3a", "s3n", "gs", "abfs", "abfss", "wasb", "wasbs")
@@ -35,7 +36,7 @@ class UnsafeScanRootException(
 @ApplicationScoped
 class StorageScanLocationResolver {
 
-    private val logger = Logger.getLogger(StorageScanLocationResolver::class.java)
+    private val logger = SafeLogger.getLogger(StorageScanLocationResolver::class.java)
 
     fun resolve(
         databaseLocation: String,
@@ -211,7 +212,7 @@ class StorageScanLocationResolver {
         } catch (error: IllegalArgumentException) {
             throw UnsafeScanRootException(
                 UnsafeScanRootReason.INVALID_STORAGE_LOCATION,
-                "Storage location cannot be parsed: $location (${error.message})",
+                SafeText.text("Storage location cannot be parsed: $location (${error.message})"),
             )
         }
 }

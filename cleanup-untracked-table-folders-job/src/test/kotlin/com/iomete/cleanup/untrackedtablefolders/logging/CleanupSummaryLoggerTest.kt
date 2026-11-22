@@ -2,6 +2,8 @@ package com.iomete.cleanup.untrackedtablefolders.logging
 
 import com.iomete.cleanup.untrackedtablefolders.audit.OwnershipChecks
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
+import com.iomete.cleanup.untrackedtablefolders.storage.DeletionFenceReport
+import com.iomete.cleanup.untrackedtablefolders.storage.FenceKeepReason
 import com.iomete.cleanup.untrackedtablefolders.storage.PlannedScanRoot
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
@@ -218,6 +220,27 @@ class CleanupSummaryLoggerTest {
     }
 
     @Test
+    fun `a dry run report names the folders deletion mode would keep for age`() {
+        val report =
+            logger.buildReportLines(
+                summary(dryRun = true, unmatchedFolderPaths = listOf("s3a://bucket/db/old_1", "s3a://bucket/db/young"))
+                    .copy(wouldBeHeldByDeletionFloorPaths = listOf("s3a://bucket/db/young")),
+            ).joinToString("\n")
+        val plain = logger.buildReportLines(summary(dryRun = true)).joinToString("\n")
+
+        val untracked = report.substringAfter("\nUNTRACKED STORAGE FOLDERS\n").substringBefore("\nDELETION\n")
+        assertTrue(
+            untracked.contains(
+                "  would_be_held_by_deletion_floor: 1 of these folders are younger than\n" +
+                    "  the 72-hour minimum age of deletion mode. A deletion run now would keep them.\n\n" +
+                    "- s3a://bucket/db/young",
+            ),
+            untracked,
+        )
+        assertFalse(plain.contains("would_be_held_by_deletion_floor"))
+    }
+
+    @Test
     fun `report lists table locations outside the scanned root`() {
         val report =
             logger.buildReportLines(
@@ -302,6 +325,49 @@ class CleanupSummaryLoggerTest {
     }
 
     @Test
+    fun `folders newer than the cutoff are skipped after inspection and every held folder is counted by reason`() {
+        val report =
+            logger.buildReportLines(
+                summary().copy(
+                    storageFolderPaths =
+                        listOf(
+                            "s3a://bucket/db/table_a", "s3a://bucket/db/old_1", "s3a://bucket/db/young",
+                            "s3a://bucket/db/empty", "s3a://bucket/db/gone",
+                        ),
+                    inspectionOutcomes =
+                        mapOf(
+                            CandidateInspectionOutcome.EMPTY_FOLDER to listOf("s3a://bucket/db/empty"),
+                            CandidateInspectionOutcome.FOLDER_NOT_FOUND to listOf("s3a://bucket/db/gone"),
+                        ),
+                    tooNewPaths = listOf("s3a://bucket/db/young"),
+                    deletionFence = DeletionFenceReport(keptPaths = mapOf(FenceKeepReason.CHANGED_SINCE_INSPECTION to listOf("s3a://bucket/db/old_1"))),
+                ),
+            ).joinToString("\n")
+
+        assertTrue(report.contains("Folders newer than the age cutoff                1"))
+        assertTrue(report.contains("  too_new: the newest object is newer than the age cutoff of this run.\n\n- s3a://bucket/db/young"))
+        assertFalse(report.contains("STORAGE FOLDERS PROTECTED OR SKIPPED FOR OTHER REASONS"))
+        val held = report.substringAfter("FOLDERS HELD, BY REASON\n").substringBefore("\nDELETION\n")
+        assertEquals(
+            "\n  These folders have no verified catalog owner, but this run keeps them. Each reason is\n" +
+                "  listed above or under DELETION, and the audit row has the same counts.\n\n" +
+                "  empty_folder                                     1\n" +
+                "  too_new                                          1\n" +
+                "  folder_kept_changed_since_inspection             1\n",
+            held,
+        )
+        assertFalse(held.contains("folder_not_found"))
+    }
+
+    @Test
+    fun `report omits the held section when no folder is held`() {
+        val report = logger.buildReportLines(summary()).joinToString("\n")
+
+        assertFalse(report.contains("FOLDERS HELD, BY REASON"))
+        assertFalse(report.contains("Folders newer than the age cutoff"))
+    }
+
+    @Test
     fun `report omits the inspection section when every candidate was readable`() {
         val report = logger.buildReportLines(summary()).joinToString("\n")
 
@@ -377,7 +443,7 @@ class CleanupSummaryLoggerTest {
                     "               default folders of other databases the job can see, configured exclusions,",
                     "               tables of other databases the job can see,",
                     "               same-bucket catalogs of the Spark session,",
-                    "               a final read of other storage right before deleting",
+                    "               a read of other storage at most 5 minutes old at each delete",
                     "  Not checked  catalogs in another bucket or outside the Spark session,",
                     "               tables the job cannot see, tables of nested namespaces,",
                     "               files a table uses outside its own folder",

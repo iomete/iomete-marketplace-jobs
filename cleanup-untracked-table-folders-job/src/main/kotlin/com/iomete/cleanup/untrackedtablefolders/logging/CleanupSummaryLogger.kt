@@ -2,14 +2,19 @@ package com.iomete.cleanup.untrackedtablefolders.logging
 
 import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
 import com.iomete.cleanup.untrackedtablefolders.audit.OwnershipChecks
+import com.iomete.cleanup.untrackedtablefolders.candidate.HeldFolders
+import com.iomete.cleanup.untrackedtablefolders.config.DELETION_MIN_AGE_HOURS
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
+import com.iomete.cleanup.untrackedtablefolders.storage.DeletionFenceReport
+import com.iomete.cleanup.untrackedtablefolders.storage.FenceKeepReason
 import com.iomete.cleanup.untrackedtablefolders.storage.MANAGED_ROOT_REFUSED_PREFIX
+import com.iomete.cleanup.untrackedtablefolders.storage.MAX_OBJECTS_PER_FOLDER
+import com.iomete.cleanup.untrackedtablefolders.storage.OWNERSHIP_SNAPSHOT_MAX_AGE
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
 import jakarta.enterprise.context.ApplicationScoped
-import org.jboss.logging.Logger
 
 data class CleanupSummary(
     val catalog: String,
@@ -36,6 +41,9 @@ data class CleanupSummary(
     val keptAtFinalCheckPaths: List<String> = emptyList(),
     val ownershipChecks: OwnershipChecks = OwnershipChecks(),
     val cleanupRoots: List<String> = listOf(storageScanLocation),
+    val wouldBeHeldByDeletionFloorPaths: List<String> = emptyList(),
+    val deletionFence: DeletionFenceReport = DeletionFenceReport(),
+    val tooNewPaths: List<String> = emptyList(),
 )
 
 data class NoVerifiedLocationSummary(
@@ -75,11 +83,10 @@ data class UnresolvedTableDetail(
 @ApplicationScoped
 class CleanupSummaryLogger {
 
-    // One statement per report, so log viewers that sort by timestamp cannot interleave its lines.
-    private val logger = Logger.getLogger(CleanupSummaryLogger::class.java)
+    private val logger = SafeLogger.getLogger(CleanupSummaryLogger::class.java)
 
     fun logCleanupSummary(summary: CleanupSummary) {
-        logger.info(buildReportLines(summary).joinToString("\n"))
+        logger.infoLines(buildReportLines(summary))
     }
 
     fun logScanPlan(
@@ -87,15 +94,15 @@ class CleanupSummaryLogger {
         database: String,
         scanPlan: ScanPlanReport,
     ) {
-        logger.info(buildScanPlanLines(catalog, database, scanPlan).joinToString("\n"))
+        logger.infoLines(buildScanPlanLines(catalog, database, scanPlan))
     }
 
     fun logNoVerifiedLocationReport(summary: NoVerifiedLocationSummary) {
-        logger.info(buildNoVerifiedLocationReportLines(summary).joinToString("\n"))
+        logger.infoLines(buildNoVerifiedLocationReportLines(summary))
     }
 
     fun logTooManyFoldersReport(summary: TooManyFoldersSummary) {
-        logger.info(buildTooManyFoldersReportLines(summary).joinToString("\n"))
+        logger.infoLines(buildTooManyFoldersReportLines(summary))
     }
 
     internal fun buildScanPlanLines(
@@ -111,7 +118,7 @@ class CleanupSummaryLogger {
             add("  Cleanup was skipped for this database. Nothing was deleted.")
             addScanPlan(scanPlan)
             add(SEPARATOR)
-        }
+        }.safeLines()
 
     internal fun buildNoVerifiedLocationReportLines(summary: NoVerifiedLocationSummary): List<String> =
         buildList {
@@ -150,7 +157,7 @@ class CleanupSummaryLogger {
 
             add(SEPARATOR)
             repeat(BLANK_LINES_AROUND_REPORT) { add("") }
-        }
+        }.safeLines()
 
     internal fun buildTooManyFoldersReportLines(summary: TooManyFoldersSummary): List<String> =
         buildList {
@@ -199,7 +206,7 @@ class CleanupSummaryLogger {
 
             add(SEPARATOR)
             repeat(BLANK_LINES_AROUND_REPORT) { add("") }
-        }
+        }.safeLines()
 
     internal fun buildReportLines(summary: CleanupSummary): List<String> = buildList {
         val unmatchedFolderSet = summary.unmatchedFolderPaths.toSet()
@@ -208,7 +215,8 @@ class CleanupSummaryLogger {
             summary.storageFolderPaths.filter { folder ->
                 summary.activeTableLocations.any { runCatching { StoragePathUtils.overlaps(folder, it) }.getOrDefault(false) }
             }
-        val inspectedFolderPaths = summary.inspectionOutcomes.values.flatten().toSet()
+        val inspectedFolderPaths = summary.inspectionOutcomes.values.flatten().toSet() + summary.tooNewPaths
+        val heldFolders = HeldFolders.of(summary.inspectionOutcomes, summary.tooNewPaths, summary.deletionFence)
         val otherSkippedFolderPaths =
             summary.storageFolderPaths - tableFolderPaths.toSet() - unmatchedFolderSet - inspectedFolderPaths
         // Several tables can share one location, so path lists are shown once each.
@@ -236,6 +244,9 @@ class CleanupSummaryLogger {
         inspectionOutcomesInReportOrder(summary).forEach { (outcome, paths) ->
             add("  ${inspectionOutcomeLabel(outcome).padEnd(STORAGE_LABEL_WIDTH)}${paths.size}")
         }
+        if (summary.tooNewPaths.isNotEmpty()) {
+            add("  ${"Folders newer than the age cutoff".padEnd(STORAGE_LABEL_WIDTH)}${summary.tooNewPaths.size}")
+        }
         add("  Folders with no verified catalog owner           ${summary.unmatchedFolderPaths.size}")
         add("  ${(if (summary.cleanupRoots.size > 1) "Table locations outside the scanned roots" else "Table locations outside the scanned root").padEnd(STORAGE_LABEL_WIDTH)}${unscannedTableLocations.size}")
         add(
@@ -261,23 +272,30 @@ class CleanupSummaryLogger {
             add("STORAGE FOLDERS PROTECTED OR SKIPPED FOR OTHER REASONS")
             add("")
             add("  These folders are not deleted. They are excluded, belong to another database, to a table's")
-            add("  write path, or to an unresolved table, are framework working folders, or are too new.")
+            add("  write path, or to an unresolved table, or are framework working folders.")
             add("")
             addListOrNone(otherSkippedFolderPaths)
         }
 
         val inspectionOutcomes = inspectionOutcomesInReportOrder(summary)
-        if (inspectionOutcomes.isNotEmpty()) {
+        if (inspectionOutcomes.isNotEmpty() || summary.tooNewPaths.isNotEmpty()) {
             add("")
             add("STORAGE FOLDERS SKIPPED AFTER INSPECTION")
             add("")
             add("  These folders have no verified catalog owner, but they are not deleted. Inspection found")
-            add("  them missing, could not read them, found them empty, or could not establish their age.")
+            add("  them missing, could not read them, found them empty or over the object limit, could not")
+            add("  establish their age, or found an object newer than the age cutoff.")
             inspectionOutcomes.forEach { (outcome, paths) ->
                 add("")
                 add("  ${outcome.code}: ${inspectionOutcomeExplanation(outcome)}")
                 add("")
                 addListOrNone(paths)
+            }
+            if (summary.tooNewPaths.isNotEmpty()) {
+                add("")
+                add("  ${HeldFolders.TOO_NEW}: the newest object is newer than the age cutoff of this run.")
+                add("")
+                addListOrNone(summary.tooNewPaths)
             }
         }
 
@@ -315,6 +333,24 @@ class CleanupSummaryLogger {
         add("")
         addListOrNone(summary.unmatchedFolderPaths)
 
+        if (summary.wouldBeHeldByDeletionFloorPaths.isNotEmpty()) {
+            add("")
+            add("  would_be_held_by_deletion_floor: ${summary.wouldBeHeldByDeletionFloorPaths.size} of these folders are younger than")
+            add("  the $DELETION_MIN_AGE_HOURS-hour minimum age of deletion mode. A deletion run now would keep them.")
+            add("")
+            addListOrNone(summary.wouldBeHeldByDeletionFloorPaths)
+        }
+
+        if (heldFolders.count > 0) {
+            add("")
+            add("FOLDERS HELD, BY REASON")
+            add("")
+            add("  These folders have no verified catalog owner, but this run keeps them. Each reason is")
+            add("  listed above or under DELETION, and the audit row has the same counts.")
+            add("")
+            heldFolders.pathsByReason.forEach { (reason, paths) -> add("  ${reason.padEnd(STORAGE_LABEL_WIDTH)}${paths.size}") }
+        }
+
         add("")
         add("DELETION")
         add("")
@@ -341,6 +377,13 @@ class CleanupSummaryLogger {
             if (summary.keptAtFinalCheckPaths.isNotEmpty()) {
                 add("  Folders kept by the final check                  ${summary.keptAtFinalCheckPaths.size}")
             }
+            val fenceKeeps = FENCE_KEEP_EXPLANATIONS.keys.mapNotNull { reason -> summary.deletionFence.keptPaths[reason]?.let { reason to it } }
+            fenceKeeps.forEach { (reason, paths) ->
+                add("  ${FENCE_KEEP_LABELS.getValue(reason).padEnd(STORAGE_LABEL_WIDTH)}${paths.size}")
+            }
+            if (summary.deletionFence.ownershipRefreshCount > 0) {
+                add("  ${"Ownership read again during deletion".padEnd(STORAGE_LABEL_WIDTH)}${summary.deletionFence.ownershipRefreshCount}")
+            }
             add("")
             addListOrNone(summary.deletedFolderPaths)
             if (summary.notFoundAtDeletionPaths.isNotEmpty()) {
@@ -353,10 +396,17 @@ class CleanupSummaryLogger {
             if (summary.keptAtFinalCheckPaths.isNotEmpty()) {
                 add("")
                 add("  folder_kept_at_final_check: another database, catalog or table claimed the folder when")
-                add("  the job read their storage again just before deleting. Still counted as a candidate,")
-                add("  not as deleted.")
+                add("  the job read their storage again before deleting. The job reuses that read for up to")
+                add("  ${OWNERSHIP_SNAPSHOT_MAX_AGE.toMinutes()} minutes. Still counted as a candidate, not as deleted.")
                 add("")
                 addListOrNone(summary.keptAtFinalCheckPaths)
+            }
+            fenceKeeps.forEach { (reason, paths) ->
+                add("")
+                add("  folder_kept_${reason.code}: ${FENCE_KEEP_EXPLANATIONS.getValue(reason)}")
+                add("  Nothing in it was deleted. Still counted as a candidate, not as deleted.")
+                add("")
+                addListOrNone(paths)
             }
         } else {
             add("  BLOCKED")
@@ -368,7 +418,10 @@ class CleanupSummaryLogger {
 
         add(SEPARATOR)
         repeat(BLANK_LINES_AROUND_REPORT) { add("") }
-    }
+    }.safeLines()
+
+    // Paths, names and reasons come from storage and the catalog, so each line is made safe before it is logged.
+    private fun List<String>.safeLines(): List<String> = map { SafeText.text(it) }
 
     private fun MutableList<String>.addReportStart(
         catalog: String,
@@ -409,7 +462,7 @@ class CleanupSummaryLogger {
             unresolvedTableNames.take(MAX_LOG_PATH_SAMPLE_SIZE).forEach { name ->
                 add("- $name")
                 unresolvedTableDetails[name]?.let { detail ->
-                    add("    reason: ${detail.reason.lineSequence().first().trim().take(MAX_REASON_LENGTH)}")
+                    add("    reason: ${SafeText.text(detail.reason.lineSequence().first().trim(), MAX_REASON_LENGTH)}")
                     detail.knownLocation?.let { add("    known folder: $it") }
                 }
             }
@@ -430,7 +483,7 @@ class CleanupSummaryLogger {
                 "configured exclusions",
                 "tables of other databases the job can see".takeIf { checks.otherTables },
                 "same-bucket catalogs of the Spark session".takeIf { checks.otherTables },
-                "a final read of other storage right before deleting".takeIf { checks.finalRecheck },
+                FINAL_RECHECK.takeIf { checks.finalRecheck },
             ),
         )
         addWrapped(
@@ -439,7 +492,7 @@ class CleanupSummaryLogger {
                 "default folders of other databases".takeUnless { checks.otherDatabaseFolders },
                 "tables of other databases".takeUnless { checks.otherTables },
                 "same-bucket catalogs of the Spark session".takeUnless { checks.otherTables },
-                "a final read of other storage right before deleting".takeUnless { checks.finalRecheck },
+                FINAL_RECHECK.takeUnless { checks.finalRecheck },
                 "catalogs in another bucket or outside the Spark session",
                 "tables the job cannot see",
                 "tables of nested namespaces",
@@ -552,6 +605,7 @@ class CleanupSummaryLogger {
             CandidateInspectionOutcome.STATISTICS_UNAVAILABLE -> "Folders whose contents could not be listed"
             CandidateInspectionOutcome.EMPTY_FOLDER -> "Empty folders"
             CandidateInspectionOutcome.UNKNOWN_AGE -> "Folders of unknown age"
+            CandidateInspectionOutcome.TOO_MANY_OBJECTS -> "Folders with too many objects"
         }
 
     private fun inspectionOutcomeExplanation(outcome: CandidateInspectionOutcome): String =
@@ -560,6 +614,8 @@ class CleanupSummaryLogger {
             CandidateInspectionOutcome.STATISTICS_UNAVAILABLE -> "the contents could not be listed. See the WARN log for the error."
             CandidateInspectionOutcome.EMPTY_FOLDER -> "no objects. Empty folders, including their directory markers, are not deleted."
             CandidateInspectionOutcome.UNKNOWN_AGE -> "at least one object has no valid modification time."
+            CandidateInspectionOutcome.TOO_MANY_OBJECTS ->
+                "more than $MAX_OBJECTS_PER_FOLDER objects. The job deletes object by object, so it keeps larger folders."
         }
 
     private fun deletionBlockExplanation(reason: DeletionBlockReason): List<String> =
@@ -618,8 +674,31 @@ class CleanupSummaryLogger {
         const val MAX_LOGGED_NOT_SCANNED_ROOTS = 25
         const val BLANK_LINES_AROUND_REPORT = 3
         const val STORAGE_LABEL_WIDTH = 49
+
+        private val FENCE_KEEP_LABELS =
+            mapOf(
+                FenceKeepReason.TABLE_NAMED_LIKE_FOLDER to "Folders named like a table at deletion",
+                FenceKeepReason.CHANGED_SINCE_INSPECTION to "Folders changed since inspection",
+                FenceKeepReason.TOO_MANY_OBJECTS to "Folders over the object budget at deletion",
+                FenceKeepReason.TOO_NEW to "Folders with a new object at deletion",
+                FenceKeepReason.UNKNOWN_AGE to "Folders of unknown age at deletion",
+                FenceKeepReason.KEY_NOT_ADDRESSABLE to "Folders with a key not found by its name",
+            )
+
+        private val FENCE_KEEP_EXPLANATIONS =
+            mapOf(
+                FenceKeepReason.TABLE_NAMED_LIKE_FOLDER to "a table of this database with the folder's name is stored in it.",
+                FenceKeepReason.CHANGED_SINCE_INSPECTION to "the listing before deletion differs from the inspection.",
+                FenceKeepReason.TOO_MANY_OBJECTS to "more than $MAX_OBJECTS_PER_FOLDER objects in the listing before deletion.",
+                FenceKeepReason.TOO_NEW to "an object is newer than the age cutoff in the listing before deletion.",
+                FenceKeepReason.UNKNOWN_AGE to "an object has no usable modification time in the listing before deletion.",
+                FenceKeepReason.KEY_NOT_ADDRESSABLE to "before the first delete, a listed object was not found by its own name, or two had one name.",
+            )
         const val OWNERSHIP_LABEL_WIDTH = 15
         const val MAX_OWNERSHIP_LINE_LENGTH = 95
+
+        // No delete starts once that read is older than the limit.
+        val FINAL_RECHECK = "a read of other storage at most ${OWNERSHIP_SNAPSHOT_MAX_AGE.toMinutes()} minutes old at each delete"
         const val MAX_REASON_LENGTH = 300
         const val SEPARATOR = "================================================================"
     }
