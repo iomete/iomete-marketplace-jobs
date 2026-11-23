@@ -620,7 +620,7 @@ class FencedDeletionFlowTest {
             val record = flow.auditRecords.single()
             assertStopped(record, "recheck_too_slow", deleted = listOf(ORPHAN_A), notAttempted = listOf(ORPHAN_B, ORPHAN_C))
             assertNoPartialFolder(record)
-            assertTrue(record.errorMessage.orEmpty().contains("did not finish within the 2 s limit"), record.errorMessage)
+            assertTrue(record.errorMessage.orEmpty().contains("did not finish within the 1 s a read may use of the 2 s limit"), record.errorMessage)
             assertEquals(1, blocker.entered.get())
         } finally {
             blocker.release()

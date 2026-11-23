@@ -78,9 +78,10 @@ class DeletionTimeLimitTest {
 
         val result = gate().deleteCandidates(CATALOG, "analytics", eligible(ORPHAN_A, ORPHAN_B), emptyList(), fence)
 
-        assertWithin(started, LIMIT, atLeast = true)
+        // An ownership read is waited for only for the half of the limit that a read may use.
+        assertWithin(started, LIMIT.dividedBy(2), atLeast = true)
         assertEquals(FenceStopCause.RECHECK_TOO_SLOW, result.fence.stop?.cause)
-        assertEquals("the ownership recheck did not finish within the 500 ms limit", result.fence.stop?.message)
+        assertEquals("the ownership recheck did not finish within the 250 ms a read may use of the 500 ms limit", result.fence.stop?.message)
         assertEquals(listOf(ORPHAN_A, ORPHAN_B), result.fence.notAttemptedPaths)
         verify(exactly = 0) { catalogDiscoveryService.discoverDatabase(any(), any()) }
         assertTrue(InMemoryS3FileSystem.listFilesCalls.isEmpty())
@@ -152,7 +153,7 @@ class DeletionTimeLimitTest {
         assertWithin(started, LIMIT)
         assertEquals(listOf(ORPHAN_A), result.deletedPaths)
         assertEquals(FenceStopCause.RECHECK_TOO_SLOW, result.fence.stop?.cause)
-        assertEquals("the ownership recheck before folder=$ORPHAN_B did not finish within the 500 ms limit", result.fence.stop?.message)
+        assertEquals("the ownership recheck before folder=$ORPHAN_B did not finish within the 250 ms a read may use of the 500 ms limit", result.fence.stop?.message)
         assertEquals(listOf(ORPHAN_B), result.fence.notAttemptedPaths)
         assertEquals(1, accepted.get())
         assertTrue(exists("$ORPHAN_B/part-0.parquet"))

@@ -89,7 +89,10 @@ enum class FenceStopCause(val code: String) {
     RECHECK_TOO_SLOW("recheck_too_slow"),
     NAME_PROBE_FAILED("name_probe_failed"),
 
-    /** Ownership read again in the middle of a folder protects that folder; the objects deleted before stay deleted. */
+    /**
+     * Ownership read again in the middle of a folder protects that folder after some of its objects were deleted; those
+     * stay deleted. Before its first delete the folder is kept instead, with [FenceStop.keptReason].
+     */
     CLAIMED_DURING_DELETION("claimed_during_deletion"),
 
     /** The snapshot passed its age limit during deletion, or was too close to it to start another delete. */
@@ -99,11 +102,15 @@ enum class FenceStopCause(val code: String) {
     READ_TIMED_OUT("read_timed_out"),
 }
 
-/** [message] is built from paths and counts only, because it reaches the audit row; [error] stays for the log. */
+/**
+ * [message] is built from paths and counts only, because it reaches the audit row; [error] stays for the log.
+ * [keptReason] is set when the folder may be kept instead, as long as nothing in it was deleted yet.
+ */
 data class FenceStop(
     val cause: FenceStopCause,
     val message: String,
     val error: Throwable? = null,
+    val keptReason: FenceKeepReason? = null,
 )
 
 /**

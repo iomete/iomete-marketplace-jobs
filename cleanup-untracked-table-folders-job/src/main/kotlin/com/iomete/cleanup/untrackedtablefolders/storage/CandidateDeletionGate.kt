@@ -136,14 +136,14 @@ class CandidateDeletionGate {
             duringFolder: Boolean = false,
         ): FenceStop? {
             val startedAt = ticker.nanos()
-            val deadline = startedAt + maxAgeNanos
+            val deadline = startedAt + usableReadNanos
             val where = beforeFolder?.let { if (duringFolder) " during the deletion of folder=$it" else " before folder=$it" }.orEmpty()
 
             fun tooSlow(timedOut: CallTimedOutException?): FenceStop =
                 FenceStop(
                     FenceStopCause.RECHECK_TOO_SLOW,
                     if (timedOut?.started == true) {
-                        "the ownership recheck$where did not finish within the ${limitText()} limit"
+                        "the ownership recheck$where did not finish within the ${text(Duration.ofNanos(usableReadNanos))} a read may use of the ${limitText()} limit"
                     } else {
                         "the ownership recheck$where took ${Duration.ofNanos(ticker.nanos() - startedAt).seconds} s, more than the ${text(Duration.ofNanos(usableReadNanos))} a read may use of the ${limitText()} limit"
                     },
@@ -227,6 +227,7 @@ class CandidateDeletionGate {
                     FenceStop(
                         FenceStopCause.CLAIMED_DURING_DELETION,
                         "ownership read again during the deletion of folder=$folderPath protects it (folder_kept_${decision.reason.code})",
+                        keptReason = decision.reason,
                     )
             }
         }

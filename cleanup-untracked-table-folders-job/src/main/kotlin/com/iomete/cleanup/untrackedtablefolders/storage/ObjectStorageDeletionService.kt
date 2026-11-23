@@ -353,9 +353,14 @@ class ObjectStorageDeletionService {
         if (objects.distinctBy { it.relativeKey }.size != objects.size) {
             return stop(FolderDeletionOutcome.KEPT, keptReason = FenceKeepReason.KEY_NOT_ADDRESSABLE)
         }
+        // A folder claimed before its first delete is kept, as at the check before listing; after one, the run stops.
+        fun fenceStop(found: FenceStop): FolderDeletionResult =
+            found.keptReason?.takeIf { deleted.isEmpty() }?.let { stop(FolderDeletionOutcome.KEPT, keptReason = it) }
+                ?: stop(FolderDeletionOutcome.PARTIAL_STOPPED, stop = found)
+
         val paths = ArrayList<Path>(objects.size)
         for (listed in objects) {
-            fence.beforeNextObject()?.let { return stop(FolderDeletionOutcome.PARTIAL_STOPPED, stop = it) }
+            fence.beforeNextObject()?.let { return fenceStop(it) }
             val path =
                 try {
                     FolderObjectListing.objectPath(folder, listed.relativeKey)
@@ -379,7 +384,7 @@ class ObjectStorageDeletionService {
         objects.forEachIndexed { index, listed ->
             val key = listed.relativeKey
             val path = paths[index]
-            fence.beforeNextObject()?.let { return stop(FolderDeletionOutcome.PARTIAL_STOPPED, stop = it) }
+            fence.beforeNextObject()?.let { return fenceStop(it) }
 
             val current =
                 when (val status = status(catalog, fileSystem, path, fence)) {

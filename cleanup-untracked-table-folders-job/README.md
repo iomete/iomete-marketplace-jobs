@@ -632,10 +632,12 @@ The job reads ownership again when the last read started more than 4 minutes ago
 limit minus twice the 30-second start margin, so the status read before the next delete still fits.
 It checks this before each later folder, and inside a folder before each status read of an object or
 directory. A read inside a folder checks that folder again, as steps 2 and 3 below do. If the folder
-is now protected, deletion stops with `claimed_during_deletion`. The objects deleted before stay
-deleted, and the rest stay in `remaining`. A read that takes more than 2.5 minutes, half the limit,
-stops deletion with `recheck_too_slow`. It would leave little time to delete, and the next read would
-come soon after. The job measures this age on a clock that a change of the system time cannot move. A
+is now protected and nothing in it was deleted yet, it is kept with the same reason as before its
+listing, and the job goes on with the next folder. If some of its objects were already deleted,
+deletion stops with `claimed_during_deletion`. Those objects stay deleted, and the rest stay in
+`remaining`. A read that takes more than 2.5 minutes, half the limit, stops deletion with
+`recheck_too_slow`, and the job waits for a read no longer than that. A longer read would leave little
+time to delete, and the next read would come soon after. The job measures this age on a clock that a change of the system time cannot move. A
 table created in a candidate folder after the last read is not seen before deletion when it is in
 another database, or has another name than the folder. See [Time limit](#time-limit) for how long that
 window lasts.
@@ -743,8 +745,8 @@ The job also stops when a check that the next delete needs cannot be done. The r
 | `other_storage_incomplete` | An ownership read of other databases, catalogs or tables failed, or found storage it could not establish, such as an unresolved table. |
 | `own_database_recheck_failed` | The tables of this database could not be read again. |
 | `own_tables_unresolved` | A table of this database could not be resolved to a storage location at an ownership read. |
-| `recheck_too_slow` | An ownership read took longer than 2.5 minutes, half the 5-minute limit. A read still running at 5 minutes is not waited for, and its result is ignored. |
-| `claimed_during_deletion` | Ownership read again in the middle of a folder protects that folder. The objects deleted before stay deleted, and the rest stay in `remaining`. |
+| `recheck_too_slow` | An ownership read took longer than 2.5 minutes, half the 5-minute limit. A read still running at 2.5 minutes is not waited for, and its result is ignored. |
+| `claimed_during_deletion` | Ownership read again in the middle of a folder protects that folder after some of its objects were deleted. Those stay deleted, and the rest stay in `remaining`. Before the first delete, the folder is kept instead. |
 | `name_probe_failed` | The lookup of a table named like the folder failed, found a location or write path with no scheme and bucket, or found a table whose storage cannot be established. |
 | `snapshot_expired_during_deletion` | The ownership read became more than 5 minutes old while a folder was being deleted, including while its empty directories were removed, or less than 30 seconds of the 5 minutes were left before the next delete. |
 | `read_timed_out` | A storage or catalog read needed before the next delete was still running when the ownership read reached its 5-minute limit, or a delete or read was not started because no time was left. The job stopped waiting and ignored the result. |
@@ -786,7 +788,7 @@ See [Versioned buckets](#versioned-buckets).
 
 These waits are bounded this way:
 
-- the ownership read, and the read of this database's tables;
+- the ownership read, and the read of this database's tables, for at most 2.5 minutes from the start of that read;
 - the lookup of a table named like the folder;
 - the listing before deletion, and every status read of an object;
 - every object delete;
