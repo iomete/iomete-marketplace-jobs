@@ -322,6 +322,7 @@ class OperationalIntegrityFlowTest {
         return flow
     }
 
+    // Fails the first final row of the database, written after its deletions; intent rows are written as usual.
     private fun failFirstAuditWriteFor(
         flow: CleanupFlowHarness,
         database: String,
@@ -329,11 +330,15 @@ class OperationalIntegrityFlowTest {
         var failed = false
         every { flow.service.cleanupAuditTableService.writeAuditRecord(any()) } answers {
             val record = firstArg<CleanupAuditRecord>()
-            if (record.databaseName == database && !failed) {
-                failed = true
-                throw IllegalStateException("audit table unavailable")
+            if (record.status == "INTENT") {
+                flow.intentRecords += record
+            } else {
+                if (record.databaseName == database && !failed) {
+                    failed = true
+                    throw IllegalStateException("audit table unavailable")
+                }
+                flow.auditRecords += record
             }
-            flow.auditRecords += record
         }
     }
 }

@@ -1,8 +1,11 @@
 package com.iomete.cleanup.untrackedtablefolders.logging
 
+import com.iomete.cleanup.untrackedtablefolders.audit.CONFIRMATION_WINDOW
 import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
 import com.iomete.cleanup.untrackedtablefolders.audit.OwnershipChecks
 import com.iomete.cleanup.untrackedtablefolders.candidate.HeldFolders
+import com.iomete.cleanup.untrackedtablefolders.candidate.StorageHoldReason
+import com.iomete.cleanup.untrackedtablefolders.candidate.StorageHolds
 import com.iomete.cleanup.untrackedtablefolders.config.DELETION_MIN_AGE_HOURS
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.DeletionFenceReport
@@ -44,6 +47,7 @@ data class CleanupSummary(
     val wouldBeHeldByDeletionFloorPaths: List<String> = emptyList(),
     val deletionFence: DeletionFenceReport = DeletionFenceReport(),
     val tooNewPaths: List<String> = emptyList(),
+    val storageHolds: StorageHolds = StorageHolds.NONE,
 )
 
 data class NoVerifiedLocationSummary(
@@ -216,7 +220,7 @@ class CleanupSummaryLogger {
                 summary.activeTableLocations.any { runCatching { StoragePathUtils.overlaps(folder, it) }.getOrDefault(false) }
             }
         val inspectedFolderPaths = summary.inspectionOutcomes.values.flatten().toSet() + summary.tooNewPaths
-        val heldFolders = HeldFolders.of(summary.inspectionOutcomes, summary.tooNewPaths, summary.deletionFence)
+        val heldFolders = HeldFolders.of(summary.inspectionOutcomes, summary.tooNewPaths, summary.deletionFence, summary.storageHolds)
         val otherSkippedFolderPaths =
             summary.storageFolderPaths - tableFolderPaths.toSet() - unmatchedFolderSet - inspectedFolderPaths
         // Several tables can share one location, so path lists are shown once each.
@@ -339,6 +343,20 @@ class CleanupSummaryLogger {
             add("  the $DELETION_MIN_AGE_HOURS-hour minimum age of deletion mode. A deletion run now would keep them.")
             add("")
             addListOrNone(summary.wouldBeHeldByDeletionFloorPaths)
+        }
+
+        if (summary.storageHolds.pathsByReason.isNotEmpty()) {
+            add("")
+            add("FOLDERS HELD BY STORAGE CHECKS")
+            add("")
+            add("  These folders passed every ownership and age check, but what is stored in them, or how")
+            add("  long earlier runs have seen them unchanged, does not show they are safe to delete.")
+            summary.storageHolds.pathsByReason.forEach { (reason, paths) ->
+                add("")
+                add("  ${reason.code}: ${storageHoldExplanation(reason)}")
+                add("")
+                addListOrNone(paths)
+            }
         }
 
         if (heldFolders.count > 0) {
@@ -637,6 +655,29 @@ class CleanupSummaryLogger {
                     "A table of another database or catalog could not be resolved to its storage, so its files",
                     "could be in any folder. The job log names the table.",
                 )
+            DeletionBlockReason.DELETION_INTENT_NOT_RECORDED ->
+                listOf(
+                    "The row that names the folders about to be deleted could not be written or read back, so",
+                    "later runs could not tell that this run may have deleted them. The WARN log has the details.",
+                )
+        }
+
+    private fun storageHoldExplanation(reason: StorageHoldReason): String =
+        when (reason) {
+            StorageHoldReason.INSPECTION_INCOMPLETE -> "the folder's contents or fingerprint are missing from the inspection."
+            StorageHoldReason.METADATA_VIEW -> "a metadata file describes a view, not a table."
+            StorageHoldReason.METADATA_UNREADABLE -> "a metadata file could not be read or parsed. See the WARN log."
+            StorageHoldReason.METADATA_NO_UUID -> "a metadata file has no table UUID."
+            StorageHoldReason.METADATA_LOCATION_MISMATCH -> "a metadata file names a table location other than this folder."
+            StorageHoldReason.DATA_ONLY_UNKNOWN_PROVENANCE ->
+                "plain Spark output with no table metadata. A table or job may still read it by path."
+            StorageHoldReason.DATA_ONLY_NOT_PLAIN_OUTPUT ->
+                "files with no table metadata that are neither commit scratch nor plain Spark output."
+            StorageHoldReason.CONFIRMATION_NO_JOB_ID -> "the run has no job id, so no earlier run can confirm the folder."
+            StorageHoldReason.CONFIRMATION_HISTORY_UNREADABLE -> "earlier audit rows could not be read or trusted. See the WARN log."
+            StorageHoldReason.CONFIRMATION_PATH_NOT_EXACT -> "the path cannot be stored exactly in the audit table, so it cannot be matched."
+            StorageHoldReason.AWAITING_CONFIRMATION ->
+                "earlier runs of this job have not yet seen the folder unchanged for ${CONFIRMATION_WINDOW.toHours()} hours."
         }
 
     private fun MutableList<String>.addListOrNone(values: List<String>) {

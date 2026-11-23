@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.audit
 
 import com.iomete.cleanup.untrackedtablefolders.candidate.HeldFolders
+import com.iomete.cleanup.untrackedtablefolders.candidate.StorageHolds
 import com.iomete.cleanup.untrackedtablefolders.config.DELETION_MIN_AGE_HOURS
 import com.iomete.cleanup.untrackedtablefolders.logging.SafeText
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
@@ -205,6 +206,9 @@ class CleanupAuditDiagnosticDetailsBuilder {
             .toMap()
 
     fun tooNewDetails(tooNewPaths: List<String>): Map<String, String> = countedPathSample(HeldFolders.TOO_NEW, tooNewPaths).toMap()
+
+    fun storageHoldDetails(holds: StorageHolds): Map<String, String> =
+        holds.pathsByReason.entries.flatMap { (reason, paths) -> countedPathSample(reason.code, paths) }.toMap()
 
     // One place for every reason a folder with no verified owner was kept; each reason's own keys list the folders.
     fun heldFolderDetails(held: HeldFolders): Map<String, String> =

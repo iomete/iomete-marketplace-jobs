@@ -27,6 +27,7 @@ data class SizeStatsBatch(
     val absentFolderPaths: Set<String> = emptySet(),
     val tooManyObjectsFolderPaths: Set<String> = emptySet(),
     val fingerprintsByFolder: Map<String, FolderFingerprint> = emptyMap(),
+    val layoutsByFolder: Map<String, FolderLayout> = emptyMap(),
 )
 
 // Exact-key deletion sends about four requests per object, one object at a time, and needs the whole key list in
@@ -169,6 +170,7 @@ class ObjectStorageDiscoveryService {
             val absentFolderPaths = linkedSetOf<String>()
             val tooManyObjectsFolderPaths = linkedSetOf<String>()
             val fingerprintsByFolder = linkedMapOf<String, FolderFingerprint>()
+            val layoutsByFolder = linkedMapOf<String, FolderLayout>()
 
             sortedFolderPaths.forEach { folderPath ->
                 logger.info("Collecting size statistics for candidate folder: $folderPath")
@@ -194,6 +196,7 @@ class ObjectStorageDiscoveryService {
                             )
                             statsByFolder[folderPath] = folderStats
                             fingerprintsByFolder[folderPath] = listing.fingerprint
+                            layoutsByFolder[folderPath] = FolderLayout.of(listing.objects)
                         }
                     }
                 } catch (th: CatalogStorageOperationException) {
@@ -208,8 +211,67 @@ class ObjectStorageDiscoveryService {
                 }
             }
 
-            SizeStatsBatch(statsByFolder, failures, absentFolderPaths, tooManyObjectsFolderPaths, fingerprintsByFolder)
+            SizeStatsBatch(statsByFolder, failures, absentFolderPaths, tooManyObjectsFolderPaths, fingerprintsByFolder, layoutsByFolder)
         }
+    }
+
+    /**
+     * Reads the head of every metadata file of each folder, in key order, and stops a folder at its first file that
+     * holds it. A file that cannot be opened or parsed holds its folder as [MetadataVerdict.UNREADABLE].
+     */
+    fun inspectMetadata(
+        catalog: String,
+        metadataKeysByFolder: Map<String, List<String>>,
+    ): Map<String, MetadataVerdict> {
+        if (metadataKeysByFolder.isEmpty()) {
+            return emptyMap()
+        }
+        val verdicts = linkedMapOf<String, MetadataVerdict>()
+        metadataKeysByFolder.keys.sorted().groupBy { Path(it).toUri().let { uri -> "${uri.scheme}://${uri.authority}" } }.values.forEach { folders ->
+            try {
+                catalogFileSystemProvider.withFileSystem(catalog, "read table metadata", folders) { fileSystem ->
+                    folders.forEach { folder -> verdicts[folder] = folderVerdict(catalog, fileSystem, folder, metadataKeysByFolder.getValue(folder)) }
+                }
+            } catch (th: IllegalStateException) {
+                if (th !is CatalogStorageOperationException && th !is CatalogStorageConfigurationException) {
+                    throw th
+                }
+                logger.warn("Could not read table metadata of ${folders.size} candidate folder(s); they are kept: paths=$folders", th)
+                folders.forEach { verdicts.putIfAbsent(it, MetadataVerdict.UNREADABLE) }
+            }
+        }
+        return verdicts
+    }
+
+    private fun folderVerdict(
+        catalog: String,
+        fileSystem: FileSystem,
+        folderPath: String,
+        metadataKeys: List<String>,
+    ): MetadataVerdict {
+        if (metadataKeys.isEmpty()) {
+            logger.warn("Candidate folder has a table version hint but no metadata file to read; it is kept: path=$folderPath")
+            return MetadataVerdict.UNREADABLE
+        }
+        val folder = FolderObjectListing.folderPrefix(folderPath)
+        for (key in metadataKeys) {
+            val verdict =
+                try {
+                    catalogFileSystemProvider.runOperation(catalog, "read table metadata", "$folder/$key") {
+                        fileSystem.open(FolderObjectListing.objectPath(folder, key)).use { input ->
+                            MetadataHead.verdict(input, FolderLayout.isGzipMetadataFile(key.substringAfterLast('/')), folderPath)
+                        }
+                    }
+                } catch (th: CatalogStorageOperationException) {
+                    logger.warn("Could not read table metadata file of candidate folder; it is kept: path=$folderPath, key=$key", th)
+                    MetadataVerdict.UNREADABLE
+                }
+            if (verdict != MetadataVerdict.OWN_TABLE) {
+                logger.warn("Keeping candidate folder because of its table metadata: path=$folderPath, key=$key, reason=${verdict.code}")
+                return verdict
+            }
+        }
+        return MetadataVerdict.OWN_TABLE
     }
 
     // Returns null only when a second lookup also finds nothing; any other answer keeps the folder a failure.

@@ -567,6 +567,9 @@ class CleanupAuditRecorderTest {
                 Instant.EPOCH, emptyList(), emptyList(), null, ownershipChecks = allRead,
             )
         }
+        recorder.recordDeletionIntent(
+            "run", Instant.EPOCH, "example_catalog", "analytics", db, db, candidates, Instant.EPOCH, emptyList(), allRead, StorageEvidence.NONE,
+        )
         recorder.recordOwnershipUnverified(
             "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 2, listOf("example_catalog.analytics.t2"), tables, folders,
             candidates, Instant.EPOCH, emptyList(), ownershipChecks = allRead,
@@ -591,8 +594,8 @@ class CleanupAuditRecorderTest {
 
         assertEquals(
             listOf(
-                "SUCCESS", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "SKIPPED", "FAILED", "FAILED", "SKIPPED", "SKIPPED",
-                "SKIPPED", "SKIPPED",
+                "SUCCESS", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "INTENT", "BLOCKED", "SKIPPED", "FAILED", "FAILED",
+                "SKIPPED", "SKIPPED", "SKIPPED", "SKIPPED",
             ),
             records.map { it.status },
         )
@@ -778,7 +781,7 @@ class CleanupAuditRecorderTest {
         listOf(deletionRows to (72L to "24"), clampedRows to (72L to "0"), longerRows to (100L to "100"), dryRunRows to (0L to "0"))
             .forEach { (rows, expected) ->
                 val (olderThanHours, configured) = expected
-                assertEquals(13, rows.size)
+                assertEquals(15, rows.size)
                 rows.forEach { row ->
                     assertEquals(olderThanHours, row.olderThanHours, row.statusReason)
                     assertEquals(configured, row.diagnosticDetails["configured_older_than_hours"], row.statusReason)
@@ -930,6 +933,9 @@ class CleanupAuditRecorderTest {
                 Instant.EPOCH, emptyList(), emptyList(), null,
             )
         }
+        rowRecorder.recordDeletionIntent(
+            "run", Instant.EPOCH, "example_catalog", "analytics", db, db, candidates, Instant.EPOCH, emptyList(), OwnershipChecks(), StorageEvidence.NONE,
+        )
         rowRecorder.recordOwnershipUnverified(
             "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 2, listOf("example_catalog.analytics.t2"), tables, folders,
             candidates, Instant.EPOCH, emptyList(),
