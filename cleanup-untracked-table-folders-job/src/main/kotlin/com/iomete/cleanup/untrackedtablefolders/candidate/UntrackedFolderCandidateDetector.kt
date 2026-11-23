@@ -1,11 +1,11 @@
 package com.iomete.cleanup.untrackedtablefolders.candidate
 
+import com.iomete.cleanup.untrackedtablefolders.logging.SafeLogger
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateFolderStatistics
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageFolder
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import jakarta.enterprise.context.ApplicationScoped
-import org.jboss.logging.Logger
 import java.time.Instant
 
 sealed interface StorageFolderReconciliation {
@@ -21,6 +21,15 @@ sealed interface StorageFolderReconciliation {
     ) : StorageFolderReconciliation
 }
 
+/** The folders that passed the age check, and the folders it kept out, by reason. */
+data class AgeCutoffResult(
+    val reconciliation: StorageFolderReconciliation,
+    /** Folders whose inspection gave no usable age, by outcome. */
+    val inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>>,
+    /** Folders whose newest object is newer than the cutoff. */
+    val tooNewPaths: List<String>,
+)
+
 class TooManyCandidateFoldersException(
     val candidateCount: Int,
     val maxCandidateFolders: Int,
@@ -31,7 +40,7 @@ class TooManyCandidateFoldersException(
 
 @ApplicationScoped
 class UntrackedFolderCandidateDetector {
-    private val logger = Logger.getLogger(UntrackedFolderCandidateDetector::class.java)
+    private val logger = SafeLogger.getLogger(UntrackedFolderCandidateDetector::class.java)
 
     fun detectCandidates(
         storageFolders: List<StorageFolder>,
@@ -119,8 +128,9 @@ class UntrackedFolderCandidateDetector {
         reconciliation: StorageFolderReconciliation,
         folderStatistics: CandidateFolderStatistics,
         cutoffTimeMillis: Long,
-    ): StorageFolderReconciliation {
+    ): AgeCutoffResult {
         val skipReasonCounts = mutableMapOf<CandidateSkipReason, Int>()
+        val tooNewPaths = mutableListOf<String>()
 
         val oldEnoughFolders =
             reconciliation.folders.filter { storageFolder ->
@@ -129,6 +139,9 @@ class UntrackedFolderCandidateDetector {
                 val skipReason =
                     ageSkipReason(folderStatistics.outcome(storageFolder.path), newestObjectModificationTimeMillis, cutoffTimeMillis)
 
+                if (skipReason == CandidateSkipReason.TOO_NEW) {
+                    tooNewPaths += storageFolder.path
+                }
                 if (skipReason != null) {
                     skipReasonCounts.merge(skipReason, 1, Int::plus)
                     logSkippedFolder(
@@ -151,13 +164,18 @@ class UntrackedFolderCandidateDetector {
             reasons = AGE_SKIP_REASONS,
         )
 
-        return when (reconciliation) {
-            is StorageFolderReconciliation.DeletionEligible ->
-                StorageFolderReconciliation.DeletionEligible(oldEnoughFolders)
+        return AgeCutoffResult(
+            reconciliation =
+                when (reconciliation) {
+                    is StorageFolderReconciliation.DeletionEligible ->
+                        StorageFolderReconciliation.DeletionEligible(oldEnoughFolders)
 
-            is StorageFolderReconciliation.OwnershipUnverified ->
-                reconciliation.copy(folders = oldEnoughFolders)
-        }
+                    is StorageFolderReconciliation.OwnershipUnverified ->
+                        reconciliation.copy(folders = oldEnoughFolders)
+                },
+            inspectionOutcomes = folderStatistics.folderPathsByOutcome(reconciliation.folders.map { it.path }),
+            tooNewPaths = tooNewPaths.sorted(),
+        )
     }
 
     private fun ageSkipReason(
@@ -170,6 +188,7 @@ class UntrackedFolderCandidateDetector {
             CandidateInspectionOutcome.STATISTICS_UNAVAILABLE -> CandidateSkipReason.STATISTICS_UNAVAILABLE
             CandidateInspectionOutcome.EMPTY_FOLDER -> CandidateSkipReason.EMPTY_FOLDER
             CandidateInspectionOutcome.UNKNOWN_AGE -> CandidateSkipReason.UNKNOWN_AGE
+            CandidateInspectionOutcome.TOO_MANY_OBJECTS -> CandidateSkipReason.TOO_MANY_OBJECTS
             null ->
                 when {
                     newestObjectModificationTimeMillis == null -> CandidateSkipReason.UNKNOWN_AGE
@@ -308,6 +327,7 @@ class UntrackedFolderCandidateDetector {
         EMPTY_FOLDER("empty_folder"),
         TOO_NEW("too_new"),
         UNKNOWN_AGE("unknown_age"),
+        TOO_MANY_OBJECTS("too_many_objects"),
     }
 
     private companion object {
@@ -318,6 +338,7 @@ class UntrackedFolderCandidateDetector {
                 CandidateSkipReason.EMPTY_FOLDER,
                 CandidateSkipReason.TOO_NEW,
                 CandidateSkipReason.UNKNOWN_AGE,
+                CandidateSkipReason.TOO_MANY_OBJECTS,
             )
 
         val SENTINEL_FOLDER_PREFIXES = setOf(

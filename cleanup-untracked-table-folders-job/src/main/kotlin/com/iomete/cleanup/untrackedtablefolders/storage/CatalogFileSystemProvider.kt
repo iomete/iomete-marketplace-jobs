@@ -1,16 +1,16 @@
 package com.iomete.cleanup.untrackedtablefolders.storage
 
+import com.iomete.cleanup.untrackedtablefolders.logging.SafeLogger
 import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
-import org.jboss.logging.Logger
 
 @ApplicationScoped
 class CatalogFileSystemProvider {
-    private val logger = Logger.getLogger(CatalogFileSystemProvider::class.java)
+    private val logger = SafeLogger.getLogger(CatalogFileSystemProvider::class.java)
 
     @Inject
     lateinit var sparkSessionProvider: SparkSessionProvider

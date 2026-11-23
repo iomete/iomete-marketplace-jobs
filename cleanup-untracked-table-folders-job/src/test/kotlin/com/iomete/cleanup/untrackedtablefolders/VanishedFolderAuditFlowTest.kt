@@ -60,9 +60,10 @@ class VanishedFolderAuditFlowTest {
     fun `a folder that disappears during deletion reaches the audit row as folder_not_found_at_deletion`() {
         putFolder("$DATABASE_LOCATION/orphan", "part-0.parquet")
         putFolder("$DATABASE_LOCATION/racing", "part-0.parquet")
-        InMemoryS3FileSystem.beforeDelete = { target ->
-            if (target == "$DATABASE_LOCATION/racing") {
-                InMemoryS3FileSystem.store(ENDPOINT).keys.removeIf { it == target || it.startsWith("$target/") }
+        // Inspected (first listing), then removed before the listing that precedes deletion.
+        InMemoryS3FileSystem.afterListFiles = { root, call ->
+            if (root == "$DATABASE_LOCATION/racing" && call == 1) {
+                InMemoryS3FileSystem.store(ENDPOINT).keys.removeIf { it == root || it.startsWith("$root/") }
             }
         }
         val flow = flow()
@@ -80,6 +81,32 @@ class VanishedFolderAuditFlowTest {
         assertEquals("$DATABASE_LOCATION/racing", record.diagnosticDetails["folder_not_found_at_deletion_paths_sample"])
         assertEquals("false", record.diagnosticDetails["folder_not_found_at_deletion_paths_truncated"])
         assertFalse(record.diagnosticDetails.containsKey("folder_not_found_count"))
+    }
+
+    @Test
+    fun `an object that disappears after the listing before deletion stops deletion and is not reported as deleted`() {
+        putFolder("$DATABASE_LOCATION/orphan", "part-0.parquet")
+        putFolder("$DATABASE_LOCATION/racing", "part-0.parquet", "part-1.parquet")
+        putFolder("$DATABASE_LOCATION/zz_orphan", "part-0.parquet")
+        // The first status read checks every key before the first delete; the object goes right before the second.
+        InMemoryS3FileSystem.beforeGetFileStatus = { target ->
+            if (target == "$DATABASE_LOCATION/racing/part-0.parquet" && InMemoryS3FileSystem.getFileStatusCalls[target] == 2) {
+                InMemoryS3FileSystem.store(ENDPOINT).remove(target)
+            }
+        }
+        val flow = flow()
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("FAILED", record.status)
+        assertEquals("deletion_failed", record.statusReason)
+        assertEquals(listOf("$DATABASE_LOCATION/orphan"), record.deletedFolders)
+        assertEquals("$DATABASE_LOCATION/racing", record.diagnosticDetails["deletion_failed_folder_path"])
+        assertTrue(record.errorMessage.orEmpty().contains("folder $DATABASE_LOCATION/racing changed during deletion: 0 of 2 listed object(s) deleted, 1 kept"))
+        assertTrue(flow.objectExists("$DATABASE_LOCATION/racing/part-1.parquet"))
+        assertTrue(flow.objectExists("$DATABASE_LOCATION/zz_orphan/part-0.parquet"))
+        assertFalse(record.diagnosticDetails.containsKey("folder_not_found_at_deletion_count"))
     }
 
     private fun flow(): CleanupFlowHarness =

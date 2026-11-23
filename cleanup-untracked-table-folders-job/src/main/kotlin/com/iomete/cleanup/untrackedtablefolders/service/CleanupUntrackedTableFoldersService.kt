@@ -4,6 +4,7 @@ import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecorder
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditTableService
 import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
 import com.iomete.cleanup.untrackedtablefolders.audit.OwnershipChecks
+import com.iomete.cleanup.untrackedtablefolders.candidate.HeldFolders
 import com.iomete.cleanup.untrackedtablefolders.candidate.StorageFolderReconciliation
 import com.iomete.cleanup.untrackedtablefolders.candidate.TooManyCandidateFoldersException
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
@@ -12,17 +13,25 @@ import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredTable
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
+import com.iomete.cleanup.untrackedtablefolders.config.DELETION_MIN_AGE_HOURS
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.CleanupSummaryLogger
 import com.iomete.cleanup.untrackedtablefolders.logging.NoVerifiedLocationSummary
+import com.iomete.cleanup.untrackedtablefolders.logging.SafeLogger
+import com.iomete.cleanup.untrackedtablefolders.logging.SafeText
 import com.iomete.cleanup.untrackedtablefolders.logging.TooManyFoldersSummary
 import com.iomete.cleanup.untrackedtablefolders.logging.UnresolvedTableDetail
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionResult
+import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateSizeStatCollector
 import com.iomete.cleanup.untrackedtablefolders.storage.CleanupRootListing
+import com.iomete.cleanup.untrackedtablefolders.storage.DeletionFence
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
+import com.iomete.cleanup.untrackedtablefolders.storage.FenceKeepReason
+import com.iomete.cleanup.untrackedtablefolders.storage.FenceStopCause
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
+import com.iomete.cleanup.untrackedtablefolders.storage.OtherStorageRecheck
 import com.iomete.cleanup.untrackedtablefolders.storage.PartialDeletionException
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootOutcome
@@ -38,12 +47,11 @@ import jakarta.inject.Inject
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
-import org.jboss.logging.Logger
 
 @ApplicationScoped
 class CleanupUntrackedTableFoldersService {
 
-    private val logger = Logger.getLogger(CleanupUntrackedTableFoldersService::class.java)
+    private val logger = SafeLogger.getLogger(CleanupUntrackedTableFoldersService::class.java)
     @Inject lateinit var config: ApplicationConfig
     @Inject lateinit var catalogDiscoveryService: CatalogDiscoveryService
     @Inject lateinit var objectStorageDiscoveryService: ObjectStorageDiscoveryService
@@ -61,6 +69,13 @@ class CleanupUntrackedTableFoldersService {
     fun run() {
 
         logger.info("Loaded cleanup config: $config")
+        config.ageFloorWarning()?.let { logger.warn(it) }
+        if (config.dryRun && config.olderThanHours < DELETION_MIN_AGE_HOURS) {
+            logger.info(
+                "Dry run uses older_than_hours=${config.olderThanHours} as configured. Deletion mode uses at least " +
+                    "$DELETION_MIN_AGE_HOURS hours, so the folders it would keep are reported as would_be_held_by_deletion_floor."
+            )
+        }
         val runId = UUID.randomUUID().toString()
         logger.info("Cleanup run id: $runId")
         cleanupAuditTableService.logRuntimeIdentityEnvVars()
@@ -301,12 +316,15 @@ class CleanupUntrackedTableFoldersService {
                         )
                     }
 
-                    val cutoffTime = Instant.now().minus(Duration.ofHours(config.olderThanHours))
+                    val olderThanHours = config.effectiveOlderThanHours()
+                    val ageCheckTime = Instant.now()
+                    val cutoffTime = ageCheckTime.minus(Duration.ofHours(olderThanHours))
 
                     val cutoffTimeMillis = cutoffTime.toEpochMilli()
+                    val deletionFloorCutoffMillis = ageCheckTime.minus(Duration.ofHours(DELETION_MIN_AGE_HOURS)).toEpochMilli()
 
                     logger.info(
-                        "Applying older_than_hours=${config.olderThanHours}; the newest object in a candidate folder must be at or before $cutoffTime"
+                        "Applying older_than_hours=$olderThanHours (configured ${config.olderThanHours}, deletion-mode minimum $DELETION_MIN_AGE_HOURS); the newest object in a candidate folder must be at or before $cutoffTime"
                     )
 
                     val unscannedTableLocations =
@@ -508,14 +526,16 @@ class CleanupUntrackedTableFoldersService {
                             candidateFolderPaths = detectedFolderPaths,
                         )
                     val candidateSizeStatsByFolder = candidateFolderStatistics.statsByFolder
-                    val inspectionOutcomes = candidateFolderStatistics.folderPathsByOutcome(detectedFolderPaths)
 
-                    val reconciliation =
+                    val ageCutoff =
                         untrackedFolderCandidateDetector.applyAgeCutoff(
                             reconciliation = detectedReconciliation,
                             folderStatistics = candidateFolderStatistics,
                             cutoffTimeMillis = cutoffTimeMillis,
                         )
+                    val reconciliation = ageCutoff.reconciliation
+                    val inspectionOutcomes = ageCutoff.inspectionOutcomes
+                    val tooNewPaths = ageCutoff.tooNewPaths
 
                     val unmatchedFolders = reconciliation.folders
                     logger.info(
@@ -530,6 +550,16 @@ class CleanupUntrackedTableFoldersService {
                         logger.info("Storage folder with no verified catalog owner: path=${folder.path}")
                     }
 
+                    // A dry run keeps the configured age, so it reports the folders that deletion mode would still keep.
+                    val wouldBeHeldByDeletionFloorPaths =
+                        if (config.dryRun) {
+                            unmatchedFolderPaths.filter { path ->
+                                candidateSizeStatsByFolder[path]?.newestObjectModificationTimeMillis?.let { it > deletionFloorCutoffMillis } ?: true
+                            }
+                        } else {
+                            emptyList()
+                        }
+
                     val firstBlockReason =
                         when {
                             reconciliation !is StorageFolderReconciliation.DeletionEligible -> null
@@ -540,50 +570,42 @@ class CleanupUntrackedTableFoldersService {
                         }
 
                     // The first read of other databases and catalogs is shared by the whole run, so another database can
-                    // claim a candidate folder before this one deletes. It is read again, unshared, right before deleting.
-                    val finalOtherStorage =
-                        if (
-                            firstBlockReason == null &&
-                            reconciliation is StorageFolderReconciliation.DeletionEligible &&
-                            reconciliation.folders.isNotEmpty() &&
-                            !config.dryRun
-                        ) {
-                            finalOtherStorageCheck(
-                                discoveredDatabase = discoveredDatabase,
-                                cleanupRoots = checkedRoots,
-                                firstReadPaths = otherDatabaseStorage.orEmpty() + otherTableStorage.paths.orEmpty(),
-                            )
-                        } else {
-                            null
-                        }
-                    val deletionBlockReason = firstBlockReason ?: finalOtherStorage?.blockReason
-                    val ownershipChecks =
+                    // claim a candidate folder before this one deletes. The deletion fence reads it again, unshared,
+                    // before the first delete, and again before a folder once that read is older than the snapshot limit.
+                    val rechecks = mutableListOf<OtherTableStorage>()
+
+                    fun ownershipChecksAfterRechecks(): OwnershipChecks =
                         firstReadChecks.copy(
-                            finalRecheck = finalOtherStorage?.paths != null,
-                            unreadableStorage = (firstReadChecks.unreadableStorage + finalOtherStorage?.unreadableStorage.orEmpty()).distinct(),
+                            finalRecheck = rechecks.firstOrNull()?.paths != null,
+                            unreadableStorage = (firstReadChecks.unreadableStorage + rechecks.flatMap { it.unreadableStorage }).distinct(),
                         )
-                    ownershipChecksForAudit = ownershipChecks
+
+                    fun logDeletionBlocked(
+                        reason: DeletionBlockReason,
+                        stage: String,
+                    ) {
+                        val detail =
+                            when (reason) {
+                                DeletionBlockReason.AUDIT_INTEGRITY_LOST -> "an audit write failed earlier in this run."
+                                DeletionBlockReason.CLEANUP_ROOT_HAS_NO_VISIBLE_TABLE ->
+                                    "no visible table is stored under storage scan location=${listedRootLocations.joinToString()}."
+                                DeletionBlockReason.OTHER_DATABASE_STORAGE_UNKNOWN ->
+                                    "the storage of other databases could not be established. Could not read: " +
+                                        "${ownershipChecksAfterRechecks().unreadableStorage}."
+                                DeletionBlockReason.OTHER_TABLE_UNRESOLVED ->
+                                    "these tables of other databases or catalogs could not be resolved to a storage location: " +
+                                        "${(rechecks.lastOrNull() ?: otherTableStorage).unresolvedTables}."
+                            }
+                        logger.warn(
+                            "Not deleting any folder for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}$stage: $detail"
+                        )
+                    }
 
                     val deletionResult =
                         when (reconciliation) {
                             is StorageFolderReconciliation.DeletionEligible ->
-                                if (deletionBlockReason != null) {
-                                    val detail =
-                                        when (deletionBlockReason) {
-                                            DeletionBlockReason.AUDIT_INTEGRITY_LOST -> "an audit write failed earlier in this run."
-                                            DeletionBlockReason.CLEANUP_ROOT_HAS_NO_VISIBLE_TABLE ->
-                                                "no visible table is stored under storage scan location=${listedRootLocations.joinToString()}."
-                                            DeletionBlockReason.OTHER_DATABASE_STORAGE_UNKNOWN ->
-                                                "the storage of other databases could not be established. Could not read: " +
-                                                    "${ownershipChecks.unreadableStorage}."
-                                            DeletionBlockReason.OTHER_TABLE_UNRESOLVED ->
-                                                "these tables of other databases or catalogs could not be resolved to a storage location: " +
-                                                    "${(finalOtherStorage ?: otherTableStorage).unresolvedTables}."
-                                        }
-                                    val stage = if (finalOtherStorage != null) " at the final check before deletion" else ""
-                                    logger.warn(
-                                        "Not deleting any folder for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}$stage: $detail"
-                                    )
+                                if (firstBlockReason != null) {
+                                    logDeletionBlocked(firstBlockReason, stage = "")
                                     CandidateDeletionResult()
                                 } else {
                                     try {
@@ -591,13 +613,32 @@ class CleanupUntrackedTableFoldersService {
                                             catalog = discoveredDatabase.catalog,
                                             database = discoveredDatabase.database,
                                             reconciliation = reconciliation,
-                                            excludedPaths = protectedPaths + finalOtherStorage?.paths.orEmpty(),
-                                        )
+                                            excludedPaths = protectedPaths,
+                                            fence =
+                                                DeletionFence(
+                                                    inspectionFingerprints = candidateFolderStatistics.fingerprintsByFolder,
+                                                    cutoffTimeMillis = cutoffTimeMillis,
+                                                ) {
+                                                    // Runs on the gate's worker thread and may outlive its wait, so the read is
+                                                    // recorded only when the gate accepts it.
+                                                    val read =
+                                                        finalOtherStorageCheck(
+                                                            discoveredDatabase = discoveredDatabase,
+                                                            cleanupRoots = checkedRoots,
+                                                            firstReadPaths =
+                                                                otherDatabaseStorage.orEmpty() + otherTableStorage.paths.orEmpty() +
+                                                                    rechecks.flatMap { it.paths.orEmpty() },
+                                                        )
+                                                    OtherStorageRecheck(read.paths, read.unresolvedTables) { rechecks += read }
+                                                },
+                                        ).let { it.copy(fence = it.fence.copy(ownershipRefreshCount = (rechecks.size - 1).coerceAtLeast(0))) }
                                     } catch (th: PartialDeletionException) {
                                         logger.error(
                                             "Deletion stopped for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: ${th.deletedPaths.size} folder(s) were deleted before the failure, deletedPaths=${th.deletedPaths}, failedPath=${th.failedPath}",
                                             th,
                                         )
+                                        val ownershipChecks = ownershipChecksAfterRechecks()
+                                        ownershipChecksForAudit = ownershipChecks
 
                                         recordAudit(database) {
                                             cleanupAuditRecorder.recordDeletionFailed(
@@ -626,27 +667,91 @@ class CleanupUntrackedTableFoldersService {
                                                 notFoundAtDeletionPaths = th.notFoundPaths,
                                                 error = th,
                                                 ownershipChecks = ownershipChecks,
+                                                deletionFence = th.fenceReport().copy(ownershipRefreshCount = (rechecks.size - 1).coerceAtLeast(0)),
+                                                tooNewPaths = tooNewPaths,
                                             )
                                         }
 
                                         return@forEach
+                                    } finally {
+                                        ownershipChecksForAudit = ownershipChecksAfterRechecks()
                                     }
                                 }
 
                             is StorageFolderReconciliation.OwnershipUnverified -> CandidateDeletionResult()
                         }
+                    val ownershipChecks = ownershipChecksAfterRechecks()
 
                     val deletedFolders = deletionResult.deletedPaths
+                    val fenceStop = deletionResult.fence.stop
 
-                    // No candidate overlapped the first read, so an overlap here is storage claimed since then. The
-                    // deletion gate skips these folders and logs the owner it found.
-                    val keptAtFinalCheckPaths =
-                        if (deletionBlockReason == null) {
-                            val finalPaths = finalOtherStorage?.paths.orEmpty()
-                            unmatchedFolderPaths.filter { folder -> finalPaths.any { StoragePathUtils.overlaps(folder, it) } }
-                        } else {
-                            emptyList()
+                    // Unknown other storage at a recheck before anything was deleted blocks the database as it would
+                    // at the first read. Any other stop with nothing deleted fails it as before.
+                    val blockedAtRecheck =
+                        rechecks.lastOrNull()?.blockReason?.takeIf {
+                            fenceStop != null && fenceStop.cause == FenceStopCause.OTHER_STORAGE_INCOMPLETE && fenceStop.error == null &&
+                                !deletionResult.deletedAnything
                         }
+                    if (fenceStop != null && !deletionResult.deletedAnything && blockedAtRecheck == null) {
+                        (fenceStop.error as? DatabaseNotFoundException)?.let { throw it }
+                        throw IllegalStateException(fenceStop.message, fenceStop.error)
+                    }
+                    blockedAtRecheck?.let { logDeletionBlocked(it, stage = " at the recheck before deletion") }
+
+                    if (fenceStop != null && blockedAtRecheck == null) {
+                        logger.error(
+                            "Deletion stopped at a safety recheck for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: ${deletedFolders.size} folder(s) were deleted before it, deletedPaths=$deletedFolders, partialFolder=${deletionResult.fence.partialFolder?.describe()}: ${fenceStop.message}",
+                            fenceStop.error,
+                        )
+
+                        recordAudit(database) {
+                            cleanupAuditRecorder.recordDeletionStopped(
+                                runId = runId,
+                                databaseStartTime = databaseStartTime,
+                                catalogName = discoveredDatabase.catalog,
+                                databaseName = discoveredDatabase.database,
+                                discoveredDatabaseLocation = discoveredDatabase.location,
+                                storageScanLocation = storageScanLocation,
+                                activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                activeTableLocations = activeTableLocations,
+                                storageFolderPaths = storageFolderPaths,
+                                candidateFolderPaths = unmatchedFolderPaths,
+                                candidateSizeStats = candidateSizeStats,
+                                deletedFolderPaths = deletedFolders,
+                                deletedSizeStats = candidateSizeStatCollector.sum(deletedFolders.mapNotNull { candidateSizeStatsByFolder[it] }),
+                                cutoffTime = cutoffTime,
+                                excludedPaths = effectiveExcludedPaths,
+                                unscannedTableLocations = unscannedTableLocations,
+                                scanPlan = scanPlan,
+                                inspectionOutcomes = inspectionOutcomes,
+                                notFoundAtDeletionPaths = deletionResult.notFoundPaths,
+                                error =
+                                    IllegalStateException(
+                                        "Deletion stopped at a safety recheck after ${deletedFolders.size} deleted folder(s)" +
+                                            deletionResult.fence.partialFolder?.let { ", with folder ${it.folderPath} partly deleted" }.orEmpty() +
+                                            ": ${fenceStop.message}",
+                                        fenceStop.error,
+                                    ),
+                                ownershipChecks = ownershipChecks,
+                                deletionFence = deletionResult.fence,
+                                tooNewPaths = tooNewPaths,
+                            )
+                        }
+
+                        return@forEach
+                    }
+                    val deletionBlockReason = firstBlockReason ?: blockedAtRecheck
+                    val keptAtFinalCheckPaths = deletionResult.fence.keptPaths[FenceKeepReason.CLAIMED].orEmpty()
+
+                    if (reconciliation is StorageFolderReconciliation.DeletionEligible) {
+                        warnWhenEveryCandidateIsHeld(
+                            catalog = discoveredDatabase.catalog,
+                            database = discoveredDatabase.database,
+                            detectedFolderPaths = detectedFolderPaths,
+                            heldFolders = HeldFolders.of(inspectionOutcomes, tooNewPaths, deletionResult.fence),
+                            gonePaths = inspectionOutcomes[CandidateInspectionOutcome.FOLDER_NOT_FOUND].orEmpty() + deletionResult.notFoundPaths,
+                        )
+                    }
 
                     val deletedSizeStats =
                         candidateSizeStatCollector.sum(deletedFolders.mapNotNull { candidateSizeStatsByFolder[it] })
@@ -686,6 +791,9 @@ class CleanupUntrackedTableFoldersService {
                             unresolvedTableDetails = unresolvedTableDetails,
                             keptAtFinalCheckPaths = keptAtFinalCheckPaths,
                             ownershipChecks = ownershipChecks,
+                            wouldBeHeldByDeletionFloorPaths = wouldBeHeldByDeletionFloorPaths,
+                            deletionFence = deletionResult.fence,
+                            tooNewPaths = tooNewPaths,
                         )
                     )
 
@@ -712,6 +820,9 @@ class CleanupUntrackedTableFoldersService {
                                         scanPlan = scanPlan,
                                         inspectionOutcomes = inspectionOutcomes,
                                         ownershipChecks = ownershipChecks,
+                                        wouldBeHeldByDeletionFloorPaths = wouldBeHeldByDeletionFloorPaths,
+                                        deletionFence = deletionResult.fence,
+                                        tooNewPaths = tooNewPaths,
                                     )
                                 }
                             } else {
@@ -738,6 +849,9 @@ class CleanupUntrackedTableFoldersService {
                                         notFoundAtDeletionPaths = deletionResult.notFoundPaths,
                                         keptAtFinalCheckPaths = keptAtFinalCheckPaths,
                                         ownershipChecks = ownershipChecks,
+                                        wouldBeHeldByDeletionFloorPaths = wouldBeHeldByDeletionFloorPaths,
+                                        deletionFence = deletionResult.fence,
+                                        tooNewPaths = tooNewPaths,
                                     )
                                 }
                             }
@@ -762,6 +876,8 @@ class CleanupUntrackedTableFoldersService {
                                     scanPlan = scanPlan,
                                     inspectionOutcomes = inspectionOutcomes,
                                     ownershipChecks = ownershipChecks,
+                                    wouldBeHeldByDeletionFloorPaths = wouldBeHeldByDeletionFloorPaths,
+                                    tooNewPaths = tooNewPaths,
                                 )
                             }
                     }
@@ -814,6 +930,25 @@ class CleanupUntrackedTableFoldersService {
                 "Deletion mode completed. Candidate folders were deleted only when they passed the configured safety checks."
             )
         }
+    }
+
+    // A folder that was gone is not held, and a database-level block is logged on its own, so this fires only when the
+    // per-folder holds alone leave nothing to delete.
+    private fun warnWhenEveryCandidateIsHeld(
+        catalog: String,
+        database: String,
+        detectedFolderPaths: List<String>,
+        heldFolders: HeldFolders,
+        gonePaths: List<String>,
+    ) {
+        if (heldFolders.count == 0 || (detectedFolderPaths - heldFolders.paths - gonePaths.toSet()).isNotEmpty()) {
+            return
+        }
+        logger.warn(
+            "None of the ${detectedFolderPaths.size} folder(s) with no verified catalog owner is eligible for deletion for " +
+                "catalog=$catalog, database=$database. Held by reason: ${heldFolders.countsText(", ")}." +
+                gonePaths.distinct().size.takeIf { it > 0 }?.let { " Already gone: $it." }.orEmpty()
+        )
     }
 
     // A database's location and REST namespace folder are where its tables go by default, not claims on
@@ -1102,7 +1237,7 @@ class CleanupUntrackedTableFoldersService {
                 )
         } catch (error: Exception) {
             logger.warn("Could not plan report-only storage roots for catalog=$catalog, database=$database", error)
-            ScanPlanReport(roots = emptyList(), uncoveredTableLocations = emptyList(), planningError = error.toString())
+            ScanPlanReport(roots = emptyList(), uncoveredTableLocations = emptyList(), planningError = SafeText.errorMessage(error, withClassName = true))
         }
     }
 
@@ -1190,8 +1325,8 @@ private fun MutableList<String>.unknown(reason: String): Nothing? {
     return null
 }
 
-// The class of the innermost cause, for example ConnectException. Messages stay in the WARN log, because they can
-// hold connection details.
+// The class of the innermost cause, for example ConnectException. Messages stay in the WARN log, sanitized, because
+// they can hold connection details.
 private fun rootCauseName(error: Throwable): String =
     generateSequence(error) { it.cause?.takeIf { cause -> cause !== it } }.take(MAX_CAUSE_DEPTH).last().javaClass.let {
         it.simpleName.ifBlank { it.name }
@@ -1233,8 +1368,8 @@ private class OtherStorageIndex(
 
 // The reads of one database under all of its cleanup roots, dropped when the database is done. The run-wide index
 // keeps only complete reads, so without this a table list with an unresolved table, or a database list where only
-// this database's location is unreadable, would be read again for the second root. The final check before deleting
-// still reads everything fresh.
+// this database's location is unreadable, would be read again for the second root. Each ownership read of the
+// deletion fence starts its own instance, so it reuses nothing from the first read or from an earlier fence read.
 private class DatabaseOtherStorageReads(
     private val source: OtherStorageReads,
 ) : OtherStorageReads {

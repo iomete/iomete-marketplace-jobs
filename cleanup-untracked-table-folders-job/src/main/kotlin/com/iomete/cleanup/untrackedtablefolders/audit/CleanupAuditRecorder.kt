@@ -1,7 +1,10 @@
 package com.iomete.cleanup.untrackedtablefolders.audit
 
+import com.iomete.cleanup.untrackedtablefolders.candidate.HeldFolders
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
+import com.iomete.cleanup.untrackedtablefolders.logging.SafeText
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
+import com.iomete.cleanup.untrackedtablefolders.storage.DeletionFenceReport
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.ScanPlanReport
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageSizeStats
@@ -121,6 +124,8 @@ class CleanupAuditRecorder {
         scanPlan: ScanPlanReport? = null,
         inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>> = emptyMap(),
         ownershipChecks: OwnershipChecks = OwnershipChecks(),
+        wouldBeHeldByDeletionFloorPaths: List<String> = emptyList(),
+        tooNewPaths: List<String> = emptyList(),
     ) {
         writeAuditRecord(
             runId = runId,
@@ -147,7 +152,9 @@ class CleanupAuditRecorder {
                     potentiallyUntrackedFolderPaths = potentiallyUntrackedFolderPaths,
                     unscannedTableLocations = unscannedTableLocations,
                 ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan) +
-                    auditDiagnosticDetailsBuilder.inspectionOutcomeDetails(inspectionOutcomes),
+                    auditDiagnosticDetailsBuilder.inspectionOutcomeDetails(inspectionOutcomes) +
+                    holdDetails(inspectionOutcomes, tooNewPaths, DeletionFenceReport()) +
+                    auditDiagnosticDetailsBuilder.wouldBeHeldByDeletionFloorDetails(wouldBeHeldByDeletionFloorPaths),
         )
     }
 
@@ -231,6 +238,9 @@ class CleanupAuditRecorder {
         notFoundAtDeletionPaths: List<String> = emptyList(),
         keptAtFinalCheckPaths: List<String> = emptyList(),
         ownershipChecks: OwnershipChecks = OwnershipChecks(),
+        wouldBeHeldByDeletionFloorPaths: List<String> = emptyList(),
+        deletionFence: DeletionFenceReport = DeletionFenceReport(),
+        tooNewPaths: List<String> = emptyList(),
     ) {
         val candidateFolderPathSet = candidateFolderPaths.toSet()
 
@@ -268,7 +278,10 @@ class CleanupAuditRecorder {
                 ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan) +
                     auditDiagnosticDetailsBuilder.inspectionOutcomeDetails(inspectionOutcomes) +
                     auditDiagnosticDetailsBuilder.notFoundAtDeletionDetails(notFoundAtDeletionPaths) +
-                    auditDiagnosticDetailsBuilder.keptAtFinalCheckDetails(keptAtFinalCheckPaths),
+                    auditDiagnosticDetailsBuilder.keptAtFinalCheckDetails(keptAtFinalCheckPaths) +
+                    auditDiagnosticDetailsBuilder.wouldBeHeldByDeletionFloorDetails(wouldBeHeldByDeletionFloorPaths) +
+                    auditDiagnosticDetailsBuilder.deletionFenceDetails(deletionFence) +
+                    holdDetails(inspectionOutcomes, tooNewPaths, deletionFence),
         )
     }
 
@@ -295,6 +308,119 @@ class CleanupAuditRecorder {
         notFoundAtDeletionPaths: List<String> = emptyList(),
         error: Throwable,
         ownershipChecks: OwnershipChecks = OwnershipChecks(),
+        deletionFence: DeletionFenceReport = DeletionFenceReport(),
+        tooNewPaths: List<String> = emptyList(),
+    ) {
+        writeDeletionEndedEarly(
+            statusReason = "deletion_failed",
+            runId = runId,
+            databaseStartTime = databaseStartTime,
+            catalogName = catalogName,
+            databaseName = databaseName,
+            discoveredDatabaseLocation = discoveredDatabaseLocation,
+            storageScanLocation = storageScanLocation,
+            activeTableCount = activeTableCount,
+            activeTableLocations = activeTableLocations,
+            storageFolderPaths = storageFolderPaths,
+            candidateFolderPaths = candidateFolderPaths,
+            candidateSizeStats = candidateSizeStats,
+            deletedFolderPaths = deletedFolderPaths,
+            deletedSizeStats = deletedSizeStats,
+            failedFolderPath = failedFolderPath,
+            cutoffTime = cutoffTime,
+            excludedPaths = excludedPaths,
+            unscannedTableLocations = unscannedTableLocations,
+            scanPlan = scanPlan,
+            inspectionOutcomes = inspectionOutcomes,
+            notFoundAtDeletionPaths = notFoundAtDeletionPaths,
+            error = error,
+            ownershipChecks = ownershipChecks,
+            deletionFence = deletionFence,
+            tooNewPaths = tooNewPaths,
+        )
+    }
+
+    // A safety recheck stopped deletion after folders, or objects of one folder, were already deleted.
+    fun recordDeletionStopped(
+        runId: String,
+        databaseStartTime: Instant,
+        catalogName: String,
+        databaseName: String,
+        discoveredDatabaseLocation: String?,
+        storageScanLocation: String,
+        activeTableCount: Long,
+        activeTableLocations: List<String>,
+        storageFolderPaths: List<String>,
+        candidateFolderPaths: List<String>,
+        candidateSizeStats: StorageSizeStats?,
+        deletedFolderPaths: List<String>,
+        deletedSizeStats: StorageSizeStats?,
+        cutoffTime: Instant,
+        excludedPaths: List<String>,
+        unscannedTableLocations: List<String>,
+        scanPlan: ScanPlanReport?,
+        inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>>,
+        notFoundAtDeletionPaths: List<String>,
+        error: Throwable,
+        ownershipChecks: OwnershipChecks,
+        deletionFence: DeletionFenceReport,
+        tooNewPaths: List<String>,
+    ) {
+        writeDeletionEndedEarly(
+            statusReason = "deletion_stopped_at_recheck",
+            runId = runId,
+            databaseStartTime = databaseStartTime,
+            catalogName = catalogName,
+            databaseName = databaseName,
+            discoveredDatabaseLocation = discoveredDatabaseLocation,
+            storageScanLocation = storageScanLocation,
+            activeTableCount = activeTableCount,
+            activeTableLocations = activeTableLocations,
+            storageFolderPaths = storageFolderPaths,
+            candidateFolderPaths = candidateFolderPaths,
+            candidateSizeStats = candidateSizeStats,
+            deletedFolderPaths = deletedFolderPaths,
+            deletedSizeStats = deletedSizeStats,
+            failedFolderPath = null,
+            cutoffTime = cutoffTime,
+            excludedPaths = excludedPaths,
+            unscannedTableLocations = unscannedTableLocations,
+            scanPlan = scanPlan,
+            inspectionOutcomes = inspectionOutcomes,
+            notFoundAtDeletionPaths = notFoundAtDeletionPaths,
+            error = error,
+            ownershipChecks = ownershipChecks,
+            deletionFence = deletionFence,
+            tooNewPaths = tooNewPaths,
+        )
+    }
+
+    private fun writeDeletionEndedEarly(
+        statusReason: String,
+        runId: String,
+        databaseStartTime: Instant,
+        catalogName: String,
+        databaseName: String,
+        discoveredDatabaseLocation: String?,
+        storageScanLocation: String,
+        activeTableCount: Long,
+        activeTableLocations: List<String>,
+        storageFolderPaths: List<String>,
+        candidateFolderPaths: List<String>,
+        candidateSizeStats: StorageSizeStats?,
+        deletedFolderPaths: List<String>,
+        deletedSizeStats: StorageSizeStats?,
+        failedFolderPath: String?,
+        cutoffTime: Instant,
+        excludedPaths: List<String>,
+        unscannedTableLocations: List<String>,
+        scanPlan: ScanPlanReport?,
+        inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>>,
+        notFoundAtDeletionPaths: List<String>,
+        error: Throwable,
+        ownershipChecks: OwnershipChecks,
+        deletionFence: DeletionFenceReport,
+        tooNewPaths: List<String>,
     ) {
         writeAuditRecord(
             runId = runId,
@@ -302,8 +428,8 @@ class CleanupAuditRecorder {
             catalogName = catalogName,
             databaseName = databaseName,
             status = STATUS_FAILED,
-            statusReason = "deletion_failed",
-            errorMessage = error.message ?: error::class.java.name,
+            statusReason = statusReason,
+            errorMessage = SafeText.errorMessage(error),
             discoveredDatabaseLocation = discoveredDatabaseLocation,
             storageScanLocation = storageScanLocation,
             activeTableCount = activeTableCount,
@@ -329,7 +455,9 @@ class CleanupAuditRecorder {
                     deletionFailedFolderPath = failedFolderPath,
                 ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan) +
                     auditDiagnosticDetailsBuilder.inspectionOutcomeDetails(inspectionOutcomes) +
-                    auditDiagnosticDetailsBuilder.notFoundAtDeletionDetails(notFoundAtDeletionPaths),
+                    auditDiagnosticDetailsBuilder.notFoundAtDeletionDetails(notFoundAtDeletionPaths) +
+                    auditDiagnosticDetailsBuilder.deletionFenceDetails(deletionFence) +
+                    holdDetails(inspectionOutcomes, tooNewPaths, deletionFence),
         )
     }
 
@@ -352,6 +480,9 @@ class CleanupAuditRecorder {
         scanPlan: ScanPlanReport?,
         inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>> = emptyMap(),
         ownershipChecks: OwnershipChecks = OwnershipChecks(),
+        wouldBeHeldByDeletionFloorPaths: List<String> = emptyList(),
+        deletionFence: DeletionFenceReport = DeletionFenceReport(),
+        tooNewPaths: List<String> = emptyList(),
     ) {
         writeAuditRecord(
             runId = runId,
@@ -379,7 +510,10 @@ class CleanupAuditRecorder {
                     candidateFolderPaths = candidateFolderPaths,
                     unscannedTableLocations = unscannedTableLocations,
                 ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan) +
-                    auditDiagnosticDetailsBuilder.inspectionOutcomeDetails(inspectionOutcomes),
+                    auditDiagnosticDetailsBuilder.inspectionOutcomeDetails(inspectionOutcomes) +
+                    auditDiagnosticDetailsBuilder.wouldBeHeldByDeletionFloorDetails(wouldBeHeldByDeletionFloorPaths) +
+                    auditDiagnosticDetailsBuilder.deletionFenceDetails(deletionFence) +
+                    holdDetails(inspectionOutcomes, tooNewPaths, deletionFence),
         )
     }
 
@@ -399,7 +533,7 @@ class CleanupAuditRecorder {
             databaseName = database,
             status = STATUS_SKIPPED,
             statusReason = "database_not_found",
-            errorMessage = error.message ?: error::class.java.name,
+            errorMessage = SafeText.errorMessage(error),
             ownershipChecks = ownershipChecks,
         )
     }
@@ -422,7 +556,7 @@ class CleanupAuditRecorder {
             databaseName = database,
             status = STATUS_FAILED,
             statusReason = "unexpected_error",
-            errorMessage = error.message ?: error::class.java.name,
+            errorMessage = SafeText.errorMessage(error),
             unresolvedTableCount = unresolvedTables.size.toLong(),
             excludedPaths = excludedPaths,
             ownershipChecks = ownershipChecks,
@@ -433,6 +567,14 @@ class CleanupAuditRecorder {
                     auditDiagnosticDetailsBuilder.unresolvedTableDetails(unresolvedTables),
         )
     }
+
+    private fun holdDetails(
+        inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>>,
+        tooNewPaths: List<String>,
+        deletionFence: DeletionFenceReport,
+    ): Map<String, String> =
+        auditDiagnosticDetailsBuilder.tooNewDetails(tooNewPaths) +
+            auditDiagnosticDetailsBuilder.heldFolderDetails(HeldFolders.of(inspectionOutcomes, tooNewPaths, deletionFence))
 
     private fun writeAuditRecord(
         runId: String,
@@ -461,30 +603,34 @@ class CleanupAuditRecorder {
         ownershipChecks: OwnershipChecks = OwnershipChecks(),
         diagnosticDetails: Map<String, String> = emptyMap(),
     ) {
+        // Every text value is made safe here, the one place rows are built. Names and paths keep their text in a form
+        // that reads back exactly (SafeText.path). A multi-line diagnostic value is checked line by line, so its lines
+        // stay separate; its entries were made safe when it was built, so this last pass keeps their escapes as is.
         cleanupAuditTableService.writeAuditRecord(
             CleanupAuditRecord(
                 runId = runId,
-                sparkAppId = cleanupAuditTableService.currentSparkAppId(),
-                runtimeComputeId = cleanupAuditTableService.currentRuntimeComputeId(),
-                runtimeComputeNamespace = cleanupAuditTableService.currentRuntimeComputeNamespace(),
-                runtimeDomain = cleanupAuditTableService.currentRuntimeDomain(),
-                runtimeUser = cleanupAuditTableService.currentRuntimeUser(),
-                externalJobId = cleanupAuditTableService.currentExternalJobId(),
-                platformStartedBy = cleanupAuditTableService.currentPlatformStartedBy(),
-                catalogName = catalogName,
-                databaseName = databaseName,
+                sparkAppId = cleanupAuditTableService.currentSparkAppId()?.let(SafeText::path),
+                runtimeComputeId = cleanupAuditTableService.currentRuntimeComputeId()?.let(SafeText::path),
+                runtimeComputeNamespace = cleanupAuditTableService.currentRuntimeComputeNamespace()?.let(SafeText::path),
+                runtimeDomain = cleanupAuditTableService.currentRuntimeDomain()?.let(SafeText::path),
+                runtimeUser = cleanupAuditTableService.currentRuntimeUser()?.let(SafeText::path),
+                externalJobId = cleanupAuditTableService.currentExternalJobId()?.let(SafeText::path),
+                platformStartedBy = cleanupAuditTableService.currentPlatformStartedBy()?.let(SafeText::path),
+                catalogName = SafeText.path(catalogName),
+                databaseName = SafeText.path(databaseName),
                 operation = OPERATION_DISCOVER_UNTRACKED_TABLE_FOLDERS,
                 dryRun = config.dryRun,
                 deleteEnabled = config.deleteEnabled,
-                olderThanHours = config.olderThanHours,
+                // The age the run used. The configured value is in diagnostic_details.
+                olderThanHours = config.effectiveOlderThanHours(),
                 cutoffTime = cutoffTime,
                 maxCandidateFoldersPerDatabase = config.maxCandidateFoldersPerDatabase,
-                excludedPaths = excludedPaths.sorted(),
+                excludedPaths = excludedPaths.sorted().map(SafeText::path),
                 status = status,
-                statusReason = statusReason,
-                errorMessage = errorMessage,
-                discoveredDatabaseLocation = discoveredDatabaseLocation,
-                storageScanLocation = storageScanLocation,
+                statusReason = statusReason?.let(SafeText::path),
+                errorMessage = errorMessage?.let { SafeText.text(it, SafeText.MAX_AUDIT_ERROR_LENGTH) },
+                discoveredDatabaseLocation = discoveredDatabaseLocation?.let(SafeText::path),
+                storageScanLocation = SafeText.path(storageScanLocation),
                 activeTableCount = activeTableCount,
                 unresolvedTableCount = unresolvedTableCount,
                 potentiallyUntrackedFolderCount = potentiallyUntrackedFolderCount,
@@ -495,9 +641,15 @@ class CleanupAuditRecorder {
                 deletedFolderCount = deletedFolderCount,
                 deletedObjectCount = deletedObjectCount,
                 deletedTotalSizeBytes = deletedTotalSizeBytes,
-                candidateFolders = candidateFolders,
-                deletedFolders = deletedFolders,
-                diagnosticDetails = auditDiagnosticDetailsBuilder.ownershipCheckDetails(ownershipChecks) + diagnosticDetails,
+                candidateFolders = candidateFolders.map(SafeText::path),
+                deletedFolders = deletedFolders.map(SafeText::path),
+                diagnosticDetails =
+                    (
+                        auditDiagnosticDetailsBuilder.ownershipCheckDetails(ownershipChecks) +
+                            auditDiagnosticDetailsBuilder.ageDetails(config.olderThanHours) +
+                            diagnosticDetails
+                    )
+                        .mapValues { (_, value) -> value.split('\n').joinToString("\n") { SafeText.safetyNet(it) } },
                 startTime = databaseStartTime,
                 endTime = Instant.now(),
             )

@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.storage
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -294,6 +295,23 @@ class StorageScanLocationResolverTest {
             }
 
         assertEquals(UnsafeScanRootReason.INVALID_STORAGE_LOCATION, error.reason)
+    }
+
+    @Test
+    fun `an unparseable location is reported sanitized because the parser repeats it`() {
+        val error =
+            assertThrows(UnsafeScanRootException::class.java) {
+                resolve(
+                    databaseLocation = "s3a:password=CANARY_PARSE\u001B[2J",
+                    activeTableLocations = listOf("s3a://bucket/data/orders"),
+                )
+            }
+
+        assertEquals(UnsafeScanRootReason.INVALID_STORAGE_LOCATION, error.reason)
+        val message = error.message.orEmpty()
+        assertTrue(message.startsWith("Storage location cannot be parsed: s3a:password=***"), message)
+        assertFalse(message.contains("CANARY"), message)
+        assertFalse(message.contains('\u001B'), message)
     }
 
     @Test

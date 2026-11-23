@@ -69,8 +69,10 @@ class MultiRootPlanningFlowTest {
 
         flow.run()
 
-        assertEquals(1, InMemoryS3FileSystem.listStatusCalls["$DATABASE_LOCATION/orphan_hive"])
+        // Listed for inspection and once more right before its objects are deleted.
+        assertEquals(2, InMemoryS3FileSystem.listFilesCalls["$DATABASE_LOCATION/orphan_hive"])
         assertNull(InMemoryS3FileSystem.listStatusCalls["$REST_ROOT/orphan_rest"])
+        assertNull(InMemoryS3FileSystem.listFilesCalls["$REST_ROOT/orphan_rest"])
     }
 
     @Test

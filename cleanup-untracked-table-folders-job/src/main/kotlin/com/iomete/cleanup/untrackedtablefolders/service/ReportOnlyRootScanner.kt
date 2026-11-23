@@ -1,6 +1,7 @@
 package com.iomete.cleanup.untrackedtablefolders.service
 
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
+import com.iomete.cleanup.untrackedtablefolders.logging.SafeLogger
 import com.iomete.cleanup.untrackedtablefolders.storage.CleanupRootListing
 import com.iomete.cleanup.untrackedtablefolders.storage.ExcludePathResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.ObjectStorageDiscoveryService
@@ -12,11 +13,10 @@ import com.iomete.cleanup.untrackedtablefolders.storage.ScanRootResult
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
-import org.jboss.logging.Logger
 
 @ApplicationScoped
 class ReportOnlyRootScanner {
-    private val logger = Logger.getLogger(ReportOnlyRootScanner::class.java)
+    private val logger = SafeLogger.getLogger(ReportOnlyRootScanner::class.java)
 
     @Inject lateinit var objectStorageDiscoveryService: ObjectStorageDiscoveryService
     @Inject lateinit var untrackedFolderCandidateDetector: UntrackedFolderCandidateDetector

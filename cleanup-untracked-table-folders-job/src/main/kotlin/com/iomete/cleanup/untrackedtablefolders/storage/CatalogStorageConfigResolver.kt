@@ -1,14 +1,14 @@
 package com.iomete.cleanup.untrackedtablefolders.storage
 
+import com.iomete.cleanup.untrackedtablefolders.logging.SafeLogger
 import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.util.concurrent.ConcurrentHashMap
-import org.jboss.logging.Logger
 
 @ApplicationScoped
 class CatalogStorageConfigResolver {
-    private val logger = Logger.getLogger(CatalogStorageConfigResolver::class.java)
+    private val logger = SafeLogger.getLogger(CatalogStorageConfigResolver::class.java)
 
     @Inject
     lateinit var sparkSessionProvider: SparkSessionProvider

@@ -43,11 +43,11 @@ For each configured database, the job:
 2. Resolves the object-storage folder to scan, and a [second folder](#second-cleanup-root) when the database's tables sit in both of its folders.
 3. Lists immediate child folders under each scan root.
 4. Excludes protected paths.
-5. Applies age and candidate-count safety checks.
+5. Applies the candidate-count limit, then the age check.
 6. Reports candidates in dry-run mode, or deletes them when deletion mode is explicitly enabled.
 7. Writes one audit row per configured database.
 
-The job separates discovery, candidate detection, deletion, and audit writing. This makes the destructive part easier to reason about: deletion only happens after catalog discovery, storage discovery, filtering, safety checks, and pre-delete revalidation.
+The job separates discovery, candidate detection, deletion, and audit writing. This makes the destructive part easier to reason about: deletion only happens after catalog discovery, storage discovery, filtering, safety checks, and a [check of each folder right before it is deleted](#deletion-fence).
 
 ```text
 Load config
@@ -77,8 +77,9 @@ Detect untracked candidate folders
   |       write audit row, no deletion
   |
   +--> dry_run=false + delete_enabled=true
-          revalidate active table locations
-          delete only folders that are still untracked
+          read ownership again
+          for each folder: check it again, list it again,
+            and delete exactly the listed objects
           write audit row
 ```
 
@@ -183,6 +184,14 @@ because `customer_events` is a table, not a database/schema.
 
 If a configured database does not exist, that database is skipped and the job writes a `SKIPPED` audit row with `status_reason=database_not_found`. Other configured databases continue to run.
 
+A catalog or database name that contains a backtick (`` ` ``) is not supported. The job never puts such a
+name in SQL text. That database gets a `FAILED` row with `status_reason=unexpected_error`, and
+`error_message` says the name contains a backtick. The other configured databases still run.
+
+Names are used as written. A name such as `sales_${env}` is looked up as `sales_${env}`. Older versions
+of this job let Spark replace `${...}` in the SQL text first, so such a name could resolve to another
+name or to nothing.
+
 ---
 
 ### `exclude_paths`
@@ -199,7 +208,7 @@ Physical object-storage paths that should be protected from cleanup.
 
 A candidate folder is skipped when it equals an excluded path, contains one, or sits inside one. Paths are compared by whole path segments, so `customer_events` does not protect `customer_events_v2`.
 
-Candidate folders are deleted recursively, so an excluded path nested inside a candidate protects the whole candidate folder. The job never deletes around an exclusion.
+The job deletes a candidate folder with everything below it, so an excluded path nested inside a candidate protects the whole candidate folder. The job never deletes around an exclusion.
 
 For a shorter database-scoped exclusion format, use `exclude_database_folders`.
 
@@ -280,7 +289,45 @@ A folder's age is the modification time of the newest object anywhere under it. 
 
 This gives a safety buffer so folders with recently written objects are not selected immediately.
 
-Object storage does not keep a reliable modification time for folders themselves, so the job never uses folder timestamps. A folder is skipped and never deleted when it is missing at inspection, cannot be read, is empty, or its age cannot be established. The job records why:
+#### 72-hour minimum in deletion mode
+
+When `dry_run` is `false`, the job never uses less than 72 hours. If `older_than_hours` is lower,
+including the default of 24, the run uses 72 instead. It logs one warning at the start that names both
+values. A higher value, such as 100, is used as it is.
+
+This minimum is fixed in the code. No configuration key, environment variable or system property can
+lower it. The job reads only its JSON configuration file, and that file accepts only the keys on this
+page.
+
+| `older_than_hours` | Dry run uses | Deletion mode uses |
+|---:|---:|---:|
+| `0` | 0 | 72 |
+| unset (24) | 24 | 72 |
+| `71` | 71 | 72 |
+| `72` | 72 | 72 |
+| `100` | 100 | 100 |
+
+A dry run keeps the configured value, `0` included, so you can still test with new folders. A dry run
+below 72 hours can therefore list folders that deletion mode would keep for now. The audit row counts
+them in `would_be_held_by_deletion_floor_count` and names them in
+`would_be_held_by_deletion_floor_paths_sample`. The log report lists them under the untracked folders.
+
+The audit column `older_than_hours` holds the age the run used. The configured value is in
+`diagnostic_details` as `configured_older_than_hours`, next to `deletion_min_age_hours=72`. Rows
+written before this minimum existed have neither key. In those rows the column is both the configured
+and the used value. So this query gives the configured value for old and new rows:
+
+```sql
+coalesce(diagnostic_details['configured_older_than_hours'], CAST(older_than_hours AS STRING))
+```
+
+To test deletion mode, create the test folders at least 72 hours before the run. Object storage sets
+the modification time when an object is written, and it cannot be set back.
+
+The age check compares object times with the clock of the Spark driver. If that clock runs ahead of the
+storage clock, the minimum is shorter by the same amount.
+
+Object storage does not keep a reliable modification time for folders themselves, so the job never uses folder timestamps. A folder is skipped and never deleted when it is missing at inspection, cannot be read, is empty, holds too many objects, or its age cannot be established. The job records why:
 
 | Reason | Meaning |
 |---|---|
@@ -288,6 +335,7 @@ Object storage does not keep a reliable modification time for folders themselves
 | `statistics_unavailable` | The folder's contents could not be listed, for example because access was denied or the request failed. |
 | `empty_folder` | The folder exists but holds no objects, only directory markers or nothing. Empty folders, including their directory markers, are not deleted. |
 | `unknown_age` | The folder holds objects, but at least one reports an invalid modification time. |
+| `too_many_objects` | The folder holds more than 10,000 objects. The job deletes object by object, so it keeps larger folders. The listing stops after 10,001 objects. The limit is provisional. See [Object limit](#object-limit). |
 
 The job only examines immediate child folders of the cleanup root, so a folder nested inside a candidate is never classified on its own.
 
@@ -361,6 +409,14 @@ For example, with this setting:
 | `10` | Continue normally |
 | `11` | Skip that database; no folders are deleted |
 
+The limit counts every folder with no verified catalog owner, before the job lists what is inside any of
+them. So it also counts folders that the age check would keep later: folders newer than the cutoff,
+including folders newer than the [72-hour minimum of deletion mode](#72-hour-minimum-in-deletion-mode),
+and empty or unreadable folders. For example, a database with 3 old folders, 9 folders written in the
+last 48 hours and a limit of `10` is `SKIPPED` in deletion mode, and nothing is deleted. This row does
+not have the held folder counts described in [Held folders](#held-folders), because no folder was
+inspected.
+
 Use a conservative value first. Increase it only after reviewing dry-run output and confirming the candidate folders are expected.
 
 ---
@@ -416,9 +472,18 @@ The job has several independent fail-safe layers. These are intentionally redund
 - Active catalog table locations are protected. A folder that equals, contains, or sits inside one is never a candidate.
 - Configured `exclude_paths` and `exclude_database_folders` are protected the same way.
 - A database location that is a bucket root, or that equals or contains the catalog warehouse root, is never scanned.
-- The newest object in a candidate folder must be older than `older_than_hours`. A folder whose age cannot be established is skipped.
-- Candidate count is capped by `max_candidate_folders_per_database`.
-- Candidate folders are revalidated against active catalog table locations and exclusions before deletion.
+- The newest object in a candidate folder must be older than `older_than_hours`, and in deletion mode at least 72 hours old. A folder whose age cannot be established is skipped.
+- Candidate count is capped by `max_candidate_folders_per_database`. The cap counts folders before the age check.
+- Right before deleting each folder, the job checks it against its last ownership read, which is at most 5
+  minutes old. It also looks up a table with the folder's name, lists the folder again and checks its age. An
+  owner registered after the last ownership read can be missed. See [Deletion fence](#deletion-fence) and
+  [Races the job cannot close](#races-the-job-cannot-close).
+- A folder is deleted object by object. The job lists it again, deletes exactly the listed objects, and checks each one
+  before its delete. It never sends a recursive delete. A folder with more than 10,000 objects is kept.
+- The job waits for each check and each delete only until its last ownership read is 5 minutes old. It
+  starts no delete in the last 30 seconds of that time. A check that does not finish in time stops deletion
+  for that database. A delete still running at the 5 minutes is not counted as done and may land later, with
+  no bound on when. See [Time limit](#time-limit).
 - Catalog or storage uncertainty fails closed instead of being treated as an empty result.
 - Results are written to an audit table.
 
@@ -441,8 +506,12 @@ The main safety principle is **fail closed**: if the job cannot prove that a fol
 | Iceberg write path protection | Deleting folders named by a visible Iceberg table's `write.*.path` properties |
 | Configured exclusions | Deleting folders explicitly protected through `exclude_paths` or `exclude_database_folders`, including an excluded path nested inside a candidate |
 | `older_than_hours` cutoff | Selecting folders that hold recently written objects; folders of unknown age are skipped |
+| 72-hour minimum in deletion mode | Deleting a folder written in the last 72 hours, even when `older_than_hours` is lower |
 | `max_candidate_folders_per_database` | Broad accidental deletion when too many candidates appear |
-| Pre-delete revalidation | Deleting a folder that became active after initial discovery, or that overlaps an exclusion |
+| [Deletion fence](#deletion-fence), per folder | Deleting a folder that a table, another database or an exclusion claimed before the last ownership read, a folder that changed since inspection, or a folder that got a new object before its last listing |
+| Exact-object deletion | Deleting objects written after the last listing, and objects that changed before their last check. Not covered: an object rewritten while its own delete runs, and an object written at a directory's exact name while that directory is deleted (see [Known limitations](#known-limitations)) |
+| 5-minute limit on the ownership read | Starting a delete with an ownership read that is more than 4.5 minutes old, or waiting without end for a read or a delete that does not return |
+| Object limit per folder | Deletions that run for hours, or a key list too large to hold; a folder above 10,000 objects is kept as `too_many_objects`. The limit is provisional |
 | Audit row per database | Clear outcome tracking when a run scans multiple databases |
 | Empty-database guard | Deleting every folder in a database whose catalog has no active table locations (likely misconfiguration) |
 | Catalog-scoped storage access | Reading or deleting in the platform's storage instead of the catalog's, and vice versa |
@@ -463,7 +532,12 @@ none of these claims it:
   [Tables of other databases and catalogs](#tables-of-other-databases-and-catalogs);
 - `exclude_paths` and `exclude_database_folders`.
 
-In deletion mode, the storage of other databases and catalogs is read again right before deleting.
+In deletion mode, the job reads ownership again right before it deletes the first folder of a
+database, and again once that read is more than 4 minutes old, before a later folder or inside one. Each folder also
+gets its own checks right before it is deleted. See [Deletion fence](#deletion-fence). A table created
+in a candidate folder after the last ownership read is not seen, unless it is a table of this database
+with the folder's name. For an object the job counted as deleted, that window ends at most 5 minutes
+after the read started. See [Races the job cannot close](#races-the-job-cannot-close).
 
 A deleted folder therefore means "no table or database visible to this job, in the places checked,
 claims this folder". It does not prove that nothing else uses the folder. The job does not check:
@@ -494,7 +568,7 @@ storage of other databases is unknown, `ownership_unreadable_sample` says why.
 | `visible_tables_of_this_database`, `write_paths_of_visible_tables_of_this_database`, `configured_exclusions` | Always. They are part of every folder comparison. A row that stops before comparing folders has no candidates. |
 | `default_folders_of_visible_other_databases` | The locations of other databases were read. They are read only when the cleanup root has at least one folder. |
 | `visible_tables_of_other_databases`, `visible_storage_of_same_bucket_session_catalogs` | The tables of other databases and catalogs were read. They are read only when a folder has no owner after the checks above. |
-| `final_recheck_before_deletion` | Other storage was read again right before deleting. This happens only in deletion mode. |
+| `final_recheck_before_deletion` | Other storage was read again by the [deletion fence](#deletion-fence) before the first folder was deleted. This happens only in deletion mode. |
 
 When one of the last three rows is missing, `ownership_not_checked` names it instead, as
 `default_folders_of_other_databases`, `other_database_tables` and `same_bucket_session_catalogs`, or
@@ -524,16 +598,9 @@ the second lookup finds the folder, it also stays a failure. Absent folders do n
 the "every candidate folder failed" check, so a database whose candidate folders were all deleted
 since they were listed does not fail; with no other block, it records `SUCCESS` with no candidates.
 
-If a recursive delete on S3-compatible storage (S3A) reports that an existing folder was not
-deleted, the job checks the folder again. In hadoop-aws 3.4.1, the S3A version this job was
-checked against, a folder that is not found produces this result. If the second check confirms the
-folder is gone, it is recorded as `folder_not_found_at_deletion` and deletion continues. If it still
-exists, or the second check fails, the folder's state is unknown. On Google Cloud Storage and Azure
-the job does not rely on this behavior: a refused delete always leaves the folder's state unknown.
-In both unknown cases the job stops deleting for that database and records `FAILED`. A folder
-already gone when deletion starts is also recorded as `folder_not_found_at_deletion`. These folders
-stay counted as candidates, not as deleted. A delete that throws an error is never treated as a
-missing folder.
+In deletion mode, each folder is checked again right before it is deleted, against an ownership read
+that is at most 5 minutes old, and only the objects listed in that check are deleted. A check that cannot be done, or does not finish in time, stops deletion for
+the database. See [Deletion fence](#deletion-fence).
 
 Outcome meanings:
 
@@ -546,6 +613,243 @@ Outcome meanings:
   `deleted_folder_count` greater than `0`.
 
 This distinction matters when a single job scans multiple databases. Each configured database gets its own audit row, and the shared run ID groups those rows together.
+
+---
+
+## Deletion fence
+
+In deletion mode, the job checks each candidate folder again right before it deletes it. The first
+ownership read can be minutes old by then, and storage can change while the job runs.
+
+### Ownership read
+
+Before the first folder of a database, the job reads ownership again. It reads the storage of other
+databases, catalogs and tables, as at the first read, and the tables of this database. Nothing is
+reused from the first read. What any read protects stays protected. So a folder is checked against
+everything that any of these reads found.
+
+The job reads ownership again when the last read started more than 4 minutes ago. That is the 5-minute
+limit minus twice the 30-second start margin, so the status read before the next delete still fits.
+It checks this before each later folder, and inside a folder before each status read of an object or
+directory. A read inside a folder checks that folder again, as steps 2 and 3 below do. If the folder
+is now protected and nothing in it was deleted yet, it is kept with the same reason as before its
+listing, and the job goes on with the next folder. If some of its objects were already deleted,
+deletion stops with `claimed_during_deletion`. Those objects stay deleted, and the rest stay in
+`remaining`. A read that takes more than 2.5 minutes, half the limit, stops deletion with
+`recheck_too_slow`, and the job waits for a read no longer than that. A longer read would leave little
+time to delete, and the next read would come soon after. The job measures this age on a clock that a change of the system time cannot move. A
+table created in a candidate folder after the last read is not seen before deletion when it is in
+another database, or has another name than the folder. See [Time limit](#time-limit) for how long that
+window lasts.
+
+### Checks for each folder
+
+For each folder, in path order, the job:
+
+1. Reads ownership again, if the last read started more than 4 minutes ago.
+2. Looks up a table of this database with the folder's name, and reads its storage as the full read
+   does. If its location or one of its Iceberg write paths is in the folder, the folder is kept. If its
+   storage cannot be established, for example because `gc.enabled` is not true or a location provider
+   is set, deletion stops with `name_probe_failed`.
+3. Keeps the folder if it overlaps anything an ownership read protects.
+4. Lists the folder again, up to 10,000 objects. A folder with more is kept.
+5. Keeps the folder if this listing differs from the one taken at inspection, if an object has no
+   usable modification time, or if an object is newer than the cutoff of this run.
+6. Reads every listed object back by its own name. If one is not found, or two listed objects have the
+   same name, the folder is kept and nothing in it is deleted.
+7. Deletes the listed objects one at a time. Before each status read here, and in steps 6 and 8, it
+   reads ownership again when the last read started more than 4 minutes ago, as above. Before each
+   delete, it reads the object's status again.
+   The size and ETag must match the listing, and the modification time must match to the second. Right
+   before the delete, it checks that at least 30 seconds of the ownership read's 5 minutes are left. It
+   waits for the delete only until the ownership read is 5 minutes old.
+8. When every listed object is gone, removes the folder's empty directories from the bottom up, one at
+   a time. It lists each directory first. It looks at no more than 10,000 entries in all, and counts each
+   entry it lists in this step once. A directory whose delete is refused, or that is not empty, is
+   looked at again. If it is still there and holds no object, it is kept, and the folder still counts as
+   deleted. The row names it in `deleted_folder_kept_directory_*`. If the second look finds an object, the
+   folder is partly deleted, and the row names the object as unlisted. The second look also lists every
+   directory it finds there, at any depth, because each one appeared after the job removed or passed it.
+   A new empty directory is named as an unlisted object too. A kept directory also keeps every directory
+   above it, and those are not looked at again. An object at the folder's own name keeps the folder with no
+   delete. So when the folder is still there at the end and nothing new was found, the job lists it once
+   more, at any depth, and names every object below it. Kept directories are not named or counted again.
+   If an object now has the folder's own name, this listing stops the step, as the first listing does. If
+   this step cannot finish, the folder is partly deleted and deletion stops. That happens when:
+   - a listing, status read or delete of a directory fails or does not finish in time;
+   - a read would start after the ownership read is 5 minutes old, or a delete in its last 30 seconds;
+   - the listing of a directory returns an object with the directory's own name, so the job cannot see
+     what is below it;
+   - the 10,000-entry limit is reached.
+
+   A directory delete that threw an error or was not waited for is in an unknown state, because it may
+   still complete. It is never sent again.
+
+The job never sends a recursive delete. It deletes only objects it listed, with two exceptions. The
+first is a directory marker, the object whose key ends in `/` that S3 keeps for a directory. The job
+finds markers in step 8, not in its listing, and does not compare their age with the cutoff. A marker
+with content is deleted too, because S3A treats any key that ends in `/` as a directory. The second is
+an object written at a directory's exact name while that directory is deleted. See
+[Known limitations](#known-limitations). The cutoff in step 5 is the one on the row:
+`older_than_hours`, and in deletion mode at least 72 hours.
+
+A folder that is gone when deletion starts, or whose new listing finds no object, is recorded as
+`folder_not_found_at_deletion` and deletion continues. Its directory markers stay, as for
+`empty_folder`. These folders stay counted as candidates, not as deleted.
+
+### Kept folders
+
+A kept folder is not deleted, and nothing in it is touched. It stays counted as a candidate, not as
+deleted, and the job goes on with the next folder. With no other problem, the row is `SUCCESS`. Each
+reason has its own `folder_kept_<reason>_count`, `_paths_sample` and `_paths_truncated` keys in
+`diagnostic_details`, and its own line in the log report under `DELETION`.
+
+| Reason | Meaning |
+|---|---|
+| `folder_kept_at_final_check` | An ownership read found storage of another database, catalog or table in the folder. |
+| `folder_kept_table_named_like_folder` | A table of this database with the folder's name is stored in the folder. |
+| `folder_kept_changed_since_inspection` | The listing before deletion differs from the listing taken at inspection. |
+| `folder_kept_too_many_objects` | The listing before deletion found more than 10,000 objects. |
+| `folder_kept_too_new` | An object in the listing before deletion is newer than the cutoff of this run. |
+| `folder_kept_unknown_age` | An object in the listing before deletion has no usable modification time. |
+| `folder_kept_key_not_addressable` | Before the first delete, a listed object was not found by its own name, or two listed objects had the same name. |
+
+### Failures
+
+The job stops deleting for that database and records `FAILED` with `status_reason=deletion_failed`
+when:
+
+- the listing before deletion failed;
+- a listed object changed before its delete;
+- a listed object disappeared after the job read it back in step 6;
+- a status read of an object failed;
+- an object delete failed or was refused;
+- a delete threw an error or did not finish within the time limit. That object is reported in an
+  unknown state, because the delete may still complete;
+- an object that was not in the listing turned up in the folder after the listed objects were deleted;
+- removing the empty directories in step 8 failed: a listing or status read of a directory failed, a
+  directory delete threw an error or did not finish within the time limit, or more than 10,000 entries
+  were found. Such a directory delete is reported in an unknown state, because it may still complete.
+
+A folder stopped this way is not counted as deleted, even when some of its objects are gone. See
+[Partial deletion](#partial-deletion) for what the row says about it. A delete that throws an error is
+never treated as a missing object.
+
+### Stops
+
+The job also stops when a check that the next delete needs cannot be done. The row names the cause in
+`deletion_stop_cause`:
+
+| Cause | Meaning |
+|---|---|
+| `other_storage_incomplete` | An ownership read of other databases, catalogs or tables failed, or found storage it could not establish, such as an unresolved table. |
+| `own_database_recheck_failed` | The tables of this database could not be read again. |
+| `own_tables_unresolved` | A table of this database could not be resolved to a storage location at an ownership read. |
+| `recheck_too_slow` | An ownership read took longer than 2.5 minutes, half the 5-minute limit. A read still running at 2.5 minutes is not waited for, and its result is ignored. |
+| `claimed_during_deletion` | Ownership read again in the middle of a folder protects that folder after some of its objects were deleted. Those stay deleted, and the rest stay in `remaining`. Before the first delete, the folder is kept instead. |
+| `name_probe_failed` | The lookup of a table named like the folder failed, found a location or write path with no scheme and bucket, or found a table whose storage cannot be established. |
+| `snapshot_expired_during_deletion` | The ownership read became more than 5 minutes old while a folder was being deleted, including while its empty directories were removed, or less than 30 seconds of the 5 minutes were left before the next delete. |
+| `read_timed_out` | A storage or catalog read needed before the next delete was still running when the ownership read reached its 5-minute limit, or a delete or read was not started because no time was left. The job stopped waiting and ignored the result. |
+
+What the row says depends on whether anything was deleted:
+
+- If a folder or an object was deleted, or a delete may still complete, the row is `FAILED` with
+  `status_reason=deletion_stopped_at_recheck`. `deleted_folders` lists the folders deleted before the
+  stop. The row also has `deletion_stop_cause`, `ownership_snapshot_max_age_seconds=300`, the folders
+  not tried in `folder_not_attempted_*`, and the partly deleted folder, if there is one. See
+  [Partial deletion](#partial-deletion).
+- If nothing was deleted, the row is the same as when the first read finds the same problem. An
+  ownership read that finished but left the storage of other databases unknown gives `BLOCKED` with
+  `other_database_storage_unknown` or `other_table_unresolved`, and this row also has
+  `deletion_stop_cause`. A database that is gone gives `SKIPPED` with `database_not_found`. Any other
+  stop gives `FAILED` with `status_reason=unexpected_error`, and `error_message` says what stopped.
+
+### Time limit
+
+The job waits for each catalog or storage read in these checks, and for each delete, only until the
+ownership read is 5 minutes old. It starts no read after that. It starts no delete in the last 30
+seconds before that, so a delete it sends usually returns in time. If a read does not finish in time,
+the job stops deleting for that database and ignores the late result. When the 30 seconds are reached,
+the folder stops partly deleted with `snapshot_expired_during_deletion`. The object that was next stays
+in `remaining`.
+
+A delete call is more than one request. Inside it, the storage client first reads the object's status,
+then sends the delete request, and then checks the parent directory. It may retry each of them. So the
+request can go out at any time until the call returns. The 30 seconds are not a bound: a call can take
+longer, for example while the client retries. A delete that returned in time counts as deleted, so it
+returned before the ownership read was 5 minutes old. A delete still running at that point is not
+waited for. Its object is reported in an unknown state, the row is `deletion_failed`, and deletion
+stops for that database.
+
+The job only stops waiting. The call itself may keep running in the background, and such a delete may
+still complete later, even after the job ends. The job has no hard time limit on a delete, and there
+is no bound on when such a delete lands. Turn on bucket versioning so such an object can be restored.
+See [Versioned buckets](#versioned-buckets).
+
+These waits are bounded this way:
+
+- the ownership read, and the read of this database's tables, for at most 2.5 minutes from the start of that read;
+- the lookup of a table named like the folder;
+- the listing before deletion, and every status read of an object;
+- every object delete;
+- the listing, status reads and deletes of empty directories. Once the ownership read is more than 5
+  minutes old, none of these starts, and no directory delete starts in its last 30 seconds. The folder
+  is then partly deleted, and its empty directories stay.
+
+These are not bounded by the job: opening and closing the storage connection, the audit write, and
+everything before deletion starts, such as the first ownership read and the inspection listings. The
+job sets no timeout or retry setting of the storage client or the catalog client. Their own limits
+apply inside each call.
+
+The 5-minute limit is fixed in the code. It and the 30-second margin are provisional: neither has been
+measured on a real deployment yet. A full ownership read has to finish within 2.5 minutes, half the
+limit. If it does not, every deletion run stops at the first read with `recheck_too_slow`, and nothing
+is deleted. After a read, deleting goes on until the read is 4 minutes old, and the job then reads
+again. So a read of R minutes leaves about 4 minus R minutes of deleting per read. To see
+how long a read takes, look at the log line "Checked N table(s) of other databases ... in X ms". It
+leaves out the reads of database locations. `ownership_refresh_count` on the row says how many times
+ownership was read again during deletion.
+
+### Object limit
+
+The limit of 10,000 objects per folder is provisional. It is fixed in the code, and it may change once
+deletion has been timed on real storage. No setting raises it.
+
+A folder above the limit is held, not deleted, for two reasons:
+
+- Time. The job deletes object by object, with about five storage requests per object. If each request
+  takes 5 to 50 ms, 10,000 objects take about 4 to 42 minutes. The job starts no delete in the last 30
+  seconds of its 5-minute ownership read, so a slow folder stops partly deleted, which is worse than
+  kept. At 100,000 objects, almost every such folder would stop partly deleted. The removal of empty
+  directories after the objects has to finish in the same time. It costs a few requests per directory,
+  so a folder with many directories can stop partly deleted even below 10,000 objects.
+- Memory. The job keeps every listed key of the folder while it deletes it: about 9 MiB for 10,000
+  objects, and about 82 MiB for 100,000.
+
+A held folder is reported as `too_many_objects` at inspection, or as `folder_kept_too_many_objects` at
+the listing before deletion. Nothing in it is touched. To clear one, check that no table uses it, then
+delete it with a storage tool, or protect it with `exclude_paths` so it is no longer reported.
+
+### Races the job cannot close
+
+The fence makes the time in which a new owner can be missed short. It cannot make it zero. No catalog
+read says which table uses a given path, so each check can only compare the folder with the last full
+read.
+
+| Race | Window | What the job does | Status |
+|---|---|---|---|
+| A table or database registered in a candidate folder after the last ownership read | From the start of that read until each delete request lands. For a delete the job counted as done, that is at most 5 minutes. A delete the job stopped waiting for can land later, with no bound. | A table of this database with the folder's name is kept if its location or a write path is in the folder when the job looks the name up. One whose storage cannot be established stops deletion. A new object written before the listing keeps the folder as changed. A new object written after the listing is never deleted, but the listed objects are. When the removal of empty directories finds the new object, the folder is reported partly deleted and the row names it as unlisted. One written after the job last looked at that place is not found, and the folder is reported deleted. When that step does not finish, the row has `partially_deleted_folder_directory_cleanup=not_finished` and may not name it. Any other new owner is not seen, and the folder is deleted. | Residual. Fixed for the name lookup and a new object before the listing. Fails closed for a new object after it. |
+| A table that takes over the files already in a folder and writes nothing new: `CREATE TABLE ... LOCATION`, `register_table`, `ALTER TABLE ... SET LOCATION` | The same window. Before the last read, the folder is kept. | No new object shows the change, so the folder is deleted. | Residual |
+| `add_files`, or a table that reads files outside its own folder | The whole run | Never seen. Protect such folders with `exclude_paths`. | Residual |
+| A catalog outside the job's Spark session, a table the job cannot see, or another engine that writes to the bucket | The whole run | Never seen. See [What deletion mode can and cannot prove](#what-deletion-mode-can-and-cannot-prove). | Residual |
+
+Residual means the job cannot close the race. A read that fails, times out, is incomplete or cannot be
+compared always stops the remaining folders, so those cases fail closed and are not in this table.
+
+Reading everything again before each folder would not close the first two races. A full read takes
+minutes, and an owner can still be registered after its database was read. Run deletion when no one
+creates or moves tables in these folders, and turn on bucket versioning so a deleted object can be
+restored. See [Versioned buckets](#versioned-buckets).
 
 ---
 
@@ -844,6 +1148,42 @@ Audit rows include:
 - Diagnostic details
 - Start and end times
 
+### How audit values are written
+
+The job writes each row with an `INSERT` statement. Values are stored exactly as the job had them:
+
+- A quote or a backslash in a text value is escaped with a backslash. Older versions of this job
+  dropped single quotes from stored text.
+- A `$`, a `*` and any control, format or line separator character is written as `\uXXXX` in the
+  statement text. Spark reads it back as the same character, and the statement text never holds it raw.
+- Times are written with an explicit UTC offset, for example `TIMESTAMP '2026-05-21 10:00:00.123456Z'`.
+  The stored instant does not depend on the driver's time zone or on `spark.sql.session.timeZone`.
+  Older versions wrote the driver's local time without a zone.
+- Spark stores text as UTF-8. A lone UTF-16 surrogate, which UTF-8 cannot hold, is stored as `?`.
+
+The job sets `spark.sql.variable.substitute=false` and `spark.sql.parser.escapedStringLiterals=false`
+in its Spark session, and checks that both hold each time before it sends SQL. If a setting does not
+hold, no SQL is sent and the run ends with exit code `1`. With substitution on, Spark would replace
+`${...}` in names and values before it reads the statement.
+
+Tests read the job's `INSERT` text with Spark 3.5's own SQL parser and these two settings, and check that
+every value comes back exactly. No extension parser runs in the tests: not the platform's Iceberg fork,
+not Nessie and not Ranger. A session extension can put its own parser in front of Spark's. The platform
+turns on the Iceberg and Nessie extensions, and the Ranger extension when Ranger is on. From reading
+IOMETE's own extension source at v3.5.7, it adds no parser that changes how text values are read. That
+was not tested. The Iceberg and Nessie parsers are expected to handle only their own commands and pass an
+`INSERT` on unchanged. The statement holds no raw `$`, so a substitution step in front of Spark's parser
+finds nothing to replace. Check T51 is there to confirm the whole chain on the target image before
+release. It has not been run yet.
+
+Reading the statement takes time, and odd names can make it slow. The Iceberg extension runs a comment
+pattern over the whole statement, and that pattern is slow on a `/*` with no `*/` after it. The job
+writes `*` as `\u002A`, so the text holds no `/*`. Spark's own parser reads to the end of a value at
+each escape in it, so a long value with many escapes takes time that grows with both. Ordinary names
+need few escapes. A row whose samples hold many long names full of quotes, backslashes or hidden
+characters can take seconds or more to read. The row is written after the database's deletes, so a
+slow write delays the run but does not sit between a check and a delete.
+
 ### Audit field notes
 
 | Field | Meaning |
@@ -857,8 +1197,9 @@ Audit rows include:
 | `runtime_domain` | Runtime IOMETE domain exposed through `IOMETE_DOMAIN`, for example `fde`. |
 | `runtime_user` | Runtime Spark user exposed through `SPARK_USER`. This is useful for comparing the audit row with the run-as user shown in the platform UI. Read from the env var rather than `SparkContext.sparkUser()` so the value remains the run-as identity even when Spark is configured with proxy-user impersonation. |
 | `status` | High-level outcome: `SUCCESS`, `SKIPPED`, `BLOCKED`, or `FAILED`. |
-| `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, `unresolved_catalog_ownership`, `database_location_contains_warehouse_root`, `partial_scan_coverage`, `deletion_failed`, `audit_integrity_lost`, or `unexpected_error`. See [Object-storage scan root](#object-storage-scan-root) for the scan-root reasons. |
-| `older_than_hours` | Configured age threshold used for candidate detection. |
+| `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, `unresolved_catalog_ownership`, `database_location_contains_warehouse_root`, `partial_scan_coverage`, `deletion_failed`, `deletion_stopped_at_recheck`, `audit_integrity_lost`, or `unexpected_error`. See [Object-storage scan root](#object-storage-scan-root) for the scan-root reasons. |
+| `error_message` | The error that ended processing of this database, cleaned and cut to at most 1000 characters. It names the classes of the causes but not their messages. See [Error messages and logs](#error-messages-and-logs). |
+| `older_than_hours` | The age threshold the run used for candidate detection. In deletion mode this is at least 72, even when the configured value is lower; the configured value is in `diagnostic_details` as `configured_older_than_hours`. See [72-hour minimum in deletion mode](#72-hour-minimum-in-deletion-mode). |
 | `cutoff_time` | Calculated timestamp used to decide whether a folder is old enough to be considered. Null when no age check ran. |
 | `max_candidate_folders_per_database` | Configured per-database candidate-folder safety limit. |
 | `unresolved_table_count` | Number of catalog tables in this database whose storage location could not be read during discovery. Reported whatever the row's `status_reason` is, so filter on `unresolved_table_count > 0` to find affected databases. It is `0` when the count is unknown: when discovery itself failed, or when the pre-delete recheck found new unresolved tables, in which case the number is in `error_message`. Both are `FAILED` rows, so check `FAILED` rows as well. |
@@ -883,6 +1224,8 @@ It may include values such as:
 ```text
 ownership_checks
 ownership_not_checked
+configured_older_than_hours
+deletion_min_age_hours
 ownership_unreadable_sample
 ownership_unreadable_truncated
 active_table_locations_sample
@@ -913,26 +1256,74 @@ empty_folder_count
 empty_folder_paths_sample
 unknown_age_count
 unknown_age_paths_sample
+too_many_objects_count
+too_many_objects_paths_sample
+too_new_count
+too_new_paths_sample
+held_folder_count
+held_folder_counts
 folder_not_found_at_deletion_count
 folder_not_found_at_deletion_paths_sample
-folder_kept_at_final_check_count
-folder_kept_at_final_check_paths_sample
+folder_kept_<reason>_count
+folder_kept_<reason>_paths_sample
+folder_not_attempted_count
+folder_not_attempted_paths_sample
+deletion_failed_folder_path
+partially_deleted_folder_path
+partially_deleted_folder_listed_object_count
+partially_deleted_folder_<set>_object_count
+partially_deleted_folder_<set>_keys_sample
+partially_deleted_folder_directory_cleanup
+partially_deleted_folder_kept_directory_count
+partially_deleted_folder_kept_directory_paths_sample
+partially_deleted_folder_unknown_state_directory_count
+partially_deleted_folder_unknown_state_directory_paths_sample
+deleted_folder_kept_directory_count
+deleted_folder_kept_directory_paths_sample
+deletion_stop_cause
+ownership_snapshot_max_age_seconds
+ownership_refresh_count
+would_be_held_by_deletion_floor_count
+would_be_held_by_deletion_floor_paths_sample
 *_truncated
 ```
 
-The `folder_not_found`, `statistics_unavailable`, `empty_folder` and `unknown_age` keys appear only
-when at least one candidate folder was skipped for that reason. They are written on `SUCCESS`,
-`BLOCKED` and `deletion_failed` rows. Folders skipped for these reasons are never listed as
-candidates or as potentially untracked folders.
+`<reason>` is one of the [kept folder reasons](#kept-folders) without the `folder_kept_` prefix, such as
+`at_final_check` or `key_not_addressable`. `<set>` is `deleted`, `remaining`, `unknown_state`,
+`vanished` or `unlisted`. See [Partial deletion](#partial-deletion).
+
+`configured_older_than_hours` and `deletion_min_age_hours` are on every row. They give the configured
+age and the 72-hour minimum of deletion mode.
+
+The `would_be_held_by_deletion_floor` keys appear only on dry-run rows, and only when at least one
+listed folder is younger than 72 hours. These folders pass the configured age, but deletion mode would
+keep them for now. They are still listed as candidates or as potentially untracked folders. They appear
+on `SUCCESS` and `BLOCKED` rows.
+
+The `folder_not_found`, `statistics_unavailable`, `empty_folder`, `unknown_age`, `too_many_objects` and
+`too_new` keys appear only when at least one folder was skipped for that reason. `too_new` names the
+folders whose newest object is newer than the cutoff of this run. They are written on `SUCCESS`,
+`BLOCKED`, `deletion_failed` and `deletion_stopped_at_recheck` rows. Folders skipped for these reasons
+are never listed as candidates or as potentially untracked folders. A `too_many_candidate_folders` row
+has none of them, because no folder was inspected.
+
+The `held_folder_count` and `held_folder_counts` keys count these folders and the
+[kept folders](#kept-folders) together. See [Held folders](#held-folders).
 
 The `folder_not_found_at_deletion` keys are separate. They name candidate folders that passed
-inspection but were gone when deletion reached them. They appear on `SUCCESS` and
-`deletion_failed` rows.
+inspection but were gone, or held no object, when deletion reached them. They appear on `SUCCESS`,
+`deletion_failed` and `deletion_stopped_at_recheck` rows.
 
-The `folder_kept_at_final_check` keys name candidate folders that another database, catalog or table
-claimed when the job read their storage again just before deleting. These folders are not deleted and
-stay counted as candidates. They appear on `SUCCESS` rows. See
-[Tables of other databases and catalogs](#tables-of-other-databases-and-catalogs).
+The `folder_kept_<reason>` keys name candidate folders that the [deletion fence](#deletion-fence) kept.
+These folders are not deleted and stay counted as candidates. `folder_kept_at_final_check` names the
+folders that another database, catalog or table claimed when the job read ownership again before
+deleting. See [Tables of other databases and catalogs](#tables-of-other-databases-and-catalogs).
+
+The `folder_not_attempted`, `deletion_stop_cause` and `ownership_snapshot_max_age_seconds` keys appear
+when the fence stopped deletion for the database. `deletion_stop_cause` is one of the
+[stop causes](#stops), `ownership_snapshot_max_age_seconds` is the 5-minute limit in seconds, and
+`folder_not_attempted` names the candidates the job did not reach. `ownership_refresh_count` appears
+when ownership was read again during deletion, after the first read of the fence.
 
 Storage root keys follow `scan_plan_status`:
 
@@ -966,8 +1357,40 @@ Storage root keys follow `scan_plan_status`:
 
 Path lists are sampled to avoid writing very large audit rows.
 
-When deletion stops partway, `deletion_failed_folder_path` names the folder whose delete failed.
-Its state is unknown: it may be fully present, partly deleted, or gone.
+On a `deletion_failed` row, `deletion_failed_folder_path` names the folder whose deletion failed. The
+`partially_deleted_folder_*` keys say what happened to its objects and directories, when any of them was
+touched. See [Partial deletion](#partial-deletion).
+
+`deleted_folder_kept_directory_*` names empty directories that are still there in folders that were
+deleted, because their delete was refused or they were not empty when the job looked again. Their
+listed objects are all gone.
+
+### Held folders
+
+A folder with no verified catalog owner can still be kept by this run: by the age check, by
+inspection, or by the deletion fence. The row counts all of them by reason:
+
+- `held_folder_count` is the number of held folders.
+- `held_folder_counts` has one `<reason>=<count>` line per reason, in this order: `statistics_unavailable`,
+  `empty_folder`, `too_new`, `unknown_age`, `too_many_objects`, then the `folder_kept_<reason>` reasons.
+  Each reason's own keys list its folders.
+
+A folder that was gone is not held, so `folder_not_found` and `folder_not_found_at_deletion` are not
+counted here. In a dry run, the folders deletion mode would keep for the 72-hour minimum are still
+candidates, so `would_be_held_by_deletion_floor` is not counted either. Both keys appear only when at
+least one folder is held.
+
+The log report has a `FOLDERS HELD, BY REASON` section with the same counts. When every folder with no
+verified owner is held or gone, so nothing is left to delete, the job also logs one warning:
+
+```text
+None of the 4 folder(s) with no verified catalog owner is eligible for deletion for catalog=spark_catalog,
+database=sales. Held by reason: empty_folder=1, too_new=1, folder_kept_table_named_like_folder=1.
+Already gone: 1.
+```
+
+It is one line in the log. It is not logged for a database with an unresolved table
+(`unresolved_catalog_ownership`), which gets its own warning, or when deletion failed or stopped.
 
 ---
 
@@ -979,16 +1402,22 @@ Its state is unknown: it may be fully present, partly deleted, or gone.
 | Database processed, but some table locations are outside the scanned root | `SUCCESS` | `status_reason=partial_scan_coverage` |
 | Database location is missing | `SKIPPED` | Storage discovery is skipped |
 | No table stores files at a known location, for example the database has no tables, or only views or [JDBC tables](#jdbc-tables) | `SKIPPED` | `status_reason=no_active_tables_in_database`; storage is not listed. `active_table_count` still counts the JDBC tables |
-| Too many candidate folders | `SKIPPED` | Candidate count exceeded configured limit. Unresolved tables are reported on the same row |
+| Too many candidate folders | `SKIPPED` | Candidate count exceeded configured limit, counted before the age check. Unresolved tables are reported on the same row |
 | Configured database does not exist | `SKIPPED` | Logged as a warning with `status_reason=database_not_found` |
 | Database location or scan root is unsafe | `SKIPPED` | Storage is never listed; see [Object-storage scan root](#object-storage-scan-root) for the reasons |
 | One or more table storage locations could not be resolved | `BLOCKED` | Reconciliation is still reported when at least one table has a verified location, nothing is deleted, `status_reason=unresolved_catalog_ownership` |
 | Unexpected catalog, storage, or deletion failure | `FAILED` | Real failure path remains an error |
 | Deletion failed partway through the candidates | `FAILED` | `status_reason=deletion_failed`; see [Partial deletion](#partial-deletion) |
+| The deletion fence stopped after a folder or an object was deleted | `FAILED` | `status_reason=deletion_stopped_at_recheck`; see [Stops](#stops) and [Partial deletion](#partial-deletion) |
+| The deletion fence kept some folders | `SUCCESS` | Each kept folder is named in `folder_kept_<reason>_paths_sample`; other folders are still deleted; see [Kept folders](#kept-folders) |
+| Every folder with no verified owner was held | `SUCCESS` | Nothing deleted; one warning names each reason; see [Held folders](#held-folders) |
 | An earlier audit write in the same run failed | `BLOCKED` | `status_reason=audit_integrity_lost`; see [Audit write failures](#audit-write-failures) |
 | No visible table is stored under the cleanup root | `BLOCKED` | `status_reason=cleanup_root_has_no_visible_table`; candidates are reported, nothing is deleted |
 | The storage of other databases could not be established | `BLOCKED` | `status_reason=other_database_storage_unknown`; candidates are reported, nothing is deleted; see [Storage of other databases and Iceberg write paths](#storage-of-other-databases-and-iceberg-write-paths) |
 | A table of another database or catalog is unresolved | `BLOCKED` | `status_reason=other_table_unresolved`; candidates are reported, nothing is deleted; see [Tables of other databases and catalogs](#tables-of-other-databases-and-catalogs) |
+
+A `FAILED` row does not change the job's exit code. The job exits with `1` only when the run itself
+stops with an error. See [Error messages and logs](#error-messages-and-logs).
 
 ---
 
@@ -997,15 +1426,46 @@ Its state is unknown: it may be fully present, partly deleted, or gone.
 Candidates are deleted one at a time. The job stops at the first folder it cannot delete and does
 not try the remaining candidates in that database.
 
-- The audit row is written with `status=FAILED` and `status_reason=deletion_failed`.
+- A failure is recorded with `status=FAILED` and `status_reason=deletion_failed`. A stop of the
+  [deletion fence](#deletion-fence) after something was deleted is recorded with `status=FAILED` and
+  `status_reason=deletion_stopped_at_recheck`.
 - `deleted_folder_count` and `deleted_folders` list only the folders confirmed deleted before the
-  failure, so they can be greater than zero on a `FAILED` row.
-- `diagnostic_details.deletion_failed_folder_path` names the folder that failed. Check it in
-  object storage before the next run. It is absent when the failure came after the last confirmed
-  deletion, for example while closing the storage connection.
+  failure or stop, so they can be greater than zero on a `FAILED` row.
+- On a `deletion_failed` row, `diagnostic_details.deletion_failed_folder_path` names the folder that
+  failed. Check it in object storage before the next run. It is absent when the failure came after the
+  last confirmed deletion, for example while closing the storage connection.
 - A folder that was already gone when the job reached it is not counted as deleted.
-- A delete that reports no change for a folder that still exists is treated as a failure, because
+- The failed or stopped folder may be partly deleted. It is never in `deleted_folders`. The error
+  message gives its counts: listed objects deleted, kept, in an unknown state, already gone, and
+  objects found that were not listed. The objects that were kept are untouched. The job log names each
+  deleted object at DEBUG level.
+- A delete that reports no change for an object that still exists is treated as a failure, because
   the job cannot tell what happened to it.
+- A delete that threw an error or did not finish within the time limit is never sent again. Its object
+  is in an unknown state, because the delete may still complete, even after the job ends.
+- A folder whose listed objects are all gone is still partly deleted when the removal of its empty
+  directories did not finish. A directory delete that threw an error or was not waited for is in an
+  unknown state, as for an object.
+
+The same sets are in `diagnostic_details`, when at least one object of the folder was touched:
+
+| Key | Meaning |
+|---|---|
+| `partially_deleted_folder_path` | The folder. |
+| `partially_deleted_folder_listed_object_count` | The number of objects in its listing before deletion. |
+| `partially_deleted_folder_deleted_*` | Listed objects confirmed deleted. |
+| `partially_deleted_folder_remaining_*` | Listed objects not tried, or still there after their delete returned. |
+| `partially_deleted_folder_unknown_state_*` | Listed objects whose delete may still complete. |
+| `partially_deleted_folder_vanished_*` | Listed objects that were gone before the job deleted them. |
+| `partially_deleted_folder_unlisted_*` | Objects found in the folder that were not in the listing, and new empty directories found below it. |
+| `partially_deleted_folder_directory_cleanup` | `not_run` when not every listed object was deleted, so no directory was looked at; `finished`; or `not_finished` when that step stopped. Unless it is `finished`, an object written into the folder after the listing may be missing from `unlisted`. Even when it is, one written after the job last looked at that place is not in it. |
+| `partially_deleted_folder_kept_directory_*` | Directories that are still there: not empty, refused, the directory where the step stopped, and its parents. Directories after that one were not looked at and are not listed. |
+| `partially_deleted_folder_unknown_state_directory_*` | Directory deletes that threw an error or were not waited for, so each may still complete. |
+
+Each set has an `_object_count`. When it is not empty, it also has a `_keys_sample` of up to 100 keys,
+relative to the folder, one per line, and a `_keys_truncated` flag. Each listed object is in exactly
+one of `deleted`, `remaining`, `unknown_state` and `vanished`. Each directory key has a `_count`, and
+when it is not empty, a `_paths_sample` of full paths and a `_paths_truncated` flag.
 
 Later databases in the same run continue, as long as this audit row was written.
 
@@ -1028,6 +1488,61 @@ it did. From that point on:
 
 Each later row is written once on a best-effort basis. A database whose own audit row failed has
 no row in the audit table, so use the job log for that database.
+
+---
+
+## Error messages and logs
+
+Error text can hold connection details, so the job cleans it before it writes it to the log or the
+audit table.
+
+- Values that look like credentials become `***`. This covers values after keys such as `password`,
+  `secret`, `token`, `access-key`, `session` and `signature`, `Bearer` tokens, AWS access key IDs,
+  the user and password part of a URL, URL query strings, and an Azure SAS `sig=` value outside a URL.
+- Control characters, text-direction characters and other invisible format characters, such as
+  U+200B, U+FEFF, U+00AD and tag characters, are written as `\uXXXX`. A folder name with a newline
+  stays on one line in the log and in one entry of a `diagnostic_details` sample.
+- In the audit table, folder paths and names keep their exact text, apart from these escapes and a URL
+  user and password. A backslash in a path or name is written as `\\`. So a folder named `token=1` is
+  stored as is.
+- In log and report lines, paths are cleaned like any other text. A part of a path that looks like
+  `key=value` is hidden: a folder named `token=1` is logged as `token=***`, and
+  `.../api_key=abc/part-0.parquet` as `.../api_key=***`, because the value runs over the `/`. The
+  audit row is the exact record.
+- Long messages are cut and end with `...[truncated]`.
+- `error_message` holds the error message and the class names of its causes, for example
+  `...; caused by java.io.IOException`. The messages of the causes are only in the job log.
+- WARN and ERROR log lines show the error and its causes on one line. The stack trace is logged at
+  DEBUG, with its messages cleaned the same way.
+
+To read a path or name back from the audit table, decode `\\` as one backslash and `\uXXXX` as one
+UTF-16 unit. The value is then the exact text, with two exceptions: a URL user and password were
+removed, or the value ends with `...[truncated]`. An S3, GCS or Azure object key is short enough that
+it is never cut. `error_message`, `ownership_unreadable_sample`, `scan_plan_error` and log lines are
+display text. They cannot be decoded back, because a backslash in them is left as is.
+
+The cleaning works on patterns, so it has limits:
+
+- A secret with no key name in front of it, and no known shape, is not found.
+- A value without quotes ends at `,` `(` `"` `;` or `&`. So `password=ab,cd` shows `,cd`.
+- A key followed by a space and a secret with no digit, such as `fs.s3a.secret.key` and 40 letters, is
+  not found.
+- A key name that ends in `error`, `exception`, `throwable`, `provider` or `providers`, such as
+  `s3.secret-key-error=x`, is not treated as a secret key.
+- A key name with more than 128 characters after its last keyword is not found. Real keys have the
+  keyword near the end.
+- A URL password part longer than 1,024 characters before an `@`, and a path longer than 2,048
+  characters before a `?`, are not cleaned as such.
+- With a user and password in a URL, everything up to the last `@` before a space is hidden. A path
+  with an `@` after such a URL loses its start. That hides too much, not too little.
+- Some harmless values that sit after a key such as `session` are hidden too.
+- Unicode look-alike separators, YAML block values, JSON keys written with escapes, a `user:password@host`
+  with no scheme, and URLs with spaces or unusual schemes are not cleaned.
+- Logs written by Spark and Hadoop themselves are not cleaned by this job.
+
+The job exits with code `1` when the run stops with an error, for example when an audit row could
+not be written. It exits with `0` otherwise. A database that fails gets its own `FAILED` row and the
+run goes on with the next database, so a `FAILED` row alone does not change the exit code.
 
 ---
 
@@ -1067,7 +1582,7 @@ namespace folder, `<catalog warehouse>/<database>`, where its Iceberg tables liv
 
 For an Iceberg table the job can see, its `write.data.path`, `write.metadata.path`,
 `write.object-storage.path` and `write.folder-storage.path` are protected like its location, during
-candidate selection and again in the pre-delete recheck. A table with `gc.enabled` set to anything but
+candidate selection and again at every ownership read of the [deletion fence](#deletion-fence). A table with `gc.enabled` set to anything but
 `true` or with `write.location-provider.impl` set, a blank write path or one without a scheme and bucket,
 or properties that cannot be read is treated as an unresolved table, which blocks deletion for its database.
 
@@ -1113,20 +1628,24 @@ there, so a second problem shows up only once the first is fixed. Only the class
 there. The WARN log has the details. The report shows the same entry as `Unreadable` under
 `OWNERSHIP CHECKS`.
 
-Another database can claim a folder while the run is going. So right before a database deletes, the job
-reads all of this again, with nothing reused from the first read. Iceberg catalogs cache the tables they
-load, so before every table read the job drops that table's cached copy, and the read comes from the
-catalog. This also applies to the pre-delete recheck of the database's own tables. If the copy cannot be
-dropped, the read fails. A candidate folder that is now claimed
-is kept and recorded as `folder_kept_at_final_check`, and the log names the new storage. If this final
-read fails, the database is `BLOCKED` with `status_reason=other_database_storage_unknown`. If it finds an
-unresolved table, the database is `BLOCKED` with `status_reason=other_table_unresolved`. A dry run deletes
-nothing, so it does not read again.
+Another database can claim a folder while the run is going. So right before a database deletes its
+first folder, the job reads all of this again, with nothing reused from the first read. It reads again
+once that read is more than 4 minutes old, before a later folder or inside one. See [Deletion fence](#deletion-fence).
+Iceberg catalogs cache the tables they load, so before every table read the job drops that table's
+cached copy, and the read comes from the catalog. This also applies to the read of the database's own
+tables in the fence. If the copy cannot be dropped, the read fails. A candidate folder that is now
+claimed is kept and recorded as `folder_kept_at_final_check`, and the log names the new storage. If
+such a read fails before anything is deleted, the database is `BLOCKED` with
+`status_reason=other_database_storage_unknown`. If it finds an unresolved table, the database is
+`BLOCKED` with `status_reason=other_table_unresolved`. After a folder was deleted, either one stops
+deletion with `status_reason=deletion_stopped_at_recheck`. A dry run deletes nothing, so it does not
+read again.
 
 These checks use only what the job can see. They do not protect a database or table hidden from the
 job, tables of a catalog outside the job's Spark session or with its warehouse in another bucket, tables
-of nested namespaces, a table placed in a folder after the final read while that database is deleting,
-or files that a table reaches without a write path property, for example through `add_files`,
+of nested namespaces, a table placed in a candidate folder after the last ownership read (unless it is
+a table of this database with the folder's name), or files that a table reaches
+without a write path property, for example through `add_files`,
 `migrate`, `snapshot`, or an earlier location.
 
 ---
@@ -1134,8 +1653,8 @@ or files that a table reaches without a write path property, for example through
 ## Unresolved table storage ownership
 
 A table is unresolved when it exists in the catalog but the job cannot read its Iceberg metadata or
-storage location during the run, its location is missing or blank and it is not a view, or its location
-has no scheme and bucket. This says nothing about
+storage location during the run, its location is missing or blank and it is not a view, its location
+has no scheme and bucket, or its name contains a backtick, which the job never puts in SQL text. This says nothing about
 whether the table is wanted or healthy. It only means the job does not currently know which storage
 folder that table owns.
 
@@ -1238,6 +1757,11 @@ job deletes. Before it expires, a deleted folder can be restored from its earlie
 versioning suspended, objects written while it was suspended have no earlier version, so they cannot be
 restored this way. The job does not delete old versions itself.
 
+Versioning is also the way back for a delete the job stopped waiting for. Such a delete may still
+complete later, even after the job ends, and its object is listed under
+`partially_deleted_folder_unknown_state_keys_sample`. With versioning enabled, that object keeps its
+last version behind a delete marker, so it can be restored. Without versioning it cannot.
+
 ---
 
 ## Recommended workflow
@@ -1272,7 +1796,9 @@ Review:
 Before enabling deletion, verify that each candidate folder:
 
 - Is no longer claimed by the catalog.
-- Is older than the configured cutoff.
+- Is older than the cutoff deletion mode will use: `older_than_hours`, but never less than 72 hours.
+  Folders in `would_be_held_by_deletion_floor_paths_sample` are younger than that, so deletion mode
+  keeps them for now.
 - Is not in `exclude_paths`.
 - Is not protected by `exclude_database_folders`.
 - Is expected to be removed.
@@ -1286,14 +1812,17 @@ Before enabling deletion, verify that each candidate folder:
   "databases": ["analytics"],
   "exclude_paths": [],
   "exclude_database_folders": [],
-  "older_than_hours": 24,
+  "older_than_hours": 72,
   "dry_run": false,
   "delete_enabled": true,
   "max_candidate_folders_per_database": 10
 }
 ```
 
-The job revalidates active table locations before deleting candidates.
+Deletion mode never uses less than 72 hours. With a lower `older_than_hours`, the run uses 72 and logs
+a warning. See [72-hour minimum in deletion mode](#72-hour-minimum-in-deletion-mode).
+
+Before deleting each folder, the job checks it again. See [Deletion fence](#deletion-fence).
 
 ---
 
@@ -1305,19 +1834,19 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 |---|---|---|
 | T01 | Valid DB, no untracked folders, dry-run | `SUCCESS`, zero candidates, zero deleted |
 | T02 | Valid DB with one manually created untracked folder, dry-run | `SUCCESS`, one candidate, zero deleted |
-| T03 | Same as T02 with deletion mode enabled | `SUCCESS`, one deleted folder |
+| T03 | Same as T02 with deletion mode enabled, once the folder's newest object is at least 72 hours old | `SUCCESS`, one deleted folder |
 | T04 | Post-delete dry-run | `SUCCESS`, zero candidates |
 | T05 | Config contains valid DB and missing DB | Valid DB `SUCCESS`, missing DB `SKIPPED` |
 | T06 | Config contains only missing DB | `SKIPPED`, `status_reason=database_not_found` |
 | T07 | `dry_run=false`, `delete_enabled=false` | Fails safe, no deletion |
-| T08 | Candidate count exceeds max limit | `SKIPPED`, no deletion |
+| T08 | Candidate count exceeds max limit | `SKIPPED`, no deletion; folders too new for the age check count toward the limit too |
 | T09 | Candidate is listed in `exclude_paths` by full path | Candidate is protected |
 | T09b | Candidate is listed in `exclude_database_folders` as `database.folder` | Candidate is protected |
 | T09c | An excluded path sits inside a candidate folder | The whole candidate folder is protected |
 | T10 | Loose file directly under scan root | Ignored, not deleted |
 | T11 | Table is dropped then recreated at same location | Folder is protected because it is active again |
 | T12 | Table is dropped then recreated at different location | Old untracked folder can become a candidate |
-| T13 | Candidate becomes active between detection and deletion | Deletion is skipped for that folder |
+| T13 | Candidate becomes active between detection and deletion | That folder is kept as `folder_kept_at_final_check` or `folder_kept_table_named_like_folder`; other folders are still deleted |
 | T14 | Unexpected catalog/storage error | `FAILED` |
 | T15 | Candidate folders present | Candidate object count and size are collected and logged |
 | T16 | `collect_size_statistics=false` with candidate folders | One startup warning; statistics are still collected |
@@ -1334,7 +1863,7 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T27 | A candidate folder is deleted between listing and inspection | Skipped as `folder_not_found`; if every candidate was deleted, the database does not fail; with no other block, it records `SUCCESS` with no candidates |
 | T28 | A candidate folder holds only directory markers | Skipped as `empty_folder` on every run; never deleted |
 | T29 | Listing a candidate folder is denied | Skipped as `statistics_unavailable`; if every existing candidate is denied, `FAILED` |
-| T30 | A candidate folder is deleted by someone else after inspection, before the job deletes it (S3A) | Recorded as `folder_not_found_at_deletion`; still a candidate, not deleted; other folders are still deleted |
+| T30 | A candidate folder is deleted by someone else after inspection, before the job deletes it | Recorded as `folder_not_found_at_deletion`; still a candidate, not deleted; other folders are still deleted |
 | T31 | A table is renamed from the cleaned database into another database | Its folder stays and is never a candidate; unrelated orphans are still deleted |
 | T32 | Another catalog of the job session, in the same bucket, has a table stored under the cleanup root | That folder is never a candidate |
 | T33 | Another database has a table whose metadata is missing | `BLOCKED`, `status_reason=other_table_unresolved`, in dry-run and deletion mode |
@@ -1346,6 +1875,17 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T39 | A JDBC catalog is registered in the job session | It is not read and does not block deletion |
 | T40 | A database has two cleanup roots, and another catalog of the job session has a table in `<warehouse>/<database>`, or cannot be read there | That folder is never deleted; a read that fails under either root gives `BLOCKED` with `other_database_storage_unknown`, and nothing is deleted in either root |
 | T41 | A database has a JDBC table in `<database>.db` and its other tables in `<warehouse>/<database>` | The JDBC table's folder is never a candidate and does not make `<database>.db` a cleanup root; with only JDBC tables, `SKIPPED` with `no_active_tables_in_database` |
+| T42 | Deletion mode with `older_than_hours=0`, an orphan 48 hours old and one 73 hours old | One warning names both values; the 48-hour folder is kept, the 73-hour folder is deleted; `older_than_hours=72` and `configured_older_than_hours=0` on the row |
+| T43 | Dry run with `older_than_hours=0` and the same two folders | Both are candidates, nothing is deleted; `would_be_held_by_deletion_floor_count=1` names the 48-hour folder |
+| T44 | A candidate folder holds more than 10,000 objects | Skipped as `too_many_objects` in dry-run and deletion mode; never deleted; other folders are still deleted. A folder that passes more than 10,000 objects only after inspection is kept as `folder_kept_too_many_objects`, and the row stays `SUCCESS` |
+| T45 | Deletion mode, and an object is added to a candidate folder after inspection, before the job lists it again | The folder is kept as `folder_kept_changed_since_inspection`; nothing in it is deleted; other folders are still deleted; `SUCCESS` |
+| T45b | Deletion mode, and an object is added to a candidate folder after the job listed it again, while it deletes it | The new object stays; `FAILED` with `deletion_failed`; `partially_deleted_folder_unlisted_object_count=1` |
+| T46 | Before the first deletion run, on the target storage | A listing and a HEAD of the same object agree on size and ETag, and on modification time to the second. If not, deletion stops at the first object with `deletion_failed` and nothing is deleted |
+| T47 | Deletion mode, 3 folders older than 72 hours, 9 folders 48 hours old, `max_candidate_folders_per_database=10` | `SKIPPED` with `too_many_candidate_folders`; nothing deleted. With a limit of `12`, the 3 old folders are deleted and `too_new_count=9` |
+| T48 | Every folder with no verified owner is held, for example because each is too new or empty | `SUCCESS`, nothing deleted; one warning names each reason and its count; `held_folder_counts` has the same counts |
+| T49 | Deletion mode, and the first ownership read of the fence takes more than 2.5 minutes | `FAILED` with `unexpected_error`; nothing deleted; `error_message` says the ownership recheck took more than the 150 s a read may use of the 300 s limit |
+| T50 | Deletion mode, and the ownership read fails after one folder was deleted | `FAILED` with `deletion_stopped_at_recheck`; `deleted_folders` lists that folder; `deletion_stop_cause` and `folder_not_attempted_paths_sample` are on the row |
+| T51 | Dry run on the target image, with a candidate folder whose name holds a quote and `${x}` | `candidate_folders` on the audit row holds the folder path exactly as it is in storage |
 
 ---
 
@@ -1436,29 +1976,129 @@ Any old unreferenced files inside that active table folder should be handled by 
 
 ## Known limitations
 
-- `exclude_paths` supports full physical storage paths only.
-- `exclude_database_folders` supports database-scoped immediate child folder names in `database.folder` format.
-- Table names or folder names alone are not supported because they can be ambiguous across databases.
-- The platform UI Job ID is not currently stored in the audit table because it is not exposed to the driver process as an environment variable. The runtime compute/application ID is stored as `runtime_compute_id`.
-- The job deletes whole untracked table folders, not individual orphan files inside active Iceberg table folders.
-- Candidate discovery is table-folder-level: the job only selects immediate child folders under the resolved scan root as cleanup candidates.
-- When a selected candidate folder is deleted, the full object-storage prefix under that folder is deleted, including nested data and metadata objects.
-- The job relies on Spark catalog discovery for active table locations.
-- `report_only_storage_roots` approves listing for review only. It cannot make a location eligible for
-  deletion. Older job versions reject configs that contain this setting, so upgrade the job before adding it.
-- Object-storage access supports S3 and S3-compatible storage. A non-S3 catalog location falls back to Spark's own Hadoop configuration, which carries no catalog-specific endpoint or credentials.
-- Only databases on S3-compatible storage, Google Cloud Storage, or Azure storage are cleaned. A database on another filesystem, such as HDFS, is refused with `invalid_storage_location`.
-- Catalogs using vended or remotely signed credentials are not supported for storage access, because those credentials are issued per Iceberg request and never appear in `sparkConf`.
-- Folder names are compared case-sensitively, because `ORDERS` and `orders` are different object-storage prefixes.
-- A database whose location equals or contains the catalog warehouse root cannot be cleaned by this job.
-- Folders are deleted only under the cleanup root. Additional roots are reported only, and table parents
-  outside the database's own storage are not listed at all.
-- Ownership is checked against the tables and databases the job can see in the catalog, and in the other
-  catalogs of its Spark session in the same bucket or with no `warehouse` setting. A table or database the job cannot see does not
-  protect its folder, and neither does a Hive partition stored outside its table's folder. Catalogs
-  outside the Spark session or with their warehouse in another bucket, and files a table uses outside
-  its own folder, are not checked. See
-  [What deletion mode can and cannot prove](#what-deletion-mode-can-and-cannot-prove).
-- On a versioned bucket, deleting a folder may not free storage. See [Versioned buckets](#versioned-buckets).
-- The job is intended for controlled cleanup workflows, not blind automatic deletion.
-- Folder age and size require recursively listing objects under each candidate folder, for at most `max_candidate_folders_per_database` folders per database. This can take time for folders with many objects and cannot be turned off, because it is needed to establish folder age.
+Each bullet starts with its class. **Fixed** means closed in this version, with a test. **Fails closed**
+means the job keeps the folder or stops deleting, with a test. **Residual** means the job cannot close it;
+the bullet says why and what covers it instead. **Scope** means something the job does not try to do. No
+bullet is a release blocker.
+
+- **Scope.** `exclude_paths` supports full physical storage paths only.
+- **Scope.** `exclude_database_folders` supports database-scoped immediate child folder names in `database.folder` format.
+- **Scope.** Table names or folder names alone are not supported because they can be ambiguous across databases.
+- **Scope.** The platform UI Job ID is not currently stored in the audit table because it is not exposed to the driver process as an environment variable. The runtime compute/application ID is stored as `runtime_compute_id`.
+- **Scope.** The job deletes whole untracked table folders, not individual orphan files inside active Iceberg table folders.
+- **Scope.** Candidate discovery is table-folder-level: the job only selects immediate child folders under the resolved scan root as cleanup candidates.
+- **Scope.** When a selected candidate folder is deleted, every object listed under that folder is deleted, including nested data and metadata objects.
+- **Residual.** An object rewritten after the job last reads its status, and before its delete finishes, is
+  deleted with its new content. Object storage has no conditional delete here. The storage client also retries
+  a failed delete by itself, and each retry deletes whatever is at that key at that moment. On a slow store
+  this window can last seconds to minutes. Bucket versioning is the way back. An object written under a new
+  key after the last listing is never deleted.
+- **Residual.** The check before each delete compares modification times to the second, because a HEAD
+  reports seconds. A rewrite with the same size and ETag in the same second is not seen. Different content
+  changes the ETag.
+- **Fails closed.** An object key with an empty, `.` or `..` segment, such as `a//b`, cannot be addressed
+  exactly through Hadoop paths. Such a key is listed under a different name. Before the first delete, the job
+  reads every listed key back by its own name, so a folder that holds one is kept as
+  `folder_kept_key_not_addressable` and nothing in it is deleted.
+- **Fails closed.** Deleting object by object sends about five storage requests per object, one after
+  another. A folder near the 10,000-object limit can take several minutes, longer than one ownership read
+  may be used. The job then reads ownership again in the middle of the folder and goes on. If that read
+  fails, is too slow or protects the folder, the folder is left partly deleted, and deletion stops with
+  `deletion_stopped_at_recheck` and the cause. The job starts no delete in the last 30 seconds of a read's
+  5 minutes, which stops the folder the same way with `snapshot_expired_during_deletion`. The row lists
+  exactly which objects were deleted and which remain. One delete call can take longer than those 30 seconds, for example while the storage client
+  retries. The folder then ends as `deletion_failed` instead. That object is in `unknown_state`, and its
+  delete may still land after the limit, as the next bullet says. The limit is provisional. See
+  [Object limit](#object-limit).
+- **Fails closed, and residual for a delete still running.** Time limit. The job measures the age of its
+  ownership read on a clock that a change of the system time cannot move. It waits for each catalog or storage
+  read and each delete only until that read is 5 minutes old, starts no read after that, and starts no delete
+  in the last 30 seconds before it. If a read does not finish in time, the job stops deleting for that database
+  and ignores the late result.
+  Inside a delete call, the storage client reads the object's status and may retry before and after it sends
+  the request. A delete that returned in time counts as deleted. A delete still running at the limit is
+  reported in an unknown state and stops the database. The job only stops waiting. That delete may still
+  complete later, even after the job ends, with no bound on when. Turn on bucket versioning so such an object
+  can be restored. See [Time limit](#time-limit).
+- **Residual.** After a folder's objects are deleted, the job removes its empty directories one at a time.
+  Inside the delete of a directory, the storage client first checks whether an object has that exact name,
+  and deletes that object instead of the directory marker. Through Hadoop paths the job cannot ask for the
+  marker alone. So an object written at a directory's exact name after the job's own status read, and before
+  the client's check, is deleted. For a directory inside the folder, that object is in the folder. For the
+  folder itself, it sits beside the folder (`db/t` next to `db/t/`), outside it. Inside the folder, the
+  client leaves the directory's marker behind, which keeps the folder. The removal of empty directories names
+  that directory as unlisted, so the folder is reported partly deleted. Beside the folder nothing is left to
+  show it, and the folder is reported deleted. The window runs from the
+  job's status read to the client's check inside the delete, usually milliseconds. For a directory delete
+  the job stopped waiting for, it lasts until that delete lands. The job could close this only by sending no
+  directory delete at all. Every deleted folder would then keep its markers and come back as a candidate in
+  the next run. It would count toward `max_candidate_folders_per_database` before the age check. That would
+  change the candidate limit, which this version keeps as it was. Keeping only the folder's own marker would
+  close the case beside the folder, not the one inside it. Older versions deleted each folder with one
+  recursive delete. That deleted such an object inside the folder whenever it was written, and an object at
+  the folder's own name whenever one was there. Bucket versioning is the way back. No directory delete
+  starts in the last 30 seconds of the ownership read's 5 minutes, and the folder is then reported partly
+  deleted.
+- **Fails closed.** On S3A, the listing of a directory returns an object of the same name only when nothing is
+  listed below the directory. Other stores may return it in other cases. So when the removal of empty
+  directories gets such an object back, it stops there. The folder is then reported partly deleted, with
+  `partially_deleted_folder_directory_cleanup=not_finished`. Below the folder, the object is new and is named
+  as unlisted. For the folder itself, this also happens for an object beside the folder (`db/t` next to
+  `db/t/`) that was there before the run, or that was written while its directories were removed. The folder
+  is then partly deleted even though every listed object is gone.
+- **Residual.** A metastore call that never returns can still hold up the job at its next Spark SQL call,
+  for example the audit write. The deletion checks return in time and stop deletion, but the row may be
+  written late or, if the job is killed, not at all.
+- **Residual.** A table created in a candidate folder after the last ownership read is not seen before
+  deletion, when it is in another database or has another name than the folder. The window lasts until the
+  folder's deletes land. See [Races the job cannot close](#races-the-job-cannot-close). Bucket versioning is
+  the way back.
+- **Residual.** A `CREATE TABLE ... LOCATION` on a candidate folder after the last ownership read is not
+  seen when it writes no object into the folder, for example a Hive table with no data yet, and the table is
+  in another database or has another name than the folder. The new listing and the age check find nothing
+  new, so the folder can be deleted. When the table writes an object there before the job lists the folder
+  again, the folder is kept as `folder_kept_changed_since_inspection`.
+- **Residual.** A multipart upload that is still in progress has no object yet, so it is not listed and not
+  checked, and its parts are not deleted. If it completes after the job listed the folder, the new object
+  stays. The folder is then reported partly deleted, with the object as unlisted when the removal of empty
+  directories finds it. When the upload completes after the folder was done, the folder is reported deleted
+  with the new object in it.
+- **Residual, not verified.** S3 gives the object of a multipart upload the time the upload started as its
+  modification time. This comes from AWS documentation and was not checked here. An upload started more than
+  72 hours ago and completed shortly before the job inspects the folder can pass the age check, and its
+  object is then deleted with the folder.
+- **Fails closed.** The listing before deletion and the deletes are not one step. Seconds to minutes pass
+  between the listing and the end of the removal of empty directories. An object written under a new key
+  in that time is never deleted. That step lists each directory, looks again after a refused delete, and
+  lists a kept folder once more at the end. When it finds the object, it records `deletion_failed` with an
+  unlisted object. When that step does not finish, the folder is still partly deleted, and the row has
+  `partially_deleted_folder_directory_cleanup=not_finished` but may not name the object. An object written
+  after the job last looked at that place is not found, and the folder is reported deleted with the object
+  in it, as for a multipart upload that completes late.
+- **Residual.** The age check compares object times with the clock of the Spark driver. If that clock runs
+  ahead of the storage clock, the 72-hour minimum is shorter by the same amount. Keep both on NTP.
+- **Residual.** The job relies on Spark catalog discovery for active table locations.
+- **Scope.** `report_only_storage_roots` approves listing for review only. It cannot make a location eligible
+  for deletion. Older job versions reject configs that contain this setting, so upgrade the job before
+  adding it.
+- **Scope.** Object-storage access supports S3 and S3-compatible storage. A non-S3 catalog location falls back to Spark's own Hadoop configuration, which carries no catalog-specific endpoint or credentials.
+- **Scope.** Only databases on S3-compatible storage, Google Cloud Storage, or Azure storage are cleaned. A database on another filesystem, such as HDFS, is refused with `invalid_storage_location`.
+- **Scope.** Catalogs using vended or remotely signed credentials are not supported for storage access, because those credentials are issued per Iceberg request and never appear in `sparkConf`.
+- **Scope.** Folder names are compared case-sensitively, because `ORDERS` and `orders` are different object-storage prefixes.
+- **Fails closed.** Catalog, database and table names with a backtick are not supported. Such a database
+  fails, such a table is unresolved, and another database with such a name has unknown storage, so nothing is
+  deleted on its account. A candidate folder whose name holds a backtick stops deletion at the lookup of a
+  table with that name.
+- **Scope.** A database whose location equals or contains the catalog warehouse root cannot be cleaned by this job.
+- **Scope.** Folders are deleted only under the cleanup root. Additional roots are reported only, and table
+  parents outside the database's own storage are not listed at all.
+- **Residual.** Ownership is checked against the tables and databases the job can see in the catalog, and in
+  the other catalogs of its Spark session in the same bucket or with no `warehouse` setting. A table or
+  database the job cannot see does not protect its folder, and neither does a Hive partition stored outside
+  its table's folder. Catalogs outside the Spark session or with their warehouse in another bucket, and files
+  a table uses outside its own folder, are not checked. See
+  [What deletion mode can and cannot prove](#what-deletion-mode-can-and-cannot-prove). Protect such folders
+  with `exclude_paths`.
+- **Scope.** On a versioned bucket, deleting a folder may not free storage. See [Versioned buckets](#versioned-buckets).
+- **Scope.** The job is intended for controlled cleanup workflows, not blind automatic deletion.
+- **Scope.** Folder age and size require recursively listing objects under each candidate folder, for at most `max_candidate_folders_per_database` folders per database. This can take time for folders with many objects and cannot be turned off, because it is needed to establish folder age. The listing stops after 10,001 objects, and such a folder is kept as `too_many_objects`.

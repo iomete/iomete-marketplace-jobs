@@ -5,13 +5,16 @@ import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.fasterxml.jackson.module.kotlin.readValue
+import com.iomete.cleanup.untrackedtablefolders.logging.SafeLogger
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.inject.Produces
-import org.jboss.logging.Logger
 import java.io.File
 
 private const val APPLICATION_CONFIG_PATH = "/etc/configs/application.json"
+
+// The youngest folder age deletion mode ever uses. A code constant on purpose: no configuration can lower it.
+const val DELETION_MIN_AGE_HOURS = 72L
 
 data class ApplicationConfig(
     val catalog: String,
@@ -24,6 +27,7 @@ data class ApplicationConfig(
     @field:JsonProperty("exclude_database_folders")
     val excludeDatabaseFolders: List<String> = emptyList(),
 
+    // The configured value. Age decisions use effectiveOlderThanHours().
     @field:JsonProperty("older_than_hours")
     val olderThanHours: Long = 24,
 
@@ -43,6 +47,17 @@ data class ApplicationConfig(
     @field:JsonProperty("report_only_storage_roots")
     val reportOnlyStorageRoots: Map<String, List<String>> = emptyMap(),
 ) {
+    // Not a property, so the config parser cannot see it or accept a key for it. Every run that is not a dry run can
+    // delete, so it gets the minimum. A dry run keeps the configured value, 0 included, so it stays usable for testing.
+    fun effectiveOlderThanHours(): Long =
+        if (dryRun) olderThanHours else maxOf(olderThanHours, DELETION_MIN_AGE_HOURS)
+
+    fun ageFloorWarning(): String? =
+        effectiveOlderThanHours().takeIf { it != olderThanHours }?.let { effective ->
+            "older_than_hours=$olderThanHours is below the $DELETION_MIN_AGE_HOURS-hour minimum for deletion mode, so this " +
+                "run uses $effective hours. configured_older_than_hours=$olderThanHours, effective_older_than_hours=$effective."
+        }
+
     fun deprecationWarnings(): List<String> =
         if (collectSizeStatistics == false) {
             listOf(
@@ -116,7 +131,7 @@ data class ApplicationConfig(
 
 @ApplicationScoped
 class ConfigProducer {
-    private val logger = Logger.getLogger(ConfigProducer::class.java)
+    private val logger = SafeLogger.getLogger(ConfigProducer::class.java)
 
     @Produces
     @ApplicationScoped
