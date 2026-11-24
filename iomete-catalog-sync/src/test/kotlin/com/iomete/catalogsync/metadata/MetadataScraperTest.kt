@@ -16,6 +16,7 @@ import org.apache.spark.sql.SparkSession
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 
 class MetadataScraperTest {
     private lateinit var mockSparkSession: SparkSession
@@ -51,6 +52,7 @@ class MetadataScraperTest {
         every { mockApplicationConfig.exclusionRules } returns ExclusionRules()
         every { mockSparkSession.sparkContext() } returns mockSparkContext
         every { mockSparkContext.applicationId() } returns "app-test-123"
+        every { mockCoreServiceClient.domain("default") } returns CoreClient.Domain(isPrivate = false)
 
         scraper = MetadataScraper(
             mockSparkSessionProvider,
@@ -59,6 +61,7 @@ class MetadataScraperTest {
             mockTableMetadataExtractor,
             mockCoreServiceClient,
             mockCatalogServiceClient,
+            "default",
         )
     }
 
@@ -88,6 +91,7 @@ class MetadataScraperTest {
         verify(exactly = 1) { mockCatalogServiceClient.indexTable(match { it.name == "table2" }) }
         verify(exactly = 2) { mockCatalogServiceClient.indexSchema(any()) }
         verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "test_catalog" }) }
+        verify(exactly = 0) { mockCoreServiceClient.ownedCatalogs(any()) }
     }
 
     @Test
@@ -167,7 +171,7 @@ class MetadataScraperTest {
         scraper.shutdown()
         scraper = MetadataScraper(
             mockSparkSessionProvider, mockApplicationConfig, mockSparkMetadataReader,
-            mockTableMetadataExtractor, mockCoreServiceClient, mockCatalogServiceClient,
+            mockTableMetadataExtractor, mockCoreServiceClient, mockCatalogServiceClient, "default",
         )
 
         every { mockCoreServiceClient.catalogs() } returns listOf(excludedCatalog, testCatalog)
@@ -332,7 +336,89 @@ class MetadataScraperTest {
         verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "catalog2" }) }
     }
 
+    @Test
+    fun `a private domain syncs only its own catalogs that the job was launched with`() {
+        val owned = CatalogDetails(name = "owned", type = listOf("iceberg"), storageEndpoint = "http://minio:9000")
+        val notLaunched = CatalogDetails(name = "not_launched", type = listOf("iceberg"))
+        every { mockCoreServiceClient.domain("private-a") } returns CoreClient.Domain(isPrivate = true)
+        every { mockCoreServiceClient.ownedCatalogs("private-a") } returns CoreClient.OwnedCatalogs(listOf(owned, notLaunched))
+        every { mockSparkSessionProvider.isLaunchCatalog("owned") } returns true
+        every { mockSparkSessionProvider.isLaunchCatalog("not_launched") } returns false
+        every { mockSparkMetadataReader.getSchemas(mockSparkSession, "owned") } returns emptyList()
+        every { mockCatalogServiceClient.indexCatalog(any()) } returns mockk()
+
+        scraperIn("private-a").run()
+
+        verify(exactly = 0) { mockCoreServiceClient.catalogs() }
+        verify(exactly = 1) {
+            mockCatalogServiceClient.indexCatalog(match { it.catalog == "owned" && it.storageEndpoint == "http://minio:9000" })
+        }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "not_launched" }) }
+    }
+
+    @Test
+    fun `a failed private-domain lookup stops the run before anything is indexed`() {
+        every { mockCoreServiceClient.domain("private-a") } throws RuntimeException("iom-core unavailable")
+
+        assertThrows<RuntimeException> { scraperIn("private-a").run() }
+
+        verify(exactly = 0) { mockCoreServiceClient.catalogs() }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    @Test
+    fun `a lookup without the private flag stops the run before anything is indexed`() {
+        every { mockCoreServiceClient.domain("private-a") } returns CoreClient.Domain(isPrivate = null)
+
+        assertThrows<IllegalStateException> { scraperIn("private-a").run() }
+
+        verify(exactly = 0) { mockCoreServiceClient.catalogs() }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    @Test
+    fun `a catalog whose schemas can't be listed is not reported`() {
+        every { mockCoreServiceClient.catalogs() } returns listOf(testCatalog)
+        every { mockSparkMetadataReader.getSchemas(mockSparkSession, "test_catalog") } throws RuntimeException("access denied")
+
+        scraper.run()
+
+        verify(exactly = 0) { mockCatalogServiceClient.indexSchema(any()) }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    @Test
+    fun `a schema whose tables can't be listed is not reported, so its indexed tables stay`() {
+        val table1 = makeTableMetadata("test_catalog", "schema1", "table1")
+        every { mockCoreServiceClient.catalogs() } returns listOf(testCatalog)
+        every { mockSparkMetadataReader.getSchemas(mockSparkSession, "test_catalog") } returns listOf("schema1", "denied")
+        stubSchema("test_catalog", "schema1", listOf("table1"), listOf(table1))
+        every { mockSparkMetadataReader.getSchemaProperties(mockSparkSession, "test_catalog", "denied") } returns emptyMap()
+        every {
+            mockSparkMetadataReader.getTables(mockSparkSession, match { it.name == "test_catalog" }, "denied")
+        } throws RuntimeException("access denied")
+        val mockResponse = mockk<Response>()
+        every { mockCatalogServiceClient.indexTable(any()) } returns mockResponse
+        every { mockCatalogServiceClient.indexSchema(any()) } returns mockResponse
+        every { mockCatalogServiceClient.indexCatalog(any()) } returns mockResponse
+
+        scraper.run()
+
+        verify(exactly = 1) { mockCatalogServiceClient.indexSchema(match { it.schema == "schema1" }) }
+        verify(exactly = 0) { mockCatalogServiceClient.indexSchema(match { it.schema == "denied" }) }
+        verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.totalSchemaCount == 1 }) }
+    }
+
     // --- helpers ---
+
+    private fun scraperIn(domain: String): MetadataScraper {
+        scraper.shutdown()
+        scraper = MetadataScraper(
+            mockSparkSessionProvider, mockApplicationConfig, mockSparkMetadataReader,
+            mockTableMetadataExtractor, mockCoreServiceClient, mockCatalogServiceClient, domain,
+        )
+        return scraper
+    }
 
     private fun stubSchema(
         catalogName: String,

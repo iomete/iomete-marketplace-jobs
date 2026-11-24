@@ -42,6 +42,9 @@ class SparkSessionProvider {
             .config(sessionConfig)
             .orCreate
 
+    /** Whether the job was launched with settings for [catalogName]. */
+    fun isLaunchCatalog(catalogName: String): Boolean = sparkSession.conf().contains("spark.sql.catalog.$catalogName")
+
     fun getSession(catalog: CoreClient.CatalogDetails): SparkSession {
         val session =
             sessions.getOrPut(catalog.name) {
@@ -53,7 +56,7 @@ class SparkSessionProvider {
     }
 
     private fun createSparkSession(catalog: CoreClient.CatalogDetails): SparkSession {
-        if (sparkSession.conf().contains("spark.sql.catalog.${catalog.name}")) {
+        if (isLaunchCatalog(catalog.name)) {
             logger.info("Using default session for catalog: {}", catalog.name)
             return sparkSession
         }

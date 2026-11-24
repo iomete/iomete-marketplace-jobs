@@ -12,6 +12,7 @@ import com.iomete.catalogsync.config.ignoreExcluded
 import jakarta.annotation.PreDestroy
 import jakarta.inject.Singleton
 import org.apache.spark.sql.SparkSession
+import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.eclipse.microprofile.rest.client.inject.RestClient
 import org.slf4j.LoggerFactory
 import java.util.concurrent.CompletableFuture
@@ -36,6 +37,7 @@ class MetadataScraper(
     private val tableMetadataExtractor: TableMetadataExtractor,
     @param:RestClient val coreServiceClient: CoreClient,
     @param:RestClient val catalogServiceClient: CatalogClient,
+    @param:ConfigProperty(name = "iomete.domain") private val domain: String,
 ) {
     private val exclusionRules = applicationConfig.exclusionRules
     private val schemaParallelism = System.getenv("SCHEMA_PARALLELISM")?.toIntOrNull()
@@ -57,8 +59,7 @@ class MetadataScraper(
     fun run() {
         logger.info("Running process with application config: {}", applicationConfig)
 
-        coreServiceClient
-            .catalogs()
+        catalogsToSync()
             .mapNotNull { catalog ->
                 ignoreExcluded {
                     exclusionRules.enforceCatalogExclusionRules(catalog)
@@ -146,6 +147,23 @@ class MetadataScraper(
                     logger.error("Failed to process catalog {}: {}", catalog.name, th.message, th)
                 }
             }
+    }
+
+    /**
+     * A private domain's job syncs only the catalogs the domain owns, reached with its launch settings.
+     * Any other domain syncs the install-wide list. A failed lookup stops the run.
+     */
+    private fun catalogsToSync(): List<CatalogDetails> {
+        val isPrivate =
+            checkNotNull(coreServiceClient.domain(domain).isPrivate) { "iom-core did not say whether domain $domain is private" }
+        if (!isPrivate) return coreServiceClient.catalogs()
+
+        logger.info("Domain {} is private, syncing only its own catalogs", domain)
+        return coreServiceClient.ownedCatalogs(domain).catalogs.filter { catalog ->
+            sparkSessionProvider.isLaunchCatalog(catalog.name).also { launched ->
+                if (!launched) logger.warn("Skipping catalog {}: the job was not launched with its settings", catalog.name)
+            }
+        }
     }
 
     private fun processSchema(

@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 
 class SparkMetadataReaderTest {
     private lateinit var mockSparkSession: SparkSession
@@ -87,52 +88,29 @@ class SparkMetadataReaderTest {
     }
 
     @Test
-    fun `getTables should work when tables fail but views succeed`() {
-        val mockViewRow = mockk<Row>()
-        every { mockViewRow.getString(1) } returns "view1"
-        every { mockViewRow.getBoolean(2) } returns false
-
+    fun `getTables throws when listing tables fails, even if views succeed`() {
         val viewsDataset = mockk<Dataset<Row>>()
 
         every { mockSparkSession.sql("show tables from `catalog1`.`schema1`") } throws RuntimeException("Tables query failed")
         every { mockSparkSession.sql("show views from `catalog1`.`schema1`") } returns viewsDataset
-        every { viewsDataset.collectAsList() } returns listOf(mockViewRow)
+        every { viewsDataset.collectAsList() } returns emptyList()
 
         val catalog = CoreClient.CatalogDetails(name = "catalog1", type = listOf("iceberg"))
-        val result = reader.getTables(mockSparkSession, catalog, "schema1").map { it.name }
 
-        assertEquals(1, result.size)
-        assertTrue(result.contains("view1"))
+        assertThrows<RuntimeException> { reader.getTables(mockSparkSession, catalog, "schema1") }
     }
 
     @Test
-    fun `getTables should work when views fail but tables succeed`() {
-        val mockTableRow = mockk<Row>()
-        every { mockTableRow.getString(1) } returns "table1"
-        every { mockTableRow.getBoolean(2) } returns false
-
+    fun `getTables throws when listing views fails, even if tables succeed`() {
         val tablesDataset = mockk<Dataset<Row>>()
 
         every { mockSparkSession.sql("show tables from `catalog1`.`schema1`") } returns tablesDataset
         every { mockSparkSession.sql("show views from `catalog1`.`schema1`") } throws RuntimeException("Views query failed")
-        every { tablesDataset.collectAsList() } returns listOf(mockTableRow)
+        every { tablesDataset.collectAsList() } returns emptyList()
 
         val catalog = CoreClient.CatalogDetails(name = "catalog1", type = listOf("iceberg"))
-        val result = reader.getTables(mockSparkSession, catalog, "schema1").map { it.name }
 
-        assertEquals(1, result.size)
-        assertTrue(result.contains("table1"))
-    }
-
-    @Test
-    fun `getTables should return empty list when both queries fail`() {
-        every { mockSparkSession.sql("show tables from `catalog1`.`schema1`") } throws RuntimeException("Tables query failed")
-        every { mockSparkSession.sql("show views from `catalog1`.`schema1`") } throws RuntimeException("Views query failed")
-
-        val catalog = CoreClient.CatalogDetails(name = "catalog1", type = listOf("iceberg"))
-        val result = reader.getTables(mockSparkSession, catalog, "schema1").map { it.name }
-
-        assertEquals(emptyList<String>(), result)
+        assertThrows<RuntimeException> { reader.getTables(mockSparkSession, catalog, "schema1") }
     }
 
     @Test
@@ -172,12 +150,10 @@ class SparkMetadataReaderTest {
     }
 
     @Test
-    fun `getSchemas returns empty list when Spark throws`() {
+    fun `getSchemas throws when Spark throws`() {
         every { mockSparkSession.sql("show databases in `catalog1`") } throws RuntimeException("Spark error")
 
-        val result = reader.getSchemas(mockSparkSession, "catalog1")
-
-        assertEquals(emptyList<String>(), result)
+        assertThrows<RuntimeException> { reader.getSchemas(mockSparkSession, "catalog1") }
     }
 
     @Test
