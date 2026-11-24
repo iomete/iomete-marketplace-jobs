@@ -155,7 +155,8 @@ class MetadataScraper(
      */
     private fun catalogsToSync(): List<CatalogDetails> {
         val sync = coreServiceClient.catalogSync(domain)
-        if (!sync.isPrivate) return coreServiceClient.catalogs()
+        val isPrivate = checkNotNull(sync.isPrivate) { "iom-core did not say whether domain $domain is private" }
+        if (!isPrivate) return coreServiceClient.catalogs()
 
         logger.info("Domain {} is private, syncing only its own catalogs", domain)
         return sync.catalogs.filter { catalog ->

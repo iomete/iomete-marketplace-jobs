@@ -29,7 +29,8 @@ interface CoreClient {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class CatalogSync(
-        val isPrivate: Boolean,
+        // Nullable so a missing flag stops the run instead of reading as false.
+        val isPrivate: Boolean?,
         val catalogs: List<CatalogDetails> = emptyList(),
     )
 

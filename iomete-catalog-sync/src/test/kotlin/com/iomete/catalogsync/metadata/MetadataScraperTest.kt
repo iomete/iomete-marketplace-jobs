@@ -366,6 +366,16 @@ class MetadataScraperTest {
     }
 
     @Test
+    fun `a lookup without the private flag stops the run before anything is indexed`() {
+        every { mockCoreServiceClient.catalogSync("private-a") } returns CoreClient.CatalogSync(isPrivate = null)
+
+        assertThrows<IllegalStateException> { scraperIn("private-a").run() }
+
+        verify(exactly = 0) { mockCoreServiceClient.catalogs() }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    @Test
     fun `a catalog whose schemas can't be listed is not reported`() {
         every { mockCoreServiceClient.catalogs() } returns listOf(testCatalog)
         every { mockSparkMetadataReader.getSchemas(mockSparkSession, "test_catalog") } throws RuntimeException("access denied")
