@@ -152,7 +152,7 @@ class MetadataScraper(
 
     /**
      * A private domain's job syncs only the catalogs the domain owns, reached with its launch settings.
-     * Any other domain syncs the install-wide list. A failed lookup stops the run.
+     * Any other domain syncs the install-wide list. A failed lookup stops the run, except a 404 from an older iom-core.
      */
     private fun catalogsToSync(): List<CatalogDetails> {
         if (!isPrivateDomain()) return coreServiceClient.catalogs()
@@ -173,7 +173,7 @@ class MetadataScraper(
             } catch (e: WebApplicationException) {
                 if (e.response.status != 404) throw e
 
-                logger.info("iom-core has no domain lookup, syncing all catalogs")
+                logger.warn("Domain lookup for {} returned 404, treating it as not private and syncing all catalogs", domain)
                 return false
             }
 
