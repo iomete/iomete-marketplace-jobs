@@ -95,9 +95,10 @@
       "groupName": "quarkus"
     },
     {
-      "description": "Don't bump Hadoop or Iceberg in the lakehouse backup job - both versions have to match the jars the iomete Spark image ships, so they can only move together with that image",
+      "description": "Don't bump Hadoop or Iceberg in the lakehouse backup and cleanup jobs - both versions have to match the jars the iomete Spark image ships, so they can only move together with that image",
       "matchFileNames": [
-        "iomete-lakehouse-backup/**"
+        "iomete-lakehouse-backup/**",
+        "cleanup-untracked-table-folders-job/**"
       ],
       "matchPackageNames": [
         "/^org\\.apache\\.hadoop:/",
