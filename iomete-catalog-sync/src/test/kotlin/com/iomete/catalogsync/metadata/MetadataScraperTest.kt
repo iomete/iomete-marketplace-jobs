@@ -335,11 +335,9 @@ class MetadataScraperTest {
         verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "catalog2" }) }
     }
 
-    // --- helpers ---
-
     @Test
     fun `a private domain syncs only its own catalogs that the job was launched with`() {
-        val owned = CatalogDetails(name = "owned", type = listOf("iceberg"))
+        val owned = CatalogDetails(name = "owned", type = listOf("iceberg"), storageEndpoint = "http://minio:9000")
         val notLaunched = CatalogDetails(name = "not_launched", type = listOf("iceberg"))
         every { mockCoreServiceClient.catalogSync("private-a") } returns
             CoreClient.CatalogSync(isPrivate = true, catalogs = listOf(owned, notLaunched))
@@ -351,7 +349,9 @@ class MetadataScraperTest {
         scraperIn("private-a").run()
 
         verify(exactly = 0) { mockCoreServiceClient.catalogs() }
-        verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "owned" }) }
+        verify(exactly = 1) {
+            mockCatalogServiceClient.indexCatalog(match { it.catalog == "owned" && it.storageEndpoint == "http://minio:9000" })
+        }
         verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "not_launched" }) }
     }
 
@@ -397,6 +397,8 @@ class MetadataScraperTest {
         verify(exactly = 0) { mockCatalogServiceClient.indexSchema(match { it.schema == "denied" }) }
         verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.totalSchemaCount == 1 }) }
     }
+
+    // --- helpers ---
 
     private fun scraperIn(domain: String): MetadataScraper {
         scraper.shutdown()
