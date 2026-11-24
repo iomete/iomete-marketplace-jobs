@@ -11,6 +11,7 @@ import com.iomete.catalogsync.config.enforceSchemaExclusionRules
 import com.iomete.catalogsync.config.ignoreExcluded
 import jakarta.annotation.PreDestroy
 import jakarta.inject.Singleton
+import jakarta.ws.rs.WebApplicationException
 import org.apache.spark.sql.SparkSession
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.eclipse.microprofile.rest.client.inject.RestClient
@@ -154,9 +155,7 @@ class MetadataScraper(
      * Any other domain syncs the install-wide list. A failed lookup stops the run.
      */
     private fun catalogsToSync(): List<CatalogDetails> {
-        val isPrivate =
-            checkNotNull(coreServiceClient.domain(domain).isPrivate) { "iom-core did not say whether domain $domain is private" }
-        if (!isPrivate) return coreServiceClient.catalogs()
+        if (!isPrivateDomain()) return coreServiceClient.catalogs()
 
         logger.info("Domain {} is private, syncing only its own catalogs", domain)
         return coreServiceClient.ownedCatalogs(domain).catalogs.filter { catalog ->
@@ -164,6 +163,21 @@ class MetadataScraper(
                 if (!launched) logger.warn("Skipping catalog {}: the job was not launched with its settings", catalog.name)
             }
         }
+    }
+
+    /** Older iom-core has no domain lookup and no private domains, so a 404 reads as not private. */
+    private fun isPrivateDomain(): Boolean {
+        val lookup =
+            try {
+                coreServiceClient.domain(domain)
+            } catch (e: WebApplicationException) {
+                if (e.response.status != 404) throw e
+
+                logger.info("iom-core has no domain lookup, syncing all catalogs")
+                return false
+            }
+
+        return checkNotNull(lookup.isPrivate) { "iom-core did not say whether domain $domain is private" }
     }
 
     private fun processSchema(
