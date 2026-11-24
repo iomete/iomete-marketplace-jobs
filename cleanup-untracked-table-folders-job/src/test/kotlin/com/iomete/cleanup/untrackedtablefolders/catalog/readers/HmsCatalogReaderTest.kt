@@ -225,7 +225,10 @@ class HmsCatalogReaderTest {
         val result = HmsCatalogReader("spark_catalog", catalog, null).read()
 
         assertEquals(CatalogReadStatus.PARTIAL, result.status)
-        assertEquals(listOf(ReadGap(listOf("sales", "bare"), ReadGapKind.UNVERIFIED, "table_location_not_qualified")), result.gaps)
+        assertEquals(
+            listOf(ReadGap(listOf("sales", "bare"), ReadGapKind.UNVERIFIED, "table_location_not_qualified", location = "/warehouse/sales/bare")),
+            result.gaps,
+        )
         assertTrue(result.locations.none { it.name == listOf("sales", "bare") })
     }
 
@@ -238,7 +241,10 @@ class HmsCatalogReaderTest {
 
         val result = HmsCatalogReader("spark_catalog", catalog, null).read()
 
-        assertEquals(listOf(ReadGap(listOf("sales", "pg_bare"), ReadGapKind.UNVERIFIED, "table_location_not_qualified")), result.gaps)
+        assertEquals(
+            listOf(ReadGap(listOf("sales", "pg_bare"), ReadGapKind.UNVERIFIED, "table_location_not_qualified", location = "/warehouse/sales/pg_bare")),
+            result.gaps,
+        )
         assertTrue(result.locations.none { it.role == LocationRole.TABLE })
     }
 
@@ -272,7 +278,7 @@ class HmsCatalogReaderTest {
         assertEquals(CatalogReadStatus.PARTIAL, result.status)
         assertEquals(
             listOf(
-                ReadGap(listOf("sales", "orders"), ReadGapKind.UNVERIFIED, "partition_location_not_qualified"),
+                ReadGap(listOf("sales", "orders"), ReadGapKind.UNVERIFIED, "partition_location_not_qualified", location = "/warehouse/sales/orders/day=d2"),
                 ReadGap(listOf("sales", "orders"), ReadGapKind.UNVERIFIED, "partition_location_missing"),
             ),
             result.gaps,

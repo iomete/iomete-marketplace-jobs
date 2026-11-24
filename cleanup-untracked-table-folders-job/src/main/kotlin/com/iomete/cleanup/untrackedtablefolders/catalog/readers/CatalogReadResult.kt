@@ -13,20 +13,26 @@ enum class CatalogReadStatus { COMPLETE, PARTIAL, FAILED, UNAUTHORIZED }
 
 enum class ReadGapKind { FAILED, UNAUTHORIZED, LIMIT_EXCEEDED, UNVERIFIED, UNSUPPORTED }
 
-/** Something the reader could not read. [name] is the object path in the catalog, empty for the catalog itself. */
+/**
+ * Something the reader could not read. [name] is the object path in the catalog, empty for the catalog itself.
+ * [location] is set for a location without scheme and bucket that still has an absolute path.
+ */
 data class ReadGap(
     val name: List<String>,
     val kind: ReadGapKind,
     val reason: String,
     val causeClass: String? = null,
+    val location: String? = null,
 )
 
 enum class LocationRole { NAMESPACE, TABLE, PARTITION, WRITE_PATH, VIEW }
 
+/** [storesFiles] is false for a JDBC table's default location: the rows live in another database. */
 data class OwnedLocation(
     val name: List<String>,
     val role: LocationRole,
     val location: String,
+    val storesFiles: Boolean = true,
 )
 
 /** An Iceberg table or view the catalog says is live. [referencedFiles] are paths named in its current metadata. */
@@ -56,6 +62,7 @@ data class CatalogReadResult(
     val liveIceberg: List<LiveIcebergObject>,
     val externalPathUse: List<ExternalPathUse>,
     val gaps: List<ReadGap>,
+    val namespaces: List<List<String>> = emptyList(),
 ) {
     val status: CatalogReadStatus
         get() {
@@ -88,14 +95,16 @@ internal class ReadAccumulator(private val catalog: String) {
     val liveIceberg = mutableListOf<LiveIcebergObject>()
     val externalPathUse = mutableListOf<ExternalPathUse>()
     val gaps = mutableListOf<ReadGap>()
+    val namespaces = mutableListOf<List<String>>()
 
     // A path without scheme and bucket resolves against the writer's filesystem and can't be compared.
-    fun location(name: List<String>, role: LocationRole, location: String?) {
+    fun location(name: List<String>, role: LocationRole, location: String?, storesFiles: Boolean = true) {
         if (location.isNullOrBlank()) return
         if (runCatching { StoragePathUtils.isQualifiedLocation(location) }.getOrDefault(false)) {
-            locations += OwnedLocation(name, role, location)
+            locations += OwnedLocation(name, role, location, storesFiles)
         } else {
-            gaps += ReadGap(name, ReadGapKind.UNVERIFIED, "${role.name.lowercase()}_location_not_qualified")
+            val placeable = location.takeIf { StoragePathUtils.unqualifiedPath(it) != null }
+            gaps += ReadGap(name, ReadGapKind.UNVERIFIED, "${role.name.lowercase()}_location_not_qualified", location = placeable)
         }
     }
 
@@ -103,7 +112,8 @@ internal class ReadAccumulator(private val catalog: String) {
         gaps += gapFor(name, reason, error)
     }
 
-    fun result() = CatalogReadResult(catalog, locations.toList(), liveIceberg.toList(), externalPathUse.toList(), gaps.toList())
+    fun result() =
+        CatalogReadResult(catalog, locations.toList(), liveIceberg.toList(), externalPathUse.toList(), gaps.toList(), namespaces.toList())
 }
 
 private val UNAUTHORIZED_ERRORS = setOf(

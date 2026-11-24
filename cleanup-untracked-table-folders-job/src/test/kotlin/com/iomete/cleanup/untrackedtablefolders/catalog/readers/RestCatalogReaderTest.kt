@@ -93,8 +93,9 @@ class RestCatalogReaderTest {
         assertEquals(CatalogReadStatus.PARTIAL, result.status)
         assertEquals(
             setOf(
-                ReadGap(listOf("sales", "bare"), ReadGapKind.UNVERIFIED, "table_location_not_qualified"),
-                ReadGap(listOf("sales", "bare_data"), ReadGapKind.UNVERIFIED, "write_path_location_not_qualified"),
+                ReadGap(listOf("sales", "bare"), ReadGapKind.UNVERIFIED, "table_location_not_qualified", location = "/warehouse/sales/bare"),
+                ReadGap(listOf("sales", "bare_data"), ReadGapKind.UNVERIFIED, "write_path_location_not_qualified", location = "/warehouse/sales/bare_data/data"),
+                // It has no absolute path either, so it can't be placed in any bucket.
                 ReadGap(listOf("sales", "broken_path"), ReadGapKind.UNVERIFIED, "write_path_location_not_qualified"),
             ),
             result.gaps.toSet(),
@@ -234,7 +235,15 @@ class RestCatalogReaderTest {
         assertTrue(server.requests.all { it.authorization == null }, server.requests.toString())
         assertFalse(server.requests.any { it.path.contains("oauth") })
         assertEquals(
-            setOf("uri", "warehouse", "rest-page-size", "view-endpoints-supported", "io-impl"),
+            setOf(
+                "uri",
+                "warehouse",
+                "rest-page-size",
+                "view-endpoints-supported",
+                "io-impl",
+                "rest.client.connection-timeout-ms",
+                "rest.client.socket-timeout-ms",
+            ),
             RestCatalogReader.clientProperties(server.catalogName, sessionProperties)!!.keys,
         )
     }

@@ -41,6 +41,56 @@ class IcebergCatalogReader(
         return result.result()
     }
 
+    /** Every namespace and its location, without tables. */
+    fun readNamespaces(): CatalogReadResult {
+        val namespaces = catalog as? SupportsNamespaces
+            ?: return CatalogReadResult.failed(catalogName, ReadGap(emptyList(), ReadGapKind.UNSUPPORTED, "catalog_lists_no_namespaces"))
+        val result = ReadAccumulator(catalogName)
+        val all = try {
+            listAllNamespaces(namespaces, result)
+        } catch (e: Exception) {
+            return CatalogReadResult.failed(catalogName, gapFor(emptyList(), "list_namespaces_failed", e))
+        }
+        all.forEach { readNamespaceLocation(namespaces, it, result) }
+        return result.result()
+    }
+
+    /** One namespace with its tables and views, or null when it does not exist. */
+    fun readNamespace(name: List<String>): CatalogReadResult? {
+        val namespaces = catalog as? SupportsNamespaces
+            ?: return CatalogReadResult.failed(catalogName, ReadGap(emptyList(), ReadGapKind.UNSUPPORTED, "catalog_lists_no_namespaces"))
+        val result = ReadAccumulator(catalogName)
+        val namespace = Namespace.of(*name.toTypedArray())
+        try {
+            if (!namespaces.namespaceExists(namespace)) return null
+        } catch (e: Exception) {
+            result.gap(name, "load_namespace_failed", e)
+            return result.result()
+        }
+        probeMissingNamespace(result)
+        readNamespace(namespaces, namespace, result)
+        return result.result()
+    }
+
+    /** One table or view, or null when neither exists. [name] is the namespace levels and the object name. */
+    fun readObject(name: List<String>): CatalogReadResult? {
+        val result = ReadAccumulator(catalogName)
+        val identifier = TableIdentifier.of(*name.toTypedArray())
+        val views = catalog as? ViewCatalog
+        try {
+            val namespace = identifier.namespace()
+            if ((catalog as? SupportsNamespaces)?.namespaceExists(namespace) == false) return null
+            when {
+                catalog.tableExists(identifier) -> readTable(identifier, result)
+                views != null && views.viewExists(identifier) -> readView(views, identifier, result)
+                else -> return null
+            }
+        } catch (e: Exception) {
+            result.gap(name, "load_table_failed", e)
+        }
+        return result.result()
+    }
+
     /** For a manifest read of one table found by [read]. */
     fun loadTable(name: List<String>): Table {
         val identifier = TableIdentifier.of(*name.toTypedArray())
@@ -85,9 +135,16 @@ class IcebergCatalogReader(
 
     // A server that answers an unknown namespace with an empty list could also answer a real one that way.
     // The REST client also returns no views, without asking, when the server doesn't advertise view endpoints.
+    // The server's answer does not change within a run, so a reader probes once and every later read gets the gaps.
+    private val probeGaps: List<ReadGap> by lazy {
+        val probeResult = ReadAccumulator(catalogName)
+        probe(probeResult, "tables") { catalog.listTables(probeNamespace) }
+        (catalog as? ViewCatalog)?.let { views -> probe(probeResult, "views") { views.listViews(probeNamespace) } }
+        probeResult.gaps.toList()
+    }
+
     private fun probeMissingNamespace(result: ReadAccumulator) {
-        probe(result, "tables") { catalog.listTables(probeNamespace) }
-        (catalog as? ViewCatalog)?.let { views -> probe(result, "views") { views.listViews(probeNamespace) } }
+        result.gaps += probeGaps
     }
 
     private fun probe(result: ReadAccumulator, kind: String, list: () -> List<TableIdentifier>) {
@@ -101,13 +158,19 @@ class IcebergCatalogReader(
         }
     }
 
-    private fun readNamespace(catalog: SupportsNamespaces, namespace: Namespace, result: ReadAccumulator) {
+    private fun readNamespaceLocation(catalog: SupportsNamespaces, namespace: Namespace, result: ReadAccumulator) {
         val name = namespace.levels().toList()
+        result.namespaces += name
         try {
             result.location(name, LocationRole.NAMESPACE, catalog.loadNamespaceMetadata(namespace)["location"])
         } catch (e: Exception) {
             result.gap(name, "load_namespace_failed", e)
         }
+    }
+
+    private fun readNamespace(catalog: SupportsNamespaces, namespace: Namespace, result: ReadAccumulator) {
+        val name = namespace.levels().toList()
+        readNamespaceLocation(catalog, namespace, result)
         try {
             this.catalog.listTables(namespace).forEach { readTable(it, result) }
         } catch (e: Exception) {

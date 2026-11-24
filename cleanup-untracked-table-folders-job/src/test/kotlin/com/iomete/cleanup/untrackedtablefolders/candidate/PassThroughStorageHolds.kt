@@ -11,5 +11,5 @@ import io.mockk.mockk
 fun passThroughStorageHoldChecker(): StorageHoldChecker =
     mockk<StorageHoldChecker>().also { checker ->
         every { checker.readHistory(any(), any(), any(), any()) } returns AuditHistory.NotRead
-        every { checker.check(any(), any(), any(), any(), any(), any()) } answers { StorageHolds(emptyMap(), arg(4)) }
+        every { checker.check(any(), any(), any(), any(), any(), any(), any()) } answers { StorageHolds(emptyMap(), arg(4)) }
     }

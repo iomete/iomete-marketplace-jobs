@@ -5,14 +5,25 @@ import com.iomete.cleanup.untrackedtablefolders.CleanupFlowHarness.Companion.put
 import com.iomete.cleanup.untrackedtablefolders.audit.AuditHistoryRow
 import com.iomete.cleanup.untrackedtablefolders.audit.AuditHistoryUnavailableException
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecord
+import com.iomete.cleanup.untrackedtablefolders.candidate.LiveIcebergTable
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredTable
+import com.iomete.cleanup.untrackedtablefolders.catalog.readers.LiveIcebergObject
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.storage.InMemoryS3FileSystem
 import io.mockk.every
 import java.time.Duration
 import java.time.Instant
 import org.apache.hadoop.fs.FileSystem
+import org.apache.iceberg.DataFiles
+import org.apache.iceberg.FileFormat
+import org.apache.iceberg.PartitionSpec
+import org.apache.iceberg.Schema
+import org.apache.iceberg.Table
+import org.apache.iceberg.catalog.Namespace
+import org.apache.iceberg.catalog.TableIdentifier
+import org.apache.iceberg.inmemory.InMemoryCatalog
+import org.apache.iceberg.types.Types
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -27,6 +38,10 @@ private const val DB = "s3a://bucket/lake/a.db"
 private const val JOB_ID = "job-1"
 
 class StorageHoldsFlowTest {
+    // Live Iceberg tables the catalog read reports for database a, and how the hold checker loads name-mapped ones.
+    private var live: List<LiveIcebergObject> = emptyList()
+    private var tableLoader: ((LiveIcebergTable) -> Table)? = null
+    private var sessionCatalogs: Map<String, List<String>> = emptyMap()
 
     @BeforeEach
     fun setUp() {
@@ -147,6 +162,96 @@ class StorageHoldsFlowTest {
         assertHeld(second, "data_only_not_plain_output", "$DB/delta", "$DB/other")
         assertTrue(second.objectExists("$DB/other/part-0.parquet"))
         assertTrue(second.objectExists("$DB/delta/_delta_log/00000000000000000000.json"))
+    }
+
+    @Test
+    fun `a dropped table's metadata folder is held while a live table still has its uuid`() {
+        putMetadataFolder("dropped", """{"format-version":2,"table-uuid":"u1","location":"$DB/dropped"}""")
+        live = listOf(liveTable("moved", uuid = "U1"))
+
+        val (_, second) = confirmedRuns()
+
+        assertHeld(second, "live_table_uuid", "$DB/dropped")
+        assertTrue(second.objectExists("$DB/dropped/metadata/v1.metadata.json"))
+    }
+
+    @Test
+    fun `a live table's file without scheme and bucket that falls inside a folder holds it`() {
+        putMetadataFolder("dropped", """{"format-version":2,"table-uuid":"u1","location":"$DB/dropped"}""")
+        live = listOf(liveTable("restored", referencedFiles = listOf("/lake/a.db/dropped/metadata/v1.metadata.json")))
+
+        val (_, second) = confirmedRuns()
+
+        assertHeld(second, "live_file_referenced", "$DB/dropped")
+    }
+
+    @Test
+    fun `a live file reference that can't be compared holds every folder`() {
+        putMetadataFolder("dropped", """{"format-version":2,"table-uuid":"u1","location":"$DB/dropped"}""")
+        putFolder("$DB/scratch", "_temporary/0/part-00000")
+        live = listOf(liveTable("restored", referencedFiles = listOf("metadata/v1.metadata.json")))
+
+        val (_, second) = confirmedRuns()
+
+        assertHeld(second, "live_tables_incomplete", "$DB/dropped", "$DB/scratch")
+    }
+
+    @Test
+    fun `commit scratch that a name-mapped table's manifests name is held, even by a path without scheme and bucket`() {
+        putFolder("$DB/scratch", "_temporary/0/part-00000")
+        live = listOf(liveTable("imported", nameMapped = true))
+        tableLoader = { nameMappedTable("/lake/a.db/scratch/_temporary/0/part-00000") }
+
+        val (_, second) = confirmedRuns()
+
+        assertHeld(second, "name_mapped_file_referenced", "$DB/scratch")
+        assertTrue(second.objectExists("$DB/scratch/_temporary/0/part-00000"))
+    }
+
+    @Test
+    fun `a name-mapped table whose metadata can't be loaded holds every remaining folder`() {
+        putMetadataFolder("dropped", """{"format-version":2,"table-uuid":"u1","location":"$DB/dropped"}""")
+        putFolder("$DB/scratch", "_temporary/0/part-00000")
+        live = listOf(liveTable("imported", nameMapped = true))
+        tableLoader = { throw IllegalStateException("metadata file not found") }
+
+        val (_, second) = confirmedRuns()
+
+        assertHeld(second, "name_mapped_read_incomplete", "$DB/dropped", "$DB/scratch")
+    }
+
+    @Test
+    fun `a session catalog not read because its warehouse is in another bucket holds every folder as live tables incomplete`() {
+        putMetadataFolder("dropped", """{"format-version":2,"table-uuid":"u1","location":"$DB/dropped"}""")
+        putFolder("$DB/scratch", "_temporary/0/part-00000")
+        sessionCatalogs = mapOf(CATALOG to listOf(WAREHOUSE), "far" to listOf("s3a://far-bucket/lake"))
+
+        val (_, second) = confirmedRuns()
+
+        assertHeld(second, "live_tables_incomplete", "$DB/dropped", "$DB/scratch")
+        assertTrue(second.objectExists("$DB/scratch/_temporary/0/part-00000"))
+    }
+
+    @Test
+    fun `a session catalog in the same bucket is read, so it does not hold the folders`() {
+        putMetadataFolder("dropped", """{"format-version":2,"table-uuid":"u1","location":"$DB/dropped"}""")
+        sessionCatalogs = mapOf(CATALOG to listOf(WAREHOUSE), "near" to listOf("s3a://bucket/near"))
+
+        val (_, second) = confirmedRuns()
+
+        assertEquals(listOf("$DB/dropped"), second.auditRecords.single().deletedFolders)
+    }
+
+    @Test
+    fun `orphans are still deleted when every live table was read and none of them uses the folders`() {
+        putMetadataFolder("dropped", """{"format-version":2,"table-uuid":"u1","location":"$DB/dropped"}""")
+        putFolder("$DB/scratch", "_temporary/0/part-00000")
+        live = listOf(liveTable("orders", uuid = "u2", referencedFiles = listOf("$DB/orders/metadata/v1.metadata.json")), liveTable("imported", nameMapped = true))
+        tableLoader = { nameMappedTable("s3a://bucket/lake/a.db/orders/part-00000.parquet") }
+
+        val (_, second) = confirmedRuns()
+
+        assertEquals(listOf("$DB/dropped", "$DB/scratch"), second.auditRecords.single().deletedFolders.sorted())
     }
 
     @Test
@@ -392,8 +497,12 @@ class StorageHoldsFlowTest {
                 ),
                 realStorageHolds = realHolds,
             )
+        val liveTables = live.mapIndexed { index, table -> DiscoveredTable(CATALOG, "a", "table-${index + 2}", isTemporary = false, location = "$DB/orders", iceberg = table) }
         every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "a") } returns
-            DiscoveredDatabase(CATALOG, "a", DB, listOf(DiscoveredTable(CATALOG, "a", "orders", isTemporary = false, location = "$DB/orders")))
+            DiscoveredDatabase(CATALOG, "a", DB, listOf(DiscoveredTable(CATALOG, "a", "orders", isTemporary = false, location = "$DB/orders")) + liveTables)
+        tableLoader?.let { loader -> flow.service.storageHoldChecker.tableLoader = loader }
+        every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns sessionCatalogs
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("near") } returns emptyMap()
         every { flow.catalogDiscoveryService.sharedWarehouseRoots(CATALOG) } returns listOf(WAREHOUSE)
         every { flow.auditTableService.currentExternalJobId() } returns jobId
         if (history == null) {
@@ -417,6 +526,28 @@ class StorageHoldsFlowTest {
         candidateFingerprints = record.candidateFingerprints,
         prevRunId = record.prevRunId,
     )
+
+    private fun liveTable(
+        name: String,
+        uuid: String? = null,
+        referencedFiles: List<String> = emptyList(),
+        nameMapped: Boolean = false,
+    ) = LiveIcebergObject(listOf("a", name), uuid ?: "uuid-$name", false, "$DB/orders", "$DB/orders/metadata/v1.metadata.json", referencedFiles, nameMapped)
+
+    // An Iceberg table whose only snapshot adds [dataFile].
+    private fun nameMappedTable(dataFile: String): Table {
+        val catalog = InMemoryCatalog().apply { initialize("mem", mapOf("warehouse" to "s3a://bucket/iceberg")) }
+        catalog.createNamespace(Namespace.of("a"))
+        val table =
+            catalog.buildTable(TableIdentifier.of("a", "imported"), Schema(Types.NestedField.required(1, "id", Types.LongType.get())))
+                .withProperty("schema.name-mapping.default", """[{"field-id":1,"names":["id"]}]""")
+                .create()
+        table.newAppend()
+            .appendFile(
+                DataFiles.builder(PartitionSpec.unpartitioned()).withPath(dataFile).withFormat(FileFormat.PARQUET).withFileSizeInBytes(10).withRecordCount(1).build(),
+            ).commit()
+        return table
+    }
 
     private fun putMetadataFolder(
         name: String,

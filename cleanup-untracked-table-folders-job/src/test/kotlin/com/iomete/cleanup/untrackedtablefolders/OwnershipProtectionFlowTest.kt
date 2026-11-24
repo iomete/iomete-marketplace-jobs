@@ -261,14 +261,34 @@ class OwnershipProtectionFlowTest {
     }
 
     @Test
-    fun `an unqualified database location blocks deletion`() {
+    fun `an unqualified database location protects that path in the cleanup root's bucket`() {
         folders(SALES, "t1", "orphan", "other_db")
         val flow = flow(tables = listOf(table("$SALES/t1")), databases = mapOf("sales" to SALES, "other" to "/lake/sales.db/other_db"))
 
         flow.run()
 
-        assertEquals("other_database_storage_unknown", flow.auditRecords.single().statusReason)
+        assertEquals(listOf("$SALES/orphan"), flow.auditRecords.single().deletedFolders)
         assertTrue(flow.objectExists("$SALES/other_db/part-0.parquet"))
+    }
+
+    @Test
+    fun `an unqualified database location on another path does not block the cleanup root`() {
+        folders(SALES, "t1", "orphan")
+        val flow = flow(tables = listOf(table("$SALES/t1")), databases = mapOf("sales" to SALES, "other" to "/elsewhere/other.db"))
+
+        flow.run()
+
+        assertEquals(listOf("$SALES/orphan"), flow.auditRecords.single().deletedFolders)
+    }
+
+    @Test
+    fun `a relative database location can't be placed, so it blocks deletion`() {
+        folders(SALES, "t1", "orphan")
+        val flow = flow(tables = listOf(table("$SALES/t1")), databases = mapOf("sales" to SALES, "other" to "lake/other.db"))
+
+        flow.run()
+
+        assertEquals("other_database_storage_unknown", flow.auditRecords.single().statusReason)
         assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
     }
 
@@ -286,14 +306,14 @@ class OwnershipProtectionFlowTest {
     }
 
     @Test
-    fun `a database location with a scheme but no bucket or host blocks deletion`() {
+    fun `a database location with a scheme but no bucket or host protects that path in the cleanup root's bucket`() {
         folders(SALES, "t1", "orphan", "other_db")
         val flow = flow(tables = listOf(table("$SALES/t1")), databases = mapOf("sales" to SALES, "other" to "hdfs:/lake/sales.db/other_db"))
 
         flow.run()
 
-        assertEquals("other_database_storage_unknown", flow.auditRecords.single().statusReason)
-        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+        assertEquals(listOf("$SALES/orphan"), flow.auditRecords.single().deletedFolders)
+        assertTrue(flow.objectExists("$SALES/other_db/part-0.parquet"))
     }
 
     @Test

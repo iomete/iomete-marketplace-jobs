@@ -39,6 +39,20 @@ class NameMappedManifestReaderTest {
     }
 
     @Test
+    fun `a file without scheme and bucket counts when its path is in the folder, and one that can't be placed always counts`() {
+        val table = table(nameMapped = true)
+        table.newAppend()
+            .appendFile(dataFile("/raw/part-00000.parquet"))
+            .appendFile(dataFile("/elsewhere/part-1.parquet"))
+            .appendFile(dataFile("relative/part-2.parquet"))
+            .commit()
+
+        val outcome = NameMappedManifestReader().referencedFiles(name, table, listOf("s3a://lake/raw"))
+
+        assertEquals(setOf("/raw/part-00000.parquet", "relative/part-2.parquet"), (outcome as NameMappedManifestReader.Outcome.Read).filesInFolders.toSet())
+    }
+
+    @Test
     fun `a table without a name mapping is not read`() {
         val table = table(nameMapped = false)
         table.newAppend().appendFile(dataFile("s3a://lake/raw/part-00000.parquet")).commit()

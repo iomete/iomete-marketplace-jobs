@@ -222,11 +222,11 @@ class ObjectStorageDiscoveryService {
     fun inspectMetadata(
         catalog: String,
         metadataKeysByFolder: Map<String, List<String>>,
-    ): Map<String, MetadataVerdict> {
+    ): Map<String, FolderMetadata> {
         if (metadataKeysByFolder.isEmpty()) {
             return emptyMap()
         }
-        val verdicts = linkedMapOf<String, MetadataVerdict>()
+        val verdicts = linkedMapOf<String, FolderMetadata>()
         metadataKeysByFolder.keys.sorted().groupBy { Path(it).toUri().let { uri -> "${uri.scheme}://${uri.authority}" } }.values.forEach { folders ->
             try {
                 catalogFileSystemProvider.withFileSystem(catalog, "read table metadata", folders) { fileSystem ->
@@ -237,7 +237,7 @@ class ObjectStorageDiscoveryService {
                     throw th
                 }
                 logger.warn("Could not read table metadata of ${folders.size} candidate folder(s); they are kept: paths=$folders", th)
-                folders.forEach { verdicts.putIfAbsent(it, MetadataVerdict.UNREADABLE) }
+                folders.forEach { verdicts.putIfAbsent(it, FolderMetadata(MetadataVerdict.UNREADABLE)) }
             }
         }
         return verdicts
@@ -248,30 +248,32 @@ class ObjectStorageDiscoveryService {
         fileSystem: FileSystem,
         folderPath: String,
         metadataKeys: List<String>,
-    ): MetadataVerdict {
+    ): FolderMetadata {
         if (metadataKeys.isEmpty()) {
             logger.warn("Candidate folder has a table version hint but no metadata file to read; it is kept: path=$folderPath")
-            return MetadataVerdict.UNREADABLE
+            return FolderMetadata(MetadataVerdict.UNREADABLE)
         }
         val folder = FolderObjectListing.folderPrefix(folderPath)
+        val tableUuids = sortedSetOf<String>()
         for (key in metadataKeys) {
-            val verdict =
+            val metadata =
                 try {
                     catalogFileSystemProvider.runOperation(catalog, "read table metadata", "$folder/$key") {
                         fileSystem.open(FolderObjectListing.objectPath(folder, key)).use { input ->
-                            MetadataHead.verdict(input, FolderLayout.isGzipMetadataFile(key.substringAfterLast('/')), folderPath)
+                            MetadataHead.read(input, FolderLayout.isGzipMetadataFile(key.substringAfterLast('/')), folderPath)
                         }
                     }
                 } catch (th: CatalogStorageOperationException) {
                     logger.warn("Could not read table metadata file of candidate folder; it is kept: path=$folderPath, key=$key", th)
-                    MetadataVerdict.UNREADABLE
+                    FolderMetadata(MetadataVerdict.UNREADABLE)
                 }
-            if (verdict != MetadataVerdict.OWN_TABLE) {
-                logger.warn("Keeping candidate folder because of its table metadata: path=$folderPath, key=$key, reason=${verdict.code}")
-                return verdict
+            if (metadata.verdict != MetadataVerdict.OWN_TABLE) {
+                logger.warn("Keeping candidate folder because of its table metadata: path=$folderPath, key=$key, reason=${metadata.verdict.code}")
+                return metadata
             }
+            tableUuids += metadata.tableUuids
         }
-        return MetadataVerdict.OWN_TABLE
+        return FolderMetadata(MetadataVerdict.OWN_TABLE, tableUuids)
     }
 
     // Returns null only when a second lookup also finds nothing; any other answer keeps the folder a failure.

@@ -72,6 +72,33 @@ object StoragePathUtils {
         return scheme == "file" || !uri.authority.isNullOrBlank()
     }
 
+    // A location without a bucket resolves against the writer's default filesystem, which can be any bucket, so it
+    // stands for this absolute path in every bucket. Null for a qualified, relative or unparseable location.
+    fun unqualifiedPath(location: String): String? =
+        runCatching {
+            if (isQualifiedLocation(location)) return null
+            val uri = Path(location.trim()).toUri().normalize()
+            if (uri.path?.startsWith("/") != true) return null
+            normalizeUriPath(uri).trimEnd('/').ifEmpty { "/" }
+        }.getOrNull()
+
+    // [location] placed in the bucket of [qualifiedLocation]: a qualified one as it is, an unqualified one at its path.
+    fun inBucketOf(
+        location: String,
+        qualifiedLocation: String,
+    ): String? {
+        if (runCatching { isQualifiedLocation(location) }.getOrDefault(false)) {
+            return location
+        }
+        val path = unqualifiedPath(location) ?: return null
+        val (scheme, authority) = bucketOf(qualifiedLocation)
+        return when {
+            scheme == null -> null
+            authority != null -> "$scheme://$authority$path"
+            else -> "$scheme:$path"
+        }
+    }
+
     fun scheme(location: String): String? = Path(location.trim()).toUri().scheme?.lowercase()
 
     fun isSameBucket(

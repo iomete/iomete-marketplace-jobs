@@ -545,11 +545,11 @@ class FencedDeletionFlowTest {
     }
 
     @Test
-    fun `another database whose location has no scheme and bucket at the read again after a deletion stops the rest`() {
+    fun `another database whose location can't be placed in a bucket at the read again after a deletion stops the rest`() {
         listOf(ORPHAN_A, ORPHAN_B).forEach { putFolder(it, "part-0.parquet") }
         val flow = flow()
         every { flow.catalogDiscoveryService.visibleDatabaseLocations(CATALOG) } returnsMany
-            listOf(mapOf("sales" to SALES, "archive" to ARCHIVE), mapOf("sales" to SALES, "archive" to ARCHIVE), mapOf("sales" to SALES, "archive" to "/lake/archive.db"))
+            listOf(mapOf("sales" to SALES, "archive" to ARCHIVE), mapOf("sales" to SALES, "archive" to ARCHIVE), mapOf("sales" to SALES, "archive" to "lake/archive.db"))
         expireSnapshotWhileDeleting(ORPHAN_A)
 
         flow.run()
@@ -593,6 +593,23 @@ class FencedDeletionFlowTest {
         assertFalse(record.diagnosticDetails.containsKey("folder_not_attempted_count"))
         assertTrue(flow.objectExists("$ORPHAN_B/part-0.parquet"))
         assertFalse(flow.objectExists("$ORPHAN_C/part-0.parquet"))
+    }
+
+    @Test
+    fun `a table of this database with a path without scheme and bucket in a folder at the read again keeps that folder`() {
+        listOf(ORPHAN_A, ORPHAN_B, ORPHAN_C).forEach { putFolder(it, "part-0.parquet") }
+        val flow = flow()
+        val bare = DiscoveredTable(CATALOG, "sales", "table-2", isTemporary = false, location = null, unqualifiedPaths = listOf("/lake/sales.db/orphan_b"))
+        every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "sales") } returnsMany
+            listOf(salesDatabase(), salesDatabase(), salesDatabase(extra = listOf(bare)))
+        expireSnapshotWhileDeleting(ORPHAN_A)
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals(listOf(ORPHAN_A, ORPHAN_C), record.deletedFolders)
+        assertKept(record, "at_final_check", ORPHAN_B)
+        assertTrue(flow.objectExists("$ORPHAN_B/part-0.parquet"))
     }
 
     @Test

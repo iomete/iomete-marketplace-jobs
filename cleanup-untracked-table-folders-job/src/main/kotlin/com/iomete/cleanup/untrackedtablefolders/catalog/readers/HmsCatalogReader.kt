@@ -32,12 +32,57 @@ class HmsCatalogReader(
         return result.result()
     }
 
-    private fun readDatabase(database: String, result: ReadAccumulator) {
+    /** The databases and their locations, without tables. */
+    fun readDatabases(): CatalogReadResult {
+        val databases = try {
+            externalCatalog.listDatabases().asList()
+        } catch (e: Exception) {
+            return CatalogReadResult.failed(catalogName, gapFor(emptyList(), "list_databases_failed", e))
+        }
+        val result = ReadAccumulator(catalogName)
+        databases.forEach { readDatabaseLocation(it, result) }
+        return result.result()
+    }
+
+    /** One database with its tables and views, or null when it does not exist. */
+    fun readDatabase(database: String): CatalogReadResult? {
+        val result = ReadAccumulator(catalogName)
+        try {
+            if (!externalCatalog.databaseExists(database)) return null
+        } catch (e: Exception) {
+            result.gap(listOf(database), "load_database_failed", e)
+            return result.result()
+        }
+        readDatabase(database, result)
+        return result.result()
+    }
+
+    /** One table or view, or null when it does not exist. */
+    fun readTable(database: String, table: String): CatalogReadResult? {
+        val result = ReadAccumulator(catalogName)
+        val name = listOf(database, table)
+        val loaded = try {
+            if (!externalCatalog.databaseExists(database) || !externalCatalog.tableExists(database, table)) return null
+            externalCatalog.getTable(database, table)
+        } catch (e: Exception) {
+            result.gap(name, "load_table_failed", e)
+            return result.result()
+        }
+        readTable(name, loaded, result)
+        return result.result()
+    }
+
+    private fun readDatabaseLocation(database: String, result: ReadAccumulator) {
+        result.namespaces += listOf(database)
         try {
             result.location(listOf(database), LocationRole.NAMESPACE, externalCatalog.getDatabase(database).locationUri()?.toString())
         } catch (e: Exception) {
             result.gap(listOf(database), "load_database_failed", e)
         }
+    }
+
+    private fun readDatabase(database: String, result: ReadAccumulator) {
+        readDatabaseLocation(database, result)
         val tables = try {
             externalCatalog.listTables(database).asList()
         } catch (e: Exception) {
@@ -74,11 +119,13 @@ class HmsCatalogReader(
             viewPathParser.pathUse(name, table.viewText().orNull())?.let { result.externalPathUse += it }
             return
         }
+        // JDBC tables keep their rows in another database. The default location the metastore gives one is
+        // protected, but it holds none of the table's files.
+        val jdbc = table.provider().orNull()?.lowercase() in JDBC_PROVIDERS
         when {
-            // JDBC tables keep their data in another database, as the SQL discovery also assumes.
-            location == null && table.provider().orNull()?.lowercase() in JDBC_PROVIDERS -> Unit
+            location == null && jdbc -> Unit
             location.isNullOrBlank() -> result.gaps += ReadGap(name, ReadGapKind.UNVERIFIED, "table_location_missing")
-            else -> result.location(name, LocationRole.TABLE, location)
+            else -> result.location(name, LocationRole.TABLE, location, storesFiles = !jdbc)
         }
         if (table.storage().inputFormat().orNull() == SYMLINK_INPUT_FORMAT) {
             result.externalPathUse += ExternalPathUse(name, emptyList(), "symlink_manifest_table")
@@ -125,9 +172,20 @@ class HmsCatalogReader(
     private fun isInside(location: String, tableLocation: String?): Boolean =
         tableLocation != null && runCatching { StoragePathUtils.isSameOrChildLocation(location, tableLocation) }.getOrDefault(false)
 
-    private companion object {
-        const val SYMLINK_INPUT_FORMAT = "org.apache.hadoop.hive.ql.io.SymlinkTextInputFormat"
-        val JDBC_PROVIDERS = setOf("jdbc", "org.apache.spark.sql.jdbc", "org.apache.spark.sql.jdbc.defaultsource")
+    companion object {
+        private const val SYMLINK_INPUT_FORMAT = "org.apache.hadoop.hive.ql.io.SymlinkTextInputFormat"
+
+        // Spark's names for its JDBC data source, plus the SQL Server connector the IOMETE docs use, lowercased.
+        val JDBC_PROVIDERS =
+            setOf(
+                "jdbc",
+                "org.apache.spark.sql.jdbc",
+                "org.apache.spark.sql.jdbc.defaultsource",
+                "org.apache.spark.sql.execution.datasources.jdbc",
+                "org.apache.spark.sql.execution.datasources.jdbc.defaultsource",
+                "org.apache.spark.sql.execution.datasources.jdbc.jdbcrelationprovider",
+                "com.microsoft.sqlserver.jdbc.spark",
+            )
     }
 }
 
