@@ -73,6 +73,38 @@ class RestCatalogReaderTest {
     }
 
     @Test
+    fun `an Iceberg table or write path without scheme and bucket is a gap, qualified ones are kept`() {
+        val server = server()
+        server.backend.createNamespace(Namespace.of("sales"))
+        server.backend.buildTable(TableIdentifier.of("sales", "good"), schema).withLocation("s3a://lake/wh/sales/good").create()
+        server.backend.buildTable(TableIdentifier.of("sales", "bare"), schema).withLocation("/warehouse/sales/bare").create()
+        server.backend.buildTable(TableIdentifier.of("sales", "bare_data"), schema)
+            .withLocation("s3a://lake/wh/sales/bare_data")
+            .withProperty("write.data.path", "/warehouse/sales/bare_data/data")
+            .create()
+        // Hadoop's Path can't parse this at all.
+        server.backend.buildTable(TableIdentifier.of("sales", "broken_path"), schema)
+            .withLocation("s3a://lake/wh/sales/broken_path")
+            .withProperty("write.data.path", "://broken")
+            .create()
+
+        val result = read(server)
+
+        assertEquals(CatalogReadStatus.PARTIAL, result.status)
+        assertEquals(
+            setOf(
+                ReadGap(listOf("sales", "bare"), ReadGapKind.UNVERIFIED, "table_location_not_qualified"),
+                ReadGap(listOf("sales", "bare_data"), ReadGapKind.UNVERIFIED, "write_path_location_not_qualified"),
+                ReadGap(listOf("sales", "broken_path"), ReadGapKind.UNVERIFIED, "write_path_location_not_qualified"),
+            ),
+            result.gaps.toSet(),
+        )
+        assertTrue(result.locations.none { it.location.startsWith("/warehouse") || it.location == "://broken" })
+        assertTrue(OwnedLocation(listOf("sales", "good"), LocationRole.TABLE, "s3a://lake/wh/sales/good") in result.locations)
+        assertTrue(OwnedLocation(listOf("sales", "bare_data"), LocationRole.TABLE, "s3a://lake/wh/sales/bare_data") in result.locations)
+    }
+
+    @Test
     fun `child namespaces are listed with the parent parameter and every list asks for one full page`() {
         val server = server()
         server.backend.createNamespace(Namespace.of("a"))

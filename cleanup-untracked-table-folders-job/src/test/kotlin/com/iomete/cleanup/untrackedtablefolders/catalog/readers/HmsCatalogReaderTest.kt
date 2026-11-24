@@ -203,6 +203,83 @@ class HmsCatalogReaderTest {
         assertEquals("iceberg_metadata_not_readable", noIo.gaps.single().reason)
     }
 
+    @Test
+    fun `a table with no location is a gap, not a table without storage`() {
+        val catalog = catalog()
+        catalog.createDatabase(database("sales"), false)
+        catalog.createTable(table("sales", "nowhere", null), false)
+
+        val result = HmsCatalogReader("spark_catalog", catalog, null).read()
+
+        assertEquals(CatalogReadStatus.PARTIAL, result.status)
+        assertEquals(listOf(ReadGap(listOf("sales", "nowhere"), ReadGapKind.UNVERIFIED, "table_location_missing")), result.gaps)
+        assertTrue(result.locations.none { it.name == listOf("sales", "nowhere") })
+    }
+
+    @Test
+    fun `a table with an unqualified location is a gap, and the location is not recorded`() {
+        val catalog = catalog()
+        catalog.createDatabase(database("sales"), false)
+        catalog.createTable(table("sales", "bare", "/warehouse/sales/bare"), false)
+
+        val result = HmsCatalogReader("spark_catalog", catalog, null).read()
+
+        assertEquals(CatalogReadStatus.PARTIAL, result.status)
+        assertEquals(listOf(ReadGap(listOf("sales", "bare"), ReadGapKind.UNVERIFIED, "table_location_not_qualified")), result.gaps)
+        assertTrue(result.locations.none { it.name == listOf("sales", "bare") })
+    }
+
+    @Test
+    fun `a JDBC table without a location stores no files, but one with an unqualified location is a gap`() {
+        val catalog = catalog()
+        catalog.createDatabase(database("sales"), false)
+        catalog.createTable(table("sales", "pg_orders", null, provider = "org.apache.spark.sql.jdbc"), false)
+        catalog.createTable(table("sales", "pg_bare", "/warehouse/sales/pg_bare", provider = "jdbc"), false)
+
+        val result = HmsCatalogReader("spark_catalog", catalog, null).read()
+
+        assertEquals(listOf(ReadGap(listOf("sales", "pg_bare"), ReadGapKind.UNVERIFIED, "table_location_not_qualified")), result.gaps)
+        assertTrue(result.locations.none { it.role == LocationRole.TABLE })
+    }
+
+    @Test
+    fun `partitions with an unqualified or missing location are gaps, qualified ones are kept`() {
+        val catalog = object : InMemoryCatalog(SparkConf(), Configuration()) {
+            override fun listPartitions(
+                db: String,
+                table: String,
+                partialSpec: Option<scala.collection.immutable.Map<String, String>>,
+            ): Seq<CatalogTablePartition> = seq(
+                listOf(
+                    partition("day", "d1", location("moved/d1")),
+                    partition("day", "d2", "/warehouse/sales/orders/day=d2"),
+                    CatalogTablePartition(
+                        scalaMap(mapOf("day" to "d3")),
+                        CatalogStorageFormat.empty(),
+                        scalaMap(emptyMap()),
+                        0L,
+                        -1L,
+                        Option.empty(),
+                    ),
+                ),
+            )
+        }
+        catalog.createDatabase(database("sales"), false)
+        catalog.createTable(table("sales", "orders", location("sales/orders"), partitionedBy = listOf("day")), false)
+
+        val result = HmsCatalogReader("spark_catalog", catalog, null).read()
+
+        assertEquals(CatalogReadStatus.PARTIAL, result.status)
+        assertEquals(
+            listOf(
+                ReadGap(listOf("sales", "orders"), ReadGapKind.UNVERIFIED, "partition_location_not_qualified"),
+                ReadGap(listOf("sales", "orders"), ReadGapKind.UNVERIFIED, "partition_location_missing"),
+            ),
+            result.gaps,
+        )
+        assertEquals(listOf(location("moved/d1")), result.locations.filter { it.role == LocationRole.PARTITION }.map { it.location })
+    }
+
     private fun catalog() = InMemoryCatalog(SparkConf(), Configuration())
 
     private fun location(relative: String): String = dir.resolve(relative).toUri().toString().trimEnd('/')
@@ -217,6 +294,7 @@ class HmsCatalogReaderTest {
         viewText: String? = null,
         inputFormat: String? = null,
         properties: Map<String, String> = emptyMap(),
+        provider: String = "hive",
     ): CatalogTable {
         val storage = CatalogStorageFormat(
             Option.apply(location?.let(::URI)),
@@ -231,7 +309,7 @@ class HmsCatalogReaderTest {
             if (viewText != null) CatalogTableType.VIEW() else CatalogTableType.EXTERNAL(),
             storage,
             schema,
-            Option.apply(if (viewText != null) null else "hive"),
+            Option.apply(if (viewText != null) null else provider),
             seq(partitionedBy),
             CatalogTable.`$lessinit$greater$default$7`(),
             CatalogTable.`$lessinit$greater$default$8`(),

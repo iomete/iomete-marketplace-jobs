@@ -74,7 +74,12 @@ class HmsCatalogReader(
             viewPathParser.pathUse(name, table.viewText().orNull())?.let { result.externalPathUse += it }
             return
         }
-        result.location(name, LocationRole.TABLE, location)
+        when {
+            // JDBC tables keep their data in another database, as the SQL discovery also assumes.
+            location == null && table.provider().orNull()?.lowercase() in JDBC_PROVIDERS -> Unit
+            location.isNullOrBlank() -> result.gaps += ReadGap(name, ReadGapKind.UNVERIFIED, "table_location_missing")
+            else -> result.location(name, LocationRole.TABLE, location)
+        }
         if (table.storage().inputFormat().orNull() == SYMLINK_INPUT_FORMAT) {
             result.externalPathUse += ExternalPathUse(name, emptyList(), "symlink_manifest_table")
         }
@@ -107,8 +112,9 @@ class HmsCatalogReader(
             }
             externalCatalog.listPartitions(database, table, Option.empty()).asList().forEach { partition ->
                 val location = partition.storage().locationUri().orNull()?.toString()
-                if (location != null && !isInside(location, tableLocation)) {
-                    result.location(name, LocationRole.PARTITION, location)
+                when {
+                    location.isNullOrBlank() -> result.gaps += ReadGap(name, ReadGapKind.UNVERIFIED, "partition_location_missing")
+                    !isInside(location, tableLocation) -> result.location(name, LocationRole.PARTITION, location)
                 }
             }
         } catch (e: Exception) {
@@ -121,6 +127,7 @@ class HmsCatalogReader(
 
     private companion object {
         const val SYMLINK_INPUT_FORMAT = "org.apache.hadoop.hive.ql.io.SymlinkTextInputFormat"
+        val JDBC_PROVIDERS = setOf("jdbc", "org.apache.spark.sql.jdbc", "org.apache.spark.sql.jdbc.defaultsource")
     }
 }
 

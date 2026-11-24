@@ -1,8 +1,13 @@
 package com.iomete.cleanup.untrackedtablefolders.catalog.readers
 
+import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
+
 /**
  * Only COMPLETE means every object of the catalog was read. Any other status leaves owners unknown, and an
  * unknown owner must never make a folder unowned.
+ *
+ * COMPLETE is not proof that a folder is safe: an [ExternalPathUse] with an unknownReason is storage the reader
+ * could not bound, and still needs conservative protection.
  */
 enum class CatalogReadStatus { COMPLETE, PARTIAL, FAILED, UNAUTHORIZED }
 
@@ -84,8 +89,14 @@ internal class ReadAccumulator(private val catalog: String) {
     val externalPathUse = mutableListOf<ExternalPathUse>()
     val gaps = mutableListOf<ReadGap>()
 
+    // A path without scheme and bucket resolves against the writer's filesystem and can't be compared.
     fun location(name: List<String>, role: LocationRole, location: String?) {
-        if (!location.isNullOrBlank()) locations += OwnedLocation(name, role, location)
+        if (location.isNullOrBlank()) return
+        if (runCatching { StoragePathUtils.isQualifiedLocation(location) }.getOrDefault(false)) {
+            locations += OwnedLocation(name, role, location)
+        } else {
+            gaps += ReadGap(name, ReadGapKind.UNVERIFIED, "${role.name.lowercase()}_location_not_qualified")
+        }
     }
 
     fun gap(name: List<String>, reason: String, error: Exception) {
