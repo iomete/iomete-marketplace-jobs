@@ -123,7 +123,7 @@ class CleanupSummaryLoggerTest {
                     unresolvedTableNames = listOf("spark_catalog.analytics.table_b", "spark_catalog.analytics.table_c"),
                     storageFolderCount = 13,
                     unmatchedFolderPaths = (1..12).map { "s3a://bucket/db/orphan_$it" },
-                    maxCandidateFolders = 10,
+                    maxFoldersToInspect = 10,
                     dryRun = false,
                 ),
             )
@@ -132,8 +132,8 @@ class CleanupSummaryLoggerTest {
         assertTrue(report.contains("- spark_catalog.analytics.table_b"))
         assertTrue(report.contains("Folder contents were not inspected"))
         assertTrue(report.contains("  SKIPPED"))
-        assertTrue(report.contains("Reason: too_many_candidate_folders"))
-        assertTrue(report.contains("12 folder(s) exceed max_candidate_folders_per_database=10."))
+        assertTrue(report.contains("Reason: too_many_folders_to_inspect"))
+        assertTrue(report.contains("12 folder(s) exceed the inspection limit of 10, the larger of"))
         assertTrue(report.contains("2 catalog table(s) also have unresolved storage ownership"))
         assertFalse(report.contains("BLOCKED"))
         assertFalse(report.contains("Size of folders"))
@@ -515,14 +515,38 @@ class CleanupSummaryLoggerTest {
     }
 
     @Test
+    fun `too many due folders report says skipped, lists the due folders, and says nothing was deleted, also in a dry run`() {
+        listOf(false, true).forEach { dryRun ->
+            val due = listOf("s3a://bucket/db/old_1", "s3a://bucket/db/old_2")
+            val lines =
+                logger.buildReportLines(
+                    summary(unmatchedFolderPaths = due, dryRun = dryRun).copy(candidateCapSkip = CandidateCapSkip(due, 1)),
+                )
+            val report = lines.joinToString("\n")
+            val deletion = report.substringAfter("\nDELETION\n")
+
+            assertTrue(deletion.contains("  SKIPPED"), "dryRun=$dryRun")
+            assertTrue(deletion.contains("Reason: too_many_candidate_folders"), "dryRun=$dryRun")
+            assertTrue(deletion.contains("2 folder(s) passed every check and are due for deletion, which exceeds"), "dryRun=$dryRun")
+            assertTrue(deletion.contains("max_candidate_folders_per_database=1."), "dryRun=$dryRun")
+            assertTrue(deletion.contains("- s3a://bucket/db/old_1\n- s3a://bucket/db/old_2"), "dryRun=$dryRun")
+            assertTrue(deletion.contains("No folder in this database was deleted."), "dryRun=$dryRun")
+            assertFalse(deletion.contains("Folders deleted"), "dryRun=$dryRun")
+            assertFalse(deletion.contains("Dry run. No folder was deleted."), "dryRun=$dryRun")
+            assertFalse(report.contains("BLOCKED"), "dryRun=$dryRun")
+            assertTrue(lines.none { it.length > 100 }, "dryRun=$dryRun")
+        }
+    }
+
+    @Test
     fun `too many folders without unresolved tables lists the folders and does not mention unresolved tables`() {
         val lines = logger.buildTooManyFoldersReportLines(tooManySummary(unresolvedTableNames = emptyList()))
         val report = lines.joinToString("\n")
 
         assertTrue(report.contains("FOLDERS WITH NO VERIFIED CATALOG OWNER (NOT INSPECTED)"))
         assertTrue(report.contains("- s3a://bucket/db/orphan_1\n- s3a://bucket/db/orphan_10"))
-        assertTrue(report.contains("Reason: too_many_candidate_folders"))
-        assertTrue(report.contains("12 folder(s) exceed max_candidate_folders_per_database=10."))
+        assertTrue(report.contains("Reason: too_many_folders_to_inspect"))
+        assertTrue(report.contains("12 folder(s) exceed the inspection limit of 10, the larger of"))
         assertTrue(report.contains("Protect folders to keep with exclude_paths, or raise the limit."))
         assertFalse(report.contains("unresolved"))
         assertTrue(report.contains("No folder in this database was deleted."))
@@ -634,7 +658,7 @@ class CleanupSummaryLoggerTest {
             unresolvedTableNames = unresolvedTableNames,
             storageFolderCount = 13,
             unmatchedFolderPaths = (1..12).map { "s3a://bucket/db/orphan_$it" }.sorted(),
-            maxCandidateFolders = 10,
+            maxFoldersToInspect = 10,
             dryRun = false,
         )
 

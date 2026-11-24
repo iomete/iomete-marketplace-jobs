@@ -230,6 +230,84 @@ class StorageHoldsFlowTest {
     }
 
     @Test
+    fun `held folders do not count toward the candidate cap`() {
+        val held = (1..27).map { "$DB/output_%02d".format(it) }.onEach { putFolder(it, "part-00000-a.parquet", "_SUCCESS") }
+        val due = (1..3).map { "$DB/scratch_$it" }.onEach { putFolder(it, "_temporary/0/part-00000") }
+
+        val (_, second) = confirmedRuns(cap = 3)
+
+        val record = second.auditRecords.single()
+        assertEquals("SUCCESS", record.status)
+        assertEquals(due, record.deletedFolders)
+        assertEquals(30, record.candidateFolderCount)
+        assertEquals("data_only_unknown_provenance=27", record.diagnosticDetails["held_folder_counts"])
+        held.forEach { assertTrue(second.objectExists("$it/part-00000-a.parquet"), it) }
+    }
+
+    @Test
+    fun `more due folders than the cap are skipped after inspection, and a raised cap deletes them on the next run without a new wait`() {
+        val due = (1..3).map { "$DB/scratch_$it" }.onEach { putFolder(it, "_temporary/0/part-00000") }
+
+        val (first, second) = confirmedRuns(cap = 2)
+
+        val firstRecord = first.auditRecords.single()
+        val skipped = second.auditRecords.single()
+        assertEquals("SKIPPED" to "too_many_candidate_folders", skipped.status to skipped.statusReason)
+        assertEquals(emptyList<String>(), skipped.deletedFolders)
+        assertEquals("3", skipped.diagnosticDetails["due_for_deletion_count"])
+        assertTrue(second.intentRecords.isEmpty())
+        assertTrue(InMemoryS3FileSystem.deleteCalls.isEmpty())
+        due.forEach { assertTrue(second.objectExists("$it/_temporary/0/part-00000"), it) }
+        // The skipped row keeps the sightings and the link, so it does not restart confirmation.
+        assertEquals(firstRecord.candidateFingerprints, skipped.candidateFingerprints)
+        assertEquals(firstRecord.runId, skipped.prevRunId)
+        val lines = second.summaryLines()
+        assertTrue("  Reason: too_many_candidate_folders" in lines)
+        due.forEach { assertTrue("- $it" in lines, it) }
+
+        val third =
+            flow(
+                dryRun = false,
+                history = listOf(stored(skipped, Duration.ofHours(1)), stored(firstRecord, Duration.ofHours(74))),
+                cap = 3,
+            ).also { it.run() }
+
+        val record = third.auditRecords.single()
+        assertEquals("SUCCESS", record.status)
+        assertEquals(due, record.deletedFolders)
+        assertEquals(skipped.runId, record.prevRunId)
+    }
+
+    @Test
+    fun `a dry run with more due folders than the cap reports the skip`() {
+        putFolder("$DB/scratch_1", "_temporary/0/part-00000")
+        putFolder("$DB/scratch_2", "_temporary/0/part-00000")
+        val first = flow(dryRun = true, history = emptyList(), cap = 1).also { it.run() }
+        val earlier = stored(first.auditRecords.single(), Duration.ofHours(73))
+
+        val dryRun = flow(dryRun = true, history = listOf(earlier), cap = 1).also { it.run() }
+
+        val record = dryRun.auditRecords.single()
+        assertEquals("SKIPPED" to "too_many_candidate_folders", record.status to record.statusReason)
+        assertTrue(dryRun.intentRecords.isEmpty())
+    }
+
+    @Test
+    fun `a blocked database stays blocked when more folders are due than the cap`() {
+        (1..3).forEach { putFolder("$DB/scratch_$it", "_temporary/0/part-00000") }
+
+        val (_, second) =
+            confirmedRuns(cap = 1, beforeSecond = {
+                every { it.catalogDiscoveryService.visibleDatabaseLocations(CATALOG) } throws IllegalStateException("listing denied")
+            })
+
+        val record = second.auditRecords.single()
+        assertEquals("BLOCKED" to "other_database_storage_unknown", record.status to record.statusReason)
+        assertNull(record.diagnosticDetails["due_for_deletion_count"])
+        assertTrue(second.intentRecords.isEmpty())
+    }
+
+    @Test
     fun `the storage holds delete a subset of what the job deleted before them`() {
         val folders =
             mapOf(
@@ -268,9 +346,10 @@ class StorageHoldsFlowTest {
     private fun confirmedRuns(
         age: Duration = Duration.ofHours(73),
         jobId: String? = JOB_ID,
+        cap: Int = 10,
         beforeSecond: (CleanupFlowHarness) -> Unit = {},
     ): Pair<CleanupFlowHarness, CleanupFlowHarness> {
-        val first = flow(dryRun = true, history = emptyList(), jobId = jobId).also { it.run() }
+        val first = flow(dryRun = true, history = emptyList(), jobId = jobId, cap = cap).also { it.run() }
         val earlier = first.auditRecords.single()
         val second =
             flow(
@@ -288,6 +367,7 @@ class StorageHoldsFlowTest {
                         ),
                     ),
                 jobId = jobId,
+                cap = cap,
             )
         beforeSecond(second)
         second.run()
@@ -299,10 +379,17 @@ class StorageHoldsFlowTest {
         history: List<AuditHistoryRow>?,
         jobId: String? = JOB_ID,
         realHolds: Boolean = true,
+        cap: Int = 10,
     ): CleanupFlowHarness {
         val flow =
             CleanupFlowHarness(
-                ApplicationConfig(catalog = CATALOG, databases = listOf("a"), dryRun = dryRun, deleteEnabled = !dryRun),
+                ApplicationConfig(
+                    catalog = CATALOG,
+                    databases = listOf("a"),
+                    dryRun = dryRun,
+                    deleteEnabled = !dryRun,
+                    maxCandidateFoldersPerDatabase = cap,
+                ),
                 realStorageHolds = realHolds,
             )
         every { flow.catalogDiscoveryService.discoverDatabase(CATALOG, "a") } returns
@@ -317,6 +404,19 @@ class StorageHoldsFlowTest {
         }
         return flow
     }
+
+    private fun stored(
+        record: CleanupAuditRecord,
+        endedAgo: Duration,
+    ) = AuditHistoryRow(
+        runId = record.runId,
+        status = record.status,
+        endTime = Instant.now().minus(endedAgo),
+        candidateFolders = record.candidateFolders,
+        deletedFolders = record.deletedFolders,
+        candidateFingerprints = record.candidateFingerprints,
+        prevRunId = record.prevRunId,
+    )
 
     private fun putMetadataFolder(
         name: String,

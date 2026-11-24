@@ -384,7 +384,7 @@ This may feel redundant at first, but it is a deliberate fail-safe for a job tha
 
 ### `max_candidate_folders_per_database`
 
-Maximum number of candidate folders allowed per database before the job refuses to continue for that database.
+Maximum number of folders the job may delete in one database in one run. If more are due, it deletes none of them.
 
 ```json
 "max_candidate_folders_per_database": 10
@@ -394,7 +394,14 @@ This setting limits **candidate folders**, not individual files.
 
 It is a **blast-radius guardrail**. It does not prove deletion is safe. It forces manual review when the number of candidates is larger than expected.
 
-If the job finds more candidates than this limit, it skips cleanup for that database and writes a `SKIPPED` audit row with `status_reason=too_many_candidate_folders`. When a database has a [second cleanup root](#second-cleanup-root), candidates from both roots count toward one limit. The log report lists the folders that went over the limit, so they can be reviewed before the limit is raised.
+The limit counts only the folders that passed every check and are due for deletion: ownership, age, the
+[storage holds](#storage-holds) and the confirmation. If more folders are due than the limit, the job
+deletes none of them and writes a `SKIPPED` audit row with `status_reason=too_many_candidate_folders`. No
+[deletion intent](#deletion-intent) row is written. When a database has a
+[second cleanup root](#second-cleanup-root), folders from both roots count toward one limit. The log report
+and `due_for_deletion_paths_sample` list the due folders, so they can be reviewed before the limit is raised.
+The row keeps the folder fingerprints and `prev_run_id`, so after the limit is raised the next run can
+delete the same folders without a new 72-hour wait.
 
 For example, with this setting:
 
@@ -402,20 +409,23 @@ For example, with this setting:
 "max_candidate_folders_per_database": 10
 ```
 
-| Candidate folders found | Result |
+| Folders due for deletion | Result |
 |---:|---|
 | `0` | Continue normally |
 | `5` | Continue normally |
 | `10` | Continue normally |
 | `11` | Skip that database; no folders are deleted |
 
-The limit counts every folder with no verified catalog owner, before the job lists what is inside any of
-them. So it also counts folders that the age check would keep later: folders newer than the cutoff,
-including folders newer than the [72-hour minimum of deletion mode](#72-hour-minimum-in-deletion-mode),
-and empty or unreadable folders. For example, a database with 3 old folders, 9 folders written in the
-last 48 hours and a limit of `10` is `SKIPPED` in deletion mode, and nothing is deleted. This row does
-not have the held folder counts described in [Held folders](#held-folders), because no folder was
-inspected.
+Held folders never count. For example, a database with 3 old folders, 9 folders written in the last
+48 hours and a limit of `3` deletes the 3 old folders. The 9 are held as `too_new`. The row has the held
+folder counts described in [Held folders](#held-folders).
+
+A separate inspection limit protects the job from listing too many folders. If a database has more
+folders with no verified catalog owner than the larger of `100` and `max_candidate_folders_per_database`,
+the job lists none of them. It writes a `SKIPPED` row with `status_reason=too_many_folders_to_inspect`,
+and nothing is deleted. This row has no held folder counts, because no folder was inspected. To raise the
+inspection limit, set `max_candidate_folders_per_database` above `100`, or protect folders with
+`exclude_paths`.
 
 Use a conservative value first. Increase it only after reviewing dry-run output and confirming the candidate folders are expected.
 
@@ -424,7 +434,7 @@ Use a conservative value first. Increase it only after reviewing dry-run output 
 
 Deprecated and ignored. The setting is still accepted so existing configurations keep working.
 
-The job always lists the objects under each candidate folder, because that same listing establishes folder age. Object count and total size come from the same listing at no extra cost. The listing runs only after candidate detection and the `max_candidate_folders_per_database` check, so the job never recursively lists the whole database.
+The job always lists the objects under each candidate folder, because that same listing establishes folder age. Object count and total size come from the same listing at no extra cost. The listing runs only after candidate detection and the inspection limit check (see [`max_candidate_folders_per_database`](#max_candidate_folders_per_database)), so the job never recursively lists the whole database.
 
 If the setting is `false`, the job logs one warning at startup and collects statistics anyway.
 
@@ -473,7 +483,8 @@ The job has several independent fail-safe layers. These are intentionally redund
 - Configured `exclude_paths` and `exclude_database_folders` are protected the same way.
 - A database location that is a bucket root, or that equals or contains the catalog warehouse root, is never scanned.
 - The newest object in a candidate folder must be older than `older_than_hours`, and in deletion mode at least 72 hours old. A folder whose age cannot be established is skipped.
-- Candidate count is capped by `max_candidate_folders_per_database`. The cap counts folders before the age check.
+- The folders due for deletion are capped by `max_candidate_folders_per_database`. Held folders do not count. A
+  database with more unmatched folders than the larger of 100 and that cap is not inspected at all.
 - Right before deleting each folder, the job checks it against its last ownership read, which is at most 5
   minutes old. It also looks up a table with the folder's name, lists the folder again and checks its age. An
   owner registered after the last ownership read can be missed. See [Deletion fence](#deletion-fence) and
@@ -510,7 +521,7 @@ The main safety principle is **fail closed**: if the job cannot prove that a fol
 | Configured exclusions | Deleting folders explicitly protected through `exclude_paths` or `exclude_database_folders`, including an excluded path nested inside a candidate |
 | `older_than_hours` cutoff | Selecting folders that hold recently written objects; folders of unknown age are skipped |
 | 72-hour minimum in deletion mode | Deleting a folder written in the last 72 hours, even when `older_than_hours` is lower |
-| `max_candidate_folders_per_database` | Broad accidental deletion when too many candidates appear |
+| `max_candidate_folders_per_database` | Broad accidental deletion when more folders are due than expected |
 | [Storage holds](#storage-holds) | Deleting a view's folder, a folder whose metadata belongs elsewhere, data that a table or job may read by path, or a folder that changed or appeared in the last 72 hours of this job's runs |
 | [Deletion fence](#deletion-fence), per folder | Deleting a folder that a table, another database or an exclusion claimed before the last ownership read, a folder that changed since inspection, or a folder that got a new object before its last listing |
 | Exact-object deletion | Deleting objects written after the last listing, and objects that changed before their last check. Not covered: an object rewritten while its own delete runs, and an object written at a directory's exact name while that directory is deleted (see [Known limitations](#known-limitations)) |
@@ -632,8 +643,9 @@ catalog and database in `prev_run_id`. A folder is deleted only when:
 
 A dry-run row confirms as well as a deletion-mode row, so a job run in dry-run mode for more than three
 days can delete on its first deletion-mode run. The 72 hours run from the end of the earlier run to the
-listing of this one, so a daily job confirms on its fourth or fifth run, not its third. A row that inspected nothing, such as a `too_many_candidate_folders`
-or `unexpected_error` row, breaks the chain, and the 72 hours start again. Rows older than 30 days are
+listing of this one, so a daily job confirms on its fourth or fifth run, not its third. A row that inspected nothing, such as a `too_many_folders_to_inspect`
+or `unexpected_error` row, breaks the chain, and the 72 hours start again. A `too_many_candidate_folders`
+row inspected its folders, so it keeps the chain. Rows older than 30 days are
 not read.
 
 | Reason | Kept because |
@@ -1094,7 +1106,8 @@ With two cleanup roots:
   existing when any object sits under it, so a folder without a directory marker object is still found.
 - If one folder cannot be listed, nothing in it is deleted and the other folder is still cleaned. Coverage
   is `partial`, and the folder shows `listing_failed`. If neither folder can be listed, the row is `FAILED`.
-- Candidates from both folders count toward one `max_candidate_folders_per_database` limit.
+- Folders due in both count toward one `max_candidate_folders_per_database` limit, and unmatched folders of
+  both count toward one inspection limit.
 - Exclusions, the [checks of other databases and catalogs](#tables-of-other-databases-and-catalogs), their
   final read and the pre-delete recheck apply to both folders. An unresolved table, or other storage that
   cannot be read under either folder, blocks deletion in both.
@@ -1282,14 +1295,14 @@ slow write delays the run but does not sit between a check and a delete.
 | `runtime_domain` | Runtime IOMETE domain exposed through `IOMETE_DOMAIN`, for example `fde`. |
 | `runtime_user` | Runtime Spark user exposed through `SPARK_USER`. This is useful for comparing the audit row with the run-as user shown in the platform UI. Read from the env var rather than `SparkContext.sparkUser()` so the value remains the run-as identity even when Spark is configured with proxy-user impersonation. |
 | `status` | High-level outcome: `SUCCESS`, `SKIPPED`, `BLOCKED`, or `FAILED`. `INTENT` marks a [deletion intent](#deletion-intent) row, which is not an outcome. |
-| `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, `unresolved_catalog_ownership`, `database_location_contains_warehouse_root`, `partial_scan_coverage`, `deletion_failed`, `deletion_stopped_at_recheck`, `audit_integrity_lost`, `deletion_intent_not_recorded`, `deletion_intent`, or `unexpected_error`. See [Object-storage scan root](#object-storage-scan-root) for the scan-root reasons. |
+| `status_reason` | More specific reason for the outcome, such as `database_not_found`, `database_location_missing`, `too_many_candidate_folders`, `too_many_folders_to_inspect`, `unresolved_catalog_ownership`, `database_location_contains_warehouse_root`, `partial_scan_coverage`, `deletion_failed`, `deletion_stopped_at_recheck`, `audit_integrity_lost`, `deletion_intent_not_recorded`, `deletion_intent`, or `unexpected_error`. See [Object-storage scan root](#object-storage-scan-root) for the scan-root reasons. |
 | `error_message` | The error that ended processing of this database, cleaned and cut to at most 1000 characters. It names the classes of the causes but not their messages. See [Error messages and logs](#error-messages-and-logs). |
 | `older_than_hours` | The age threshold the run used for candidate detection. In deletion mode this is at least 72, even when the configured value is lower; the configured value is in `diagnostic_details` as `configured_older_than_hours`. See [72-hour minimum in deletion mode](#72-hour-minimum-in-deletion-mode). |
 | `cutoff_time` | Calculated timestamp used to decide whether a folder is old enough to be considered. Null when no age check ran. |
-| `max_candidate_folders_per_database` | Configured per-database candidate-folder safety limit. |
+| `max_candidate_folders_per_database` | Configured limit on the folders due for deletion in one database. |
 | `unresolved_table_count` | Number of catalog tables in this database whose storage location could not be read during discovery. Reported whatever the row's `status_reason` is, so filter on `unresolved_table_count > 0` to find affected databases. It is `0` when the count is unknown: when discovery itself failed, or when the pre-delete recheck found new unresolved tables, in which case the number is in `error_message`. Both are `FAILED` rows, so check `FAILED` rows as well. |
 | `candidate_folder_count` | Number of folders confirmed as untracked and eligible for deletion. Reserved for confirmed deletion-eligible candidates, so it stays `0` when table storage ownership could not be fully verified. |
-| `potentially_untracked_folder_count` | Number of storage folders that matched no verified table location while at least one table's storage location was unresolved. These folders are reported for review only. They are not confirmed untracked and are never deletion candidates, which is why they are counted separately from `candidate_folder_count`. On a `too_many_candidate_folders` row this is the count that exceeded the limit, before any age check. |
+| `potentially_untracked_folder_count` | Number of storage folders that matched no verified table location while at least one table's storage location was unresolved. These folders are reported for review only. They are not confirmed untracked and are never deletion candidates, which is why they are counted separately from `candidate_folder_count`. On a `too_many_folders_to_inspect` row this is the count that exceeded the inspection limit, before any age check. |
 | `candidate_object_count` | Number of objects found under candidate folders. |
 | `candidate_total_size_bytes` | Total size in bytes under candidate folders. |
 | `deleted_object_count` | Number of objects under folders that were actually deleted. |
@@ -1374,13 +1387,16 @@ ownership_snapshot_max_age_seconds
 ownership_refresh_count
 would_be_held_by_deletion_floor_count
 would_be_held_by_deletion_floor_paths_sample
+due_for_deletion_count
+due_for_deletion_paths_sample
 *_truncated
 ```
 
 `<reason>` is one of the [kept folder reasons](#kept-folders) without the `folder_kept_` prefix, such as
 `at_final_check` or `key_not_addressable`. `<storage_hold>` is one of the [storage hold](#storage-holds)
 reasons, such as `metadata_view` or `awaiting_confirmation`. `<set>` is `deleted`, `remaining`, `unknown_state`,
-`vanished` or `unlisted`. See [Partial deletion](#partial-deletion).
+`vanished` or `unlisted`. See [Partial deletion](#partial-deletion). `due_for_deletion_*` is only on a
+`too_many_candidate_folders` row and names the folders that were due.
 
 `configured_older_than_hours` and `deletion_min_age_hours` are on every row. They give the configured
 age and the 72-hour minimum of deletion mode.
@@ -1394,8 +1410,8 @@ The `folder_not_found`, `statistics_unavailable`, `empty_folder`, `unknown_age`,
 `too_new` keys appear only when at least one folder was skipped for that reason. `too_new` names the
 folders whose newest object is newer than the cutoff of this run. They are written on `SUCCESS`,
 `BLOCKED`, `deletion_failed` and `deletion_stopped_at_recheck` rows. Folders skipped for these reasons
-are never listed as candidates or as potentially untracked folders. A `too_many_candidate_folders` row
-has none of them, because no folder was inspected.
+are never listed as candidates or as potentially untracked folders. A `too_many_candidate_folders` row has
+them too. A `too_many_folders_to_inspect` row has none of them, because no folder was inspected.
 
 The `held_folder_count` and `held_folder_counts` keys count these folders and the
 [kept folders](#kept-folders) together. See [Held folders](#held-folders).
@@ -1497,7 +1513,8 @@ It is one line in the log. It is not logged for a database with an unresolved ta
 | Database processed, but some table locations are outside the scanned root | `SUCCESS` | `status_reason=partial_scan_coverage` |
 | Database location is missing | `SKIPPED` | Storage discovery is skipped |
 | No table stores files at a known location, for example the database has no tables, or only views or [JDBC tables](#jdbc-tables) | `SKIPPED` | `status_reason=no_active_tables_in_database`; storage is not listed. `active_table_count` still counts the JDBC tables |
-| Too many candidate folders | `SKIPPED` | Candidate count exceeded configured limit, counted before the age check. Unresolved tables are reported on the same row |
+| More folders due for deletion than `max_candidate_folders_per_database` | `SKIPPED` | `status_reason=too_many_candidate_folders`; folders were inspected and held folders do not count; nothing is deleted and no intent row is written. A block reason takes precedence |
+| Too many unmatched folders to inspect | `SKIPPED` | `status_reason=too_many_folders_to_inspect`; more than the larger of 100 and `max_candidate_folders_per_database`, counted before the age check; nothing is listed. Unresolved tables are reported on the same row |
 | Configured database does not exist | `SKIPPED` | Logged as a warning with `status_reason=database_not_found` |
 | Database location or scan root is unsafe | `SKIPPED` | Storage is never listed; see [Object-storage scan root](#object-storage-scan-root) for the reasons |
 | One or more table storage locations could not be resolved | `BLOCKED` | Reconciliation is still reported when at least one table has a verified location, nothing is deleted, `status_reason=unresolved_catalog_ownership` |
@@ -1785,13 +1802,14 @@ treated as its verified location. Any other error leaves the table with no known
 The log report lists each unresolved table with the reason it could not be resolved and, when there is
 one, its known folder.
 
-The per-database folder limit is still checked first. If the number of unmatched folders exceeds
-`max_candidate_folders_per_database`, the database is reported as `SKIPPED` with
-`status_reason=too_many_candidate_folders` instead. Both outcomes stop deletion for that database.
+The inspection limit is still checked first. If the number of unmatched folders exceeds the larger of
+`100` and `max_candidate_folders_per_database`, the database is reported as `SKIPPED` with
+`status_reason=too_many_folders_to_inspect` instead. Both outcomes stop deletion for that database.
 This row still reports both conditions: `unresolved_table_count` carries the unresolved tables,
 `potentially_untracked_folder_count` carries the folders that exceeded the limit, and
 `candidate_folder_count` stays `0`. Folder contents are not inspected. Raising the limit will not
-make these folders deletable, because the database then becomes `BLOCKED`.
+make these folders deletable, because the database then becomes `BLOCKED`. Below the inspection limit,
+`max_candidate_folders_per_database` does not apply to such a database, because no folder is due.
 
 If no table that stores files has a verified location, for example when the other tables are
 [JDBC tables](#jdbc-tables), there is nothing to compare folders against, so the job does not access storage and does not check the folder limit. It logs a short report and writes
@@ -1977,7 +1995,8 @@ Before enabling deletion mode, run the job in dry-run mode and validate the outp
 | T45 | Deletion mode, and an object is added to a candidate folder after inspection, before the job lists it again | The folder is kept as `folder_kept_changed_since_inspection`; nothing in it is deleted; other folders are still deleted; `SUCCESS` |
 | T45b | Deletion mode, and an object is added to a candidate folder after the job listed it again, while it deletes it | The new object stays; `FAILED` with `deletion_failed`; `partially_deleted_folder_unlisted_object_count=1` |
 | T46 | Before the first deletion run, on the target storage | A listing and a HEAD of the same object agree on size and ETag, and on modification time to the second. If not, deletion stops at the first object with `deletion_failed` and nothing is deleted |
-| T47 | Deletion mode, 3 folders older than 72 hours, 9 folders 48 hours old, `max_candidate_folders_per_database=10` | `SKIPPED` with `too_many_candidate_folders`; nothing deleted. With a limit of `12`, the 3 old folders are deleted and `too_new_count=9` |
+| T47 | Deletion mode, 3 confirmed folders older than 72 hours, 9 folders 48 hours old, `max_candidate_folders_per_database=3` | The 3 old folders are deleted and `too_new_count=9`. With a limit of `2`, `SKIPPED` with `too_many_candidate_folders`, `due_for_deletion_count=3`, nothing deleted |
+| T47b | 101 folders with no verified owner, `max_candidate_folders_per_database=10` | `SKIPPED` with `too_many_folders_to_inspect`; no folder is listed. With a limit of `101`, all are inspected |
 | T48 | Every folder with no verified owner is held, for example because each is too new or empty | `SUCCESS`, nothing deleted; one warning names each reason and its count; `held_folder_counts` has the same counts |
 | T49 | Deletion mode, and the first ownership read of the fence takes more than 2.5 minutes | `FAILED` with `unexpected_error`; nothing deleted; `error_message` says the ownership recheck took more than the 150 s a read may use of the 300 s limit |
 | T50 | Deletion mode, and the ownership read fails after one folder was deleted | `FAILED` with `deletion_stopped_at_recheck`; `deleted_folders` lists that folder; `deletion_stop_cause` and `folder_not_attempted_paths_sample` are on the row |
@@ -2128,8 +2147,8 @@ bullet is a release blocker.
   job's status read to the client's check inside the delete, usually milliseconds. For a directory delete
   the job stopped waiting for, it lasts until that delete lands. The job could close this only by sending no
   directory delete at all. Every deleted folder would then keep its markers and come back as a candidate in
-  the next run. It would count toward `max_candidate_folders_per_database` before the age check. That would
-  change the candidate limit, which this version keeps as it was. Keeping only the folder's own marker would
+  the next run. It would count toward the inspection limit before the age check, so the
+  leftovers could fill that limit over time. Keeping only the folder's own marker would
   close the case beside the folder, not the one inside it. Older versions deleted each folder with one
   recursive delete. That deleted such an object inside the folder whenever it was written, and an object at
   the folder's own name whenever one was there. Bucket versioning is the way back. No directory delete
@@ -2197,4 +2216,4 @@ bullet is a release blocker.
   with `exclude_paths`.
 - **Scope.** On a versioned bucket, deleting a folder may not free storage. See [Versioned buckets](#versioned-buckets).
 - **Scope.** The job is intended for controlled cleanup workflows, not blind automatic deletion.
-- **Scope.** Folder age and size require recursively listing objects under each candidate folder, for at most `max_candidate_folders_per_database` folders per database. This can take time for folders with many objects and cannot be turned off, because it is needed to establish folder age. The listing stops after 10,001 objects, and such a folder is kept as `too_many_objects`.
+- **Scope.** Folder age and size require recursively listing objects under each candidate folder, for at most the larger of 100 and `max_candidate_folders_per_database` folders per database. This can take time for folders with many objects and cannot be turned off, because it is needed to establish folder age. The listing stops after 10,001 objects, and such a folder is kept as `too_many_objects`.

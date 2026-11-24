@@ -7,6 +7,7 @@ import com.iomete.cleanup.untrackedtablefolders.candidate.HeldFolders
 import com.iomete.cleanup.untrackedtablefolders.candidate.StorageHoldReason
 import com.iomete.cleanup.untrackedtablefolders.candidate.StorageHolds
 import com.iomete.cleanup.untrackedtablefolders.config.DELETION_MIN_AGE_HOURS
+import com.iomete.cleanup.untrackedtablefolders.config.MIN_FOLDERS_TO_INSPECT
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.DeletionFenceReport
 import com.iomete.cleanup.untrackedtablefolders.storage.FenceKeepReason
@@ -48,6 +49,13 @@ data class CleanupSummary(
     val deletionFence: DeletionFenceReport = DeletionFenceReport(),
     val tooNewPaths: List<String> = emptyList(),
     val storageHolds: StorageHolds = StorageHolds.NONE,
+    val candidateCapSkip: CandidateCapSkip? = null,
+)
+
+/** More folders passed every check than max_candidate_folders_per_database allows, so none was deleted. */
+data class CandidateCapSkip(
+    val dueFolderPaths: List<String>,
+    val maxCandidateFolders: Int,
 )
 
 data class NoVerifiedLocationSummary(
@@ -71,7 +79,7 @@ data class TooManyFoldersSummary(
     val unresolvedTableNames: List<String>,
     val storageFolderCount: Int,
     val unmatchedFolderPaths: List<String>,
-    val maxCandidateFolders: Int,
+    val maxFoldersToInspect: Int,
     val dryRun: Boolean,
     val unresolvedTableDetails: Map<String, UnresolvedTableDetail> = emptyMap(),
     val ownershipChecks: OwnershipChecks = OwnershipChecks(),
@@ -198,8 +206,9 @@ class CleanupSummaryLogger {
             add("")
             add("  SKIPPED")
             add("")
-            add("  Reason: too_many_candidate_folders")
-            add("  ${summary.unmatchedFolderPaths.size} folder(s) exceed max_candidate_folders_per_database=${summary.maxCandidateFolders}.")
+            add("  Reason: too_many_folders_to_inspect")
+            add("  ${summary.unmatchedFolderPaths.size} folder(s) exceed the inspection limit of ${summary.maxFoldersToInspect}, the larger of")
+            add("  $MIN_FOLDERS_TO_INSPECT and max_candidate_folders_per_database.")
             if (summary.unresolvedTableNames.isNotEmpty()) {
                 add("  ${summary.unresolvedTableNames.size} catalog table(s) also have unresolved storage ownership, so raising")
                 add("  the limit will not make these folders deletable.")
@@ -378,6 +387,16 @@ class CleanupSummaryLogger {
             add("  Reason: ${summary.deletionBlockReason.code}")
             deletionBlockExplanation(summary.deletionBlockReason).forEach { add("  $it") }
             add("  No folder in this database was deleted.")
+        } else if (summary.candidateCapSkip != null) {
+            add("  SKIPPED")
+            add("")
+            add("  Reason: too_many_candidate_folders")
+            add("  ${summary.candidateCapSkip.dueFolderPaths.size} folder(s) passed every check and are due for deletion, which exceeds")
+            add("  max_candidate_folders_per_database=${summary.candidateCapSkip.maxCandidateFolders}. Review them below. Protect folders to keep")
+            add("  with exclude_paths, or raise the limit.")
+            add("  No folder in this database was deleted.")
+            add("")
+            addListOrNone(summary.candidateCapSkip.dueFolderPaths)
         } else if (summary.deletionEligible && summary.dryRun) {
             add("  Dry run. No folder was deleted.")
         } else if (summary.deletionEligible) {

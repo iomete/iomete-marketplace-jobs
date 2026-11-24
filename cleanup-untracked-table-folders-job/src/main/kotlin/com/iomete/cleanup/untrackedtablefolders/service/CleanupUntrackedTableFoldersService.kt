@@ -9,7 +9,7 @@ import com.iomete.cleanup.untrackedtablefolders.candidate.HeldFolders
 import com.iomete.cleanup.untrackedtablefolders.candidate.StorageHoldChecker
 import com.iomete.cleanup.untrackedtablefolders.candidate.StorageHolds
 import com.iomete.cleanup.untrackedtablefolders.candidate.StorageFolderReconciliation
-import com.iomete.cleanup.untrackedtablefolders.candidate.TooManyCandidateFoldersException
+import com.iomete.cleanup.untrackedtablefolders.candidate.TooManyFoldersToInspectException
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
 import com.iomete.cleanup.untrackedtablefolders.catalog.DatabaseNotFoundException
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
@@ -23,6 +23,7 @@ import com.iomete.cleanup.untrackedtablefolders.logging.NoVerifiedLocationSummar
 import com.iomete.cleanup.untrackedtablefolders.logging.SafeLogger
 import com.iomete.cleanup.untrackedtablefolders.logging.SafeText
 import com.iomete.cleanup.untrackedtablefolders.logging.TooManyFoldersSummary
+import com.iomete.cleanup.untrackedtablefolders.logging.CandidateCapSkip
 import com.iomete.cleanup.untrackedtablefolders.logging.UnresolvedTableDetail
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionGate
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateDeletionResult
@@ -465,10 +466,10 @@ class CleanupUntrackedTableFoldersService {
                                 storageFolders = storageFolders,
                                 activeTableLocations = ownTableStorage,
                                 excludedPaths = protectedPaths,
-                                maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
+                                maxFoldersToInspect = config.maxFoldersToInspectPerDatabase(),
                                 unresolvedTableCount = unresolvedTableNames.size,
                             )
-                        } catch (th: TooManyCandidateFoldersException) {
+                        } catch (th: TooManyFoldersToInspectException) {
                             val unresolvedOwnershipNote =
                                 "${unresolvedTableNames.size} catalog table(s) also have unresolved storage ownership. Raising the limit will not make these folders deletable."
                                     .takeIf { unresolvedTableNames.isNotEmpty() }
@@ -477,7 +478,7 @@ class CleanupUntrackedTableFoldersService {
                                 "Refusing to continue for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}. ${unresolvedOwnershipNote ?: "Narrow the scope or increase the limit explicitly."}",
                                 th,
                             )
-                            val candidateFolderPaths = th.candidateFolderPaths.sorted()
+                            val candidateFolderPaths = th.folderPaths.sorted()
 
                             cleanupSummaryLogger.logTooManyFoldersReport(
                                 TooManyFoldersSummary(
@@ -491,7 +492,7 @@ class CleanupUntrackedTableFoldersService {
                                     unresolvedTableNames = unresolvedTableNames,
                                     storageFolderCount = storageFolderPaths.size,
                                     unmatchedFolderPaths = candidateFolderPaths,
-                                    maxCandidateFolders = config.maxCandidateFoldersPerDatabase,
+                                    maxFoldersToInspect = th.maxFoldersToInspect,
                                     dryRun = config.dryRun,
                                     unresolvedTableDetails = unresolvedTableDetails,
                                     ownershipChecks = firstReadChecks,
@@ -499,7 +500,7 @@ class CleanupUntrackedTableFoldersService {
                             )
 
                             recordAudit(database) {
-                                cleanupAuditRecorder.recordTooManyCandidateFolders(
+                                cleanupAuditRecorder.recordTooManyFoldersToInspect(
                                     runId = runId,
                                     databaseStartTime = databaseStartTime,
                                     catalogName = discoveredDatabase.catalog,
@@ -605,10 +606,17 @@ class CleanupUntrackedTableFoldersService {
                             eligible.copy(folders = eligible.folders.filter { it.path !in storageHolds.heldPaths })
                         }
 
+                    // The cap counts only the folders this run would delete, so held folders never stop the others. A block
+                    // reason is checked before it everywhere, so a blocked database stays BLOCKED.
+                    val candidateCapSkip =
+                        deletableReconciliation?.folders
+                            ?.takeIf { it.size > config.maxCandidateFoldersPerDatabase }
+                            ?.let { due -> CandidateCapSkip(due.map { it.path }.sorted(), config.maxCandidateFoldersPerDatabase) }
+
                     // Before the first delete, a row names the folders about to go, so that a run that ends without its
                     // final row still keeps later runs from confirming them. A row that does not read back blocks.
                     val intentBlockReason =
-                        if (!config.dryRun && firstBlockReason == null && !deletableReconciliation?.folders.isNullOrEmpty()) {
+                        if (!config.dryRun && firstBlockReason == null && candidateCapSkip == null && !deletableReconciliation?.folders.isNullOrEmpty()) {
                             recordAudit(database) {
                                 cleanupAuditRecorder.recordDeletionIntent(
                                     runId = runId,
@@ -679,6 +687,14 @@ class CleanupUntrackedTableFoldersService {
                             is StorageFolderReconciliation.DeletionEligible ->
                                 if (blockBeforeDeletion != null) {
                                     logDeletionBlocked(blockBeforeDeletion, stage = "")
+                                    CandidateDeletionResult()
+                                } else if (candidateCapSkip != null) {
+                                    logger.warn(
+                                        "Not deleting any folder for catalog=${discoveredDatabase.catalog}, database=${discoveredDatabase.database}: " +
+                                            "${candidateCapSkip.dueFolderPaths.size} folder(s) are due for deletion, which exceeds " +
+                                            "max_candidate_folders_per_database=${candidateCapSkip.maxCandidateFolders}. Review them in the report below. " +
+                                            "Protect folders to keep with exclude_paths, or raise the limit."
+                                    )
                                     CandidateDeletionResult()
                                 } else {
                                     try {
@@ -870,6 +886,7 @@ class CleanupUntrackedTableFoldersService {
                             deletionFence = deletionResult.fence,
                             tooNewPaths = tooNewPaths,
                             storageHolds = storageHolds,
+                            candidateCapSkip = candidateCapSkip,
                         )
                     )
 
@@ -898,6 +915,32 @@ class CleanupUntrackedTableFoldersService {
                                         ownershipChecks = ownershipChecks,
                                         wouldBeHeldByDeletionFloorPaths = wouldBeHeldByDeletionFloorPaths,
                                         deletionFence = deletionResult.fence,
+                                        tooNewPaths = tooNewPaths,
+                                        storage = storage,
+                                    )
+                                }
+                            } else if (candidateCapSkip != null) {
+                                recordAudit(database) {
+                                    cleanupAuditRecorder.recordTooManyCandidateFolders(
+                                        dueFolderPaths = candidateCapSkip.dueFolderPaths,
+                                        runId = runId,
+                                        databaseStartTime = databaseStartTime,
+                                        catalogName = discoveredDatabase.catalog,
+                                        databaseName = discoveredDatabase.database,
+                                        discoveredDatabaseLocation = discoveredDatabase.location,
+                                        storageScanLocation = storageScanLocation,
+                                        activeTableCount = discoveredDatabase.tables.size.toLong(),
+                                        activeTableLocations = activeTableLocations,
+                                        storageFolderPaths = storageFolderPaths,
+                                        candidateFolderPaths = unmatchedFolderPaths,
+                                        candidateSizeStats = candidateSizeStats,
+                                        cutoffTime = cutoffTime,
+                                        excludedPaths = effectiveExcludedPaths,
+                                        unscannedTableLocations = unscannedTableLocations,
+                                        scanPlan = scanPlan,
+                                        inspectionOutcomes = inspectionOutcomes,
+                                        ownershipChecks = ownershipChecks,
+                                        wouldBeHeldByDeletionFloorPaths = wouldBeHeldByDeletionFloorPaths,
                                         tooNewPaths = tooNewPaths,
                                         storage = storage,
                                     )

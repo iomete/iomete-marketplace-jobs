@@ -238,6 +238,8 @@ class CleanupAuditDiagnosticDetailsBuilder {
     fun wouldBeHeldByDeletionFloorDetails(paths: List<String>): Map<String, String> =
         countedPathSample("would_be_held_by_deletion_floor", paths).toMap()
 
+    fun dueForDeletionDetails(paths: List<String>): Map<String, String> = countedPathSample("due_for_deletion", paths).toMap()
+
     // Keys are relative to the folder. Each listed key is in exactly one of deleted (confirmed), remaining (not
     // attempted, or still there after its delete returned), unknown_state (the delete threw or was not waited for, so
     // it may still complete) and vanished (gone before the job deleted it). Unlisted keys were found after the listed

@@ -149,16 +149,36 @@ class CandidateAgeFlowTest {
     }
 
     @Test
-    fun `candidate cap is enforced before any recursive traversal`() {
-        folder("orphan_a", tenDaysAgo)
-        folder("orphan_b", tenDaysAgo)
+    fun `the inspection limit is enforced before any recursive traversal`() {
+        val orphans = (0..100).map { "orphan_%03d".format(it) }.onEach { folder(it, tenDaysAgo) }
         val flow = flow(deleteEnabled = false, maxCandidateFolders = 1)
 
         flow.run()
 
-        assertEquals("too_many_candidate_folders", flow.auditRecords.single().statusReason)
-        assertNull(InMemoryS3FileSystem.listStatusCalls["$DATABASE_LOCATION/orphan_a"])
-        assertNull(InMemoryS3FileSystem.listStatusCalls["$DATABASE_LOCATION/orphan_b"])
+        assertEquals("too_many_folders_to_inspect", flow.auditRecords.single().statusReason)
+        orphans.forEach { assertNull(InMemoryS3FileSystem.listStatusCalls["$DATABASE_LOCATION/$it"], it) }
+    }
+
+    @Test
+    fun `a cap above 100 raises the inspection limit to the cap`() {
+        val orphans = (0..100).map { "orphan_%03d".format(it) }.onEach { folder(it, tenDaysAgo) }
+        val flow = flow(deleteEnabled = false, maxCandidateFolders = 101)
+
+        flow.run()
+
+        assertEquals("SUCCESS", flow.auditRecords.single().status)
+        orphans.forEach { assertEquals(1, InMemoryS3FileSystem.listStatusCalls["$DATABASE_LOCATION/$it"], it) }
+    }
+
+    @Test
+    fun `at the inspection limit every folder is inspected`() {
+        val orphans = (0..99).map { "orphan_%03d".format(it) }.onEach { folder(it, tenDaysAgo) }
+        val flow = flow(deleteEnabled = false, maxCandidateFolders = 100)
+
+        flow.run()
+
+        assertEquals("SUCCESS", flow.auditRecords.single().status)
+        orphans.forEach { assertEquals(1, InMemoryS3FileSystem.listStatusCalls["$DATABASE_LOCATION/$it"], it) }
     }
 
     @Test
@@ -367,47 +387,49 @@ class CandidateAgeFlowTest {
         assertEquals("$DATABASE_LOCATION/orphan_48h", record.diagnosticDetails["would_be_held_by_deletion_floor_paths_sample"])
     }
 
-    // The cap counts every folder with no verified owner before inspection, so folders the age check would hold still
-    // count. Counting only old enough folders is a PR 2 change.
-    @ParameterizedTest(name = "deletion={0}: {2} old and {3} folders {1} h old with cap {4} skip the database")
-    @CsvSource("true, 48.0, 3, 9, 10", "true, 48.0, 1, 1, 1", "false, 1.0, 3, 9, 10")
-    fun `folders the age check would hold still count toward the unchanged candidate cap`(
+    // The cap counts only the folders the run would delete, so folders the age check holds never count.
+    @ParameterizedTest(name = "deletion={0}: {2} old and {3} folders {1} h old with cap {4}")
+    @CsvSource("true, 48.0, 3, 9, 3", "true, 48.0, 1, 1, 1", "false, 1.0, 3, 9, 3")
+    fun `folders the age check holds do not count toward the candidate cap`(
         deleteEnabled: Boolean,
         youngHours: Double,
         oldCount: Int,
         youngCount: Int,
         cap: Int,
     ) {
-        val old = (1..oldCount).map { "orphan_old_$it" }.onEach { folder(it, hoursAgo(100.0)) }
-        val young = (1..youngCount).map { "orphan_young_$it" }.onEach { folder(it, hoursAgo(youngHours)) }
-        val all = (old + young).map { "$DATABASE_LOCATION/$it" }.sorted()
+        val old = (1..oldCount).map { "$DATABASE_LOCATION/orphan_old_$it" }.onEach { folder(it.substringAfterLast('/'), hoursAgo(100.0)) }
+        val young = (1..youngCount).map { "$DATABASE_LOCATION/orphan_young_$it" }.onEach { folder(it.substringAfterLast('/'), hoursAgo(youngHours)) }
 
-        val skipped = flow(deleteEnabled = deleteEnabled, maxCandidateFolders = cap)
-        skipped.run()
-
-        val record = skipped.auditRecords.single()
-        assertEquals("SKIPPED" to "too_many_candidate_folders", record.status to record.statusReason)
-        assertEquals((oldCount + youngCount).toLong(), record.candidateFolderCount)
-        assertEquals(all, record.candidateFolders)
-        assertEquals(emptyList<String>(), record.deletedFolders)
-        all.forEach { path ->
-            assertTrue(skipped.objectExists("$path/part-0.parquet"), path)
-            assertNull(InMemoryS3FileSystem.listStatusCalls[path], path)
-            assertNull(InMemoryS3FileSystem.listFilesCalls[path], path)
-        }
-        assertTrue(record.diagnosticDetails.keys.none { it.startsWith("too_new") || it.startsWith("held_folder") })
-
-        // Control: with room for every folder, the young ones are held as too_new and only the old ones are candidates.
-        InMemoryS3FileSystem.listStatusCalls.clear()
-        val allowed = flow(deleteEnabled = deleteEnabled, maxCandidateFolders = oldCount + youngCount)
+        val allowed = flow(deleteEnabled = deleteEnabled, maxCandidateFolders = cap)
         allowed.run()
 
-        val control = allowed.auditRecords.single()
-        assertEquals("SUCCESS", control.status)
-        assertEquals(old.map { "$DATABASE_LOCATION/$it" }, control.candidateFolders)
-        assertEquals(if (deleteEnabled) old.map { "$DATABASE_LOCATION/$it" } else emptyList(), control.deletedFolders)
-        assertEquals(youngCount.toString(), control.diagnosticDetails["too_new_count"])
-        assertEquals("too_new=$youngCount", control.diagnosticDetails["held_folder_counts"])
+        val record = allowed.auditRecords.single()
+        assertEquals("SUCCESS", record.status)
+        assertEquals(old, record.candidateFolders)
+        assertEquals(if (deleteEnabled) old else emptyList(), record.deletedFolders)
+        assertEquals(youngCount.toString(), record.diagnosticDetails["too_new_count"])
+        assertEquals("too_new=$youngCount", record.diagnosticDetails["held_folder_counts"])
+        young.forEach { assertTrue(allowed.objectExists("$it/part-0.parquet"), it) }
+
+        // One fewer than the folders due: the database is skipped after inspection, and nothing is deleted.
+        setUp()
+        old.forEach { folder(it.substringAfterLast('/'), hoursAgo(100.0)) }
+        young.forEach { folder(it.substringAfterLast('/'), hoursAgo(youngHours)) }
+        val skipped = flow(deleteEnabled = deleteEnabled, maxCandidateFolders = cap - 1)
+        skipped.run()
+
+        val skip = skipped.auditRecords.single()
+        assertEquals("SKIPPED" to "too_many_candidate_folders", skip.status to skip.statusReason)
+        assertEquals(old, skip.candidateFolders)
+        assertEquals(emptyList<String>(), skip.deletedFolders)
+        assertEquals(oldCount.toString(), skip.diagnosticDetails["due_for_deletion_count"])
+        assertEquals("too_new=$youngCount", skip.diagnosticDetails["held_folder_counts"])
+        assertEquals("$oldCount folder(s) are due for deletion, which exceeds max_candidate_folders_per_database=${cap - 1}", skip.errorMessage)
+        (old + young).forEach { path ->
+            assertTrue(skipped.objectExists("$path/part-0.parquet"), path)
+            assertEquals(1, InMemoryS3FileSystem.listStatusCalls[path], path)
+        }
+        assertTrue(skipped.intentRecords.isEmpty())
     }
 
     @Test

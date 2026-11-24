@@ -160,7 +160,7 @@ class CleanupAuditRecorder {
         )
     }
 
-    fun recordTooManyCandidateFolders(
+    fun recordTooManyFoldersToInspect(
         runId: String,
         databaseStartTime: Instant,
         catalogName: String,
@@ -193,7 +193,7 @@ class CleanupAuditRecorder {
             catalogName = catalogName,
             databaseName = databaseName,
             status = STATUS_SKIPPED,
-            statusReason = "too_many_candidate_folders",
+            statusReason = "too_many_folders_to_inspect",
             errorMessage = errorMessage,
             discoveredDatabaseLocation = discoveredDatabaseLocation,
             storageScanLocation = storageScanLocation,
@@ -526,6 +526,67 @@ class CleanupAuditRecorder {
                     auditDiagnosticDetailsBuilder.wouldBeHeldByDeletionFloorDetails(wouldBeHeldByDeletionFloorPaths) +
                     auditDiagnosticDetailsBuilder.deletionFenceDetails(deletionFence) +
                     holdDetails(inspectionOutcomes, tooNewPaths, deletionFence, storage),
+        )
+    }
+
+    // Written in place of SUCCESS when more folders are due than max_candidate_folders_per_database. It keeps the
+    // fingerprints and prev_run_id, so the folders stay confirmed for the run after the limit is raised.
+    fun recordTooManyCandidateFolders(
+        dueFolderPaths: List<String>,
+        runId: String,
+        databaseStartTime: Instant,
+        catalogName: String,
+        databaseName: String,
+        discoveredDatabaseLocation: String?,
+        storageScanLocation: String,
+        activeTableCount: Long,
+        activeTableLocations: List<String>,
+        storageFolderPaths: List<String>,
+        candidateFolderPaths: List<String>,
+        candidateSizeStats: StorageSizeStats?,
+        cutoffTime: Instant,
+        excludedPaths: List<String>,
+        unscannedTableLocations: List<String>,
+        scanPlan: ScanPlanReport?,
+        inspectionOutcomes: Map<CandidateInspectionOutcome, List<String>> = emptyMap(),
+        ownershipChecks: OwnershipChecks = OwnershipChecks(),
+        wouldBeHeldByDeletionFloorPaths: List<String> = emptyList(),
+        tooNewPaths: List<String> = emptyList(),
+        storage: StorageEvidence = StorageEvidence.NONE,
+    ) {
+        writeAuditRecord(
+            runId = runId,
+            databaseStartTime = databaseStartTime,
+            catalogName = catalogName,
+            databaseName = databaseName,
+            status = STATUS_SKIPPED,
+            statusReason = "too_many_candidate_folders",
+            errorMessage =
+                "${dueFolderPaths.size} folder(s) are due for deletion, which exceeds " +
+                    "max_candidate_folders_per_database=${config.maxCandidateFoldersPerDatabase}",
+            discoveredDatabaseLocation = discoveredDatabaseLocation,
+            storageScanLocation = storageScanLocation,
+            activeTableCount = activeTableCount,
+            storageFolderCount = storageFolderPaths.size.toLong(),
+            candidateFolderCount = candidateFolderPaths.size.toLong(),
+            candidateObjectCount = candidateSizeStats?.objectCount,
+            candidateTotalSizeBytes = candidateSizeStats?.totalSizeBytes,
+            candidateFolders = candidateFolderPaths,
+            cutoffTime = cutoffTime,
+            excludedPaths = excludedPaths,
+            ownershipChecks = ownershipChecks,
+            storage = storage,
+            diagnosticDetails =
+                auditDiagnosticDetailsBuilder.build(
+                    activeTableLocations = activeTableLocations,
+                    storageFolderPaths = storageFolderPaths,
+                    candidateFolderPaths = candidateFolderPaths,
+                    unscannedTableLocations = unscannedTableLocations,
+                ) + auditDiagnosticDetailsBuilder.scanPlanDetails(scanPlan) +
+                    auditDiagnosticDetailsBuilder.inspectionOutcomeDetails(inspectionOutcomes) +
+                    auditDiagnosticDetailsBuilder.wouldBeHeldByDeletionFloorDetails(wouldBeHeldByDeletionFloorPaths) +
+                    auditDiagnosticDetailsBuilder.dueForDeletionDetails(dueFolderPaths) +
+                    holdDetails(inspectionOutcomes, tooNewPaths, DeletionFenceReport(), storage),
         )
     }
 

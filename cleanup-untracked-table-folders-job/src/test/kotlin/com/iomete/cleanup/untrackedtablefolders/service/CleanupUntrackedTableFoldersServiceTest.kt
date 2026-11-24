@@ -1216,9 +1216,14 @@ class CleanupUntrackedTableFoldersServiceTest {
                 cleanupAuditRecorder.recordOwnershipUnverified(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any(), wouldBeHeldByDeletionFloorPaths = any(), tooNewPaths = any())
             }
         }
+        if (except != "recordTooManyFoldersToInspect") {
+            verify(exactly = 0) {
+                cleanupAuditRecorder.recordTooManyFoldersToInspect(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
+            }
+        }
         if (except != "recordTooManyCandidateFolders") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordTooManyCandidateFolders(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
+                cleanupAuditRecorder.recordTooManyCandidateFolders(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
             }
         }
         if (except != "recordDatabaseNotFound") {
