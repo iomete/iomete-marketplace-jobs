@@ -1,5 +1,7 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
 
 plugins {
     id("java")
@@ -47,11 +49,15 @@ allprojects {
         // Apache Spark
         compileOnly("org.apache.spark:spark-sql_2.12:3.5.9")
 
+        // The Spark image supplies Iceberg, so it is never bundled (verifyRunnerJarHasNoIceberg checks this).
+        compileOnly("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.9.0")
+
         // Test dependencies
         testImplementation("io.quarkus:quarkus-junit5")
         testImplementation("io.mockk:mockk:1.14.11")
         testImplementation("org.apache.spark:spark-sql_2.12:3.5.9")
         testImplementation("org.apache.spark:spark-core_2.12:3.5.9")
+        testImplementation("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.9.0")
         testImplementation("org.scala-lang:scala-library:2.12.21")
         testRuntimeOnly("org.scala-lang:scala-library:2.12.21")
     }
@@ -97,4 +103,27 @@ dependencies {
 
 tasks.test {
     classpath += sparkParserTestRuntime
+}
+
+// The runtime Iceberg is the image's fork build. A bundled copy would shadow it on the job's classpath.
+val verifyRunnerJarHasNoIceberg by tasks.registering {
+    description = "Fails the build if the runner jar contains Iceberg classes."
+    val buildDir = layout.buildDirectory
+    doLast {
+        val jars = buildDir.get().asFile.listFiles { file -> file.name.endsWith("-runner.jar") }.orEmpty()
+        if (jars.isEmpty()) throw GradleException("No runner jar found to check for Iceberg classes")
+        jars.forEach { jar ->
+            val zip = ZipFile(jar)
+            try {
+                val bundled = zip.stream().filter { entry: ZipEntry -> entry.name.startsWith("org/apache/iceberg/") }.findFirst()
+                if (bundled.isPresent) throw GradleException("${jar.name} bundles Iceberg class ${bundled.get().name}")
+            } finally {
+                zip.close()
+            }
+        }
+    }
+}
+
+tasks.named("quarkusBuild") {
+    finalizedBy(verifyRunnerJarHasNoIceberg)
 }
