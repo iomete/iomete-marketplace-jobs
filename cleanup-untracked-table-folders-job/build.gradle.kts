@@ -54,7 +54,7 @@ allprojects {
 
         // Test dependencies
         testImplementation("io.quarkus:quarkus-junit5")
-        testImplementation("io.mockk:mockk:1.14.11")
+        testImplementation("io.mockk:mockk:1.14.12")
         testImplementation("org.apache.spark:spark-sql_2.12:3.5.9")
         testImplementation("org.apache.spark:spark-core_2.12:3.5.9")
         testImplementation("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.9.0")
