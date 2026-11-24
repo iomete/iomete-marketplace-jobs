@@ -19,15 +19,11 @@ class SparkMetadataReader {
     ): List<String> {
         logger.info("Fetching schemas in catalog {}", catalog)
 
-        try {
-            return spark
-                .sql("show databases in `$catalog`")
-                .collectAsList()
-                .map { it.getString(0) }
-        } catch (th: Throwable) {
-            logger.error("Couldn't fetch schemas in catalog: {}", catalog, th)
-            return emptyList()
-        }
+        // A failure propagates: reported as empty, the catalog's indexed schemas would lose their tables
+        return spark
+            .sql("show databases in `$catalog`")
+            .collectAsList()
+            .map { it.getString(0) }
     }
 
     fun getSchemaProperties(
@@ -96,12 +92,8 @@ class SparkMetadataReader {
         catalog: String,
         schema: String,
     ): List<Row> =
-        try {
-            spark.sql("show tables from `$catalog`.`$schema`").collectAsList()
-        } catch (th: Throwable) {
-            logger.error("Failed to fetch tables for catalog {} & schema {}", catalog, schema, th)
-            emptyList()
-        }
+        // A failure propagates so the schema is skipped, not reported empty and cleared from the index
+        spark.sql("show tables from `$catalog`.`$schema`").collectAsList()
 
     private fun fetchViews(
         spark: SparkSession,

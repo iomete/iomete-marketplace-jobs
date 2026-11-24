@@ -2,6 +2,10 @@
 "core-service/mp-rest/url": ${IOMETE_WORKLOAD_CONTROL_PLANE_URL:http://iom-core.${IOMETE_RELEASE_NAMESPACE}.svc.${IOMETE_CLUSTER_DNS}}
 "catalog-service/mp-rest/url": ${IOMETE_WORKLOAD_CONTROL_PLANE_URL:http://iom-catalog.${IOMETE_RELEASE_NAMESPACE}.svc.${IOMETE_CLUSTER_DNS}}
 
+# The domain the job runs in, set by the platform on every Spark job
+iomete:
+  domain: ${IOMETE_DOMAIN}
+
 quarkus:
   package:
     type: uber-jar

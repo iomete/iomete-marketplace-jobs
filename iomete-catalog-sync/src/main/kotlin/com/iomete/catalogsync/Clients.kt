@@ -9,6 +9,7 @@ import jakarta.inject.Singleton
 import jakarta.ws.rs.GET
 import jakarta.ws.rs.POST
 import jakarta.ws.rs.Path
+import jakarta.ws.rs.PathParam
 import jakarta.ws.rs.core.Response
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient
 
@@ -18,6 +19,19 @@ interface CoreClient {
     @GET
     @Path("/internal/v1/spark-settings/catalogs")
     fun catalogs(): List<CatalogDetails>
+
+    /** Whether [domain] is private and, if so, the catalogs it owns, without connection settings. */
+    @GET
+    @Path("/api/internal/v1/domains/{domain}/catalog-sync")
+    fun catalogSync(
+        @PathParam("domain") domain: String,
+    ): CatalogSync
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class CatalogSync(
+        val isPrivate: Boolean,
+        val catalogs: List<CatalogDetails> = emptyList(),
+    )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class CatalogDetails(

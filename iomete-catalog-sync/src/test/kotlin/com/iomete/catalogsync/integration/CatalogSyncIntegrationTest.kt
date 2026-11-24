@@ -310,6 +310,7 @@ class CatalogSyncIntegrationTest {
             type = listOf("iceberg"),
         )
 
+        every { coreClient.catalogSync("default") } returns CoreClient.CatalogSync(isPrivate = false)
         every { coreClient.catalogs() } returns listOf(testCatalog)
         every { sparkSessionProvider.getSession(any()) } returns spark
 
@@ -328,6 +329,7 @@ class CatalogSyncIntegrationTest {
             tableMetadataExtractor = tableMetadataExtractor,
             coreServiceClient = coreClient,
             catalogServiceClient = catalogClient,
+            domain = "default",
         )
 
         try {
