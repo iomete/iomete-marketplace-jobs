@@ -101,22 +101,16 @@ class SparkMetadataReaderTest {
     }
 
     @Test
-    fun `getTables should work when views fail but tables succeed`() {
-        val mockTableRow = mockk<Row>()
-        every { mockTableRow.getString(1) } returns "table1"
-        every { mockTableRow.getBoolean(2) } returns false
-
+    fun `getTables throws when listing views fails, even if tables succeed`() {
         val tablesDataset = mockk<Dataset<Row>>()
 
         every { mockSparkSession.sql("show tables from `catalog1`.`schema1`") } returns tablesDataset
         every { mockSparkSession.sql("show views from `catalog1`.`schema1`") } throws RuntimeException("Views query failed")
-        every { tablesDataset.collectAsList() } returns listOf(mockTableRow)
+        every { tablesDataset.collectAsList() } returns emptyList()
 
         val catalog = CoreClient.CatalogDetails(name = "catalog1", type = listOf("iceberg"))
-        val result = reader.getTables(mockSparkSession, catalog, "schema1").map { it.name }
 
-        assertEquals(1, result.size)
-        assertTrue(result.contains("table1"))
+        assertThrows<RuntimeException> { reader.getTables(mockSparkSession, catalog, "schema1") }
     }
 
     @Test

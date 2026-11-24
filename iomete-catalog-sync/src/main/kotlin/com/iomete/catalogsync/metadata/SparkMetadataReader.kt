@@ -103,12 +103,8 @@ class SparkMetadataReader {
         val hasViewSupport = catalog.type.any { viewSupportedCatalogTypes.contains(it.lowercase()) }
         if (!hasViewSupport) return emptyList()
 
-        return try {
-            spark.sql("show views from `${catalog.name}`.`$schema`").collectAsList()
-        } catch (th: Throwable) {
-            logger.warn("Failed to fetch views for catalog {} & schema {}", catalog, schema, th)
-            emptyList()
-        }
+        // A failure propagates for the same reason as in fetchTables
+        return spark.sql("show views from `${catalog.name}`.`$schema`").collectAsList()
     }
 
     fun describeTable(
