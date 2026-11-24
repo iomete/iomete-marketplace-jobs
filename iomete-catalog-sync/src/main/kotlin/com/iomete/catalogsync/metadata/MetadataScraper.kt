@@ -154,12 +154,12 @@ class MetadataScraper(
      * Any other domain syncs the install-wide list. A failed lookup stops the run.
      */
     private fun catalogsToSync(): List<CatalogDetails> {
-        val sync = coreServiceClient.catalogSync(domain)
-        val isPrivate = checkNotNull(sync.isPrivate) { "iom-core did not say whether domain $domain is private" }
+        val isPrivate =
+            checkNotNull(coreServiceClient.domain(domain).isPrivate) { "iom-core did not say whether domain $domain is private" }
         if (!isPrivate) return coreServiceClient.catalogs()
 
         logger.info("Domain {} is private, syncing only its own catalogs", domain)
-        return sync.catalogs.filter { catalog ->
+        return coreServiceClient.ownedCatalogs(domain).catalogs.filter { catalog ->
             sparkSessionProvider.isLaunchCatalog(catalog.name).also { launched ->
                 if (!launched) logger.warn("Skipping catalog {}: the job was not launched with its settings", catalog.name)
             }

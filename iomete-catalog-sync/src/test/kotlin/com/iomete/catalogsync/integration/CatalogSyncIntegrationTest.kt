@@ -310,7 +310,7 @@ class CatalogSyncIntegrationTest {
             type = listOf("iceberg"),
         )
 
-        every { coreClient.catalogSync("default") } returns CoreClient.CatalogSync(isPrivate = false)
+        every { coreClient.domain("default") } returns CoreClient.Domain(isPrivate = false)
         every { coreClient.catalogs() } returns listOf(testCatalog)
         every { sparkSessionProvider.getSession(any()) } returns spark
 

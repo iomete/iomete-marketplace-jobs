@@ -52,7 +52,7 @@ class MetadataScraperTest {
         every { mockApplicationConfig.exclusionRules } returns ExclusionRules()
         every { mockSparkSession.sparkContext() } returns mockSparkContext
         every { mockSparkContext.applicationId() } returns "app-test-123"
-        every { mockCoreServiceClient.catalogSync("default") } returns CoreClient.CatalogSync(isPrivate = false)
+        every { mockCoreServiceClient.domain("default") } returns CoreClient.Domain(isPrivate = false)
 
         scraper = MetadataScraper(
             mockSparkSessionProvider,
@@ -91,6 +91,7 @@ class MetadataScraperTest {
         verify(exactly = 1) { mockCatalogServiceClient.indexTable(match { it.name == "table2" }) }
         verify(exactly = 2) { mockCatalogServiceClient.indexSchema(any()) }
         verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "test_catalog" }) }
+        verify(exactly = 0) { mockCoreServiceClient.ownedCatalogs(any()) }
     }
 
     @Test
@@ -339,8 +340,8 @@ class MetadataScraperTest {
     fun `a private domain syncs only its own catalogs that the job was launched with`() {
         val owned = CatalogDetails(name = "owned", type = listOf("iceberg"), storageEndpoint = "http://minio:9000")
         val notLaunched = CatalogDetails(name = "not_launched", type = listOf("iceberg"))
-        every { mockCoreServiceClient.catalogSync("private-a") } returns
-            CoreClient.CatalogSync(isPrivate = true, catalogs = listOf(owned, notLaunched))
+        every { mockCoreServiceClient.domain("private-a") } returns CoreClient.Domain(isPrivate = true)
+        every { mockCoreServiceClient.ownedCatalogs("private-a") } returns CoreClient.OwnedCatalogs(listOf(owned, notLaunched))
         every { mockSparkSessionProvider.isLaunchCatalog("owned") } returns true
         every { mockSparkSessionProvider.isLaunchCatalog("not_launched") } returns false
         every { mockSparkMetadataReader.getSchemas(mockSparkSession, "owned") } returns emptyList()
@@ -357,7 +358,7 @@ class MetadataScraperTest {
 
     @Test
     fun `a failed private-domain lookup stops the run before anything is indexed`() {
-        every { mockCoreServiceClient.catalogSync("private-a") } throws RuntimeException("iom-core unavailable")
+        every { mockCoreServiceClient.domain("private-a") } throws RuntimeException("iom-core unavailable")
 
         assertThrows<RuntimeException> { scraperIn("private-a").run() }
 
@@ -367,7 +368,7 @@ class MetadataScraperTest {
 
     @Test
     fun `a lookup without the private flag stops the run before anything is indexed`() {
-        every { mockCoreServiceClient.catalogSync("private-a") } returns CoreClient.CatalogSync(isPrivate = null)
+        every { mockCoreServiceClient.domain("private-a") } returns CoreClient.Domain(isPrivate = null)
 
         assertThrows<IllegalStateException> { scraperIn("private-a").run() }
 

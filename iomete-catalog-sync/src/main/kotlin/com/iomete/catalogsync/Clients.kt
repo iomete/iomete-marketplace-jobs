@@ -20,17 +20,27 @@ interface CoreClient {
     @Path("/internal/v1/spark-settings/catalogs")
     fun catalogs(): List<CatalogDetails>
 
-    /** Whether [domain] is private and, if so, the catalogs it owns, without connection settings. */
     @GET
-    @Path("/api/internal/v1/domains/{domain}/catalog-sync")
-    fun catalogSync(
+    @Path("/api/internal/v1/domains/{domain}")
+    fun domain(
         @PathParam("domain") domain: String,
-    ): CatalogSync
+    ): Domain
+
+    /** Catalogs [domain] owns, without connection settings. */
+    @GET
+    @Path("/api/internal/v1/domains/{domain}/owned-catalogs")
+    fun ownedCatalogs(
+        @PathParam("domain") domain: String,
+    ): OwnedCatalogs
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class CatalogSync(
+    data class Domain(
         // Nullable so a missing flag stops the run instead of reading as false.
         val isPrivate: Boolean?,
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class OwnedCatalogs(
         val catalogs: List<CatalogDetails> = emptyList(),
     )
 
