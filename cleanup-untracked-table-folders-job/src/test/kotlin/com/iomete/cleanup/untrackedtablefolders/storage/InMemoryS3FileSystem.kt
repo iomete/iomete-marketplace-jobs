@@ -41,6 +41,10 @@ class InMemoryS3FileSystem : FileSystem() {
 
         /** endpoint -> (absolute path -> entry) */
         val stores = ConcurrentHashMap<String, MutableMap<String, Entry>>()
+
+        /** endpoint -> (absolute path -> bytes) for objects that [open] reads; an object without bytes reads as empty. */
+        val contents = ConcurrentHashMap<String, MutableMap<String, ByteArray>>()
+        val openCalls = CopyOnWriteArrayList<String>()
         val opened = CopyOnWriteArrayList<Opened>()
         val closedEndpoints = CopyOnWriteArrayList<String>()
 
@@ -122,6 +126,8 @@ class InMemoryS3FileSystem : FileSystem() {
 
         fun reset() {
             stores.clear()
+            contents.clear()
+            openCalls.clear()
             opened.clear()
             closedEndpoints.clear()
             failDeleteFor = null
@@ -183,6 +189,16 @@ class InMemoryS3FileSystem : FileSystem() {
         }
 
         fun paths(endpoint: String): Set<String> = store(endpoint).keys.toSet()
+
+        fun putFileWithContent(
+            endpoint: String,
+            path: String,
+            content: ByteArray,
+            modificationTimeMillis: Long = 1L,
+        ) {
+            putFile(endpoint, path, content.size.toLong(), modificationTimeMillis)
+            contents.getOrPut(endpoint) { ConcurrentHashMap() }[normalize(path)] = content
+        }
 
         fun normalize(path: String): String = path.trimEnd('/')
     }
@@ -382,7 +398,55 @@ class InMemoryS3FileSystem : FileSystem() {
     override fun open(
         path: Path,
         bufferSize: Int,
-    ): FSDataInputStream = throw UnsupportedOperationException("open is not needed by this job")
+    ): FSDataInputStream {
+        val target = key(path)
+        openCalls += target
+        val entry = entries()[target] ?: throw FileNotFoundException("No such path: $target")
+        if (entry.isDirectory) throw FileNotFoundException("Not a file: $target")
+        return FSDataInputStream(SeekableBytes(contents[endpoint]?.get(target) ?: ByteArray(0)))
+    }
+
+    private class SeekableBytes(
+        private val bytes: ByteArray,
+    ) : java.io.InputStream(), org.apache.hadoop.fs.Seekable, org.apache.hadoop.fs.PositionedReadable {
+        private var position = 0
+
+        override fun read(): Int = if (position < bytes.size) bytes[position++].toInt() and 0xFF else -1
+
+        override fun seek(pos: Long) {
+            position = pos.toInt()
+        }
+
+        override fun getPos(): Long = position.toLong()
+
+        override fun seekToNewSource(targetPos: Long): Boolean = false
+
+        override fun read(
+            position: Long,
+            buffer: ByteArray,
+            offset: Int,
+            length: Int,
+        ): Int {
+            if (position >= bytes.size) return -1
+            val count = minOf(length, bytes.size - position.toInt())
+            System.arraycopy(bytes, position.toInt(), buffer, offset, count)
+            return count
+        }
+
+        override fun readFully(
+            position: Long,
+            buffer: ByteArray,
+            offset: Int,
+            length: Int,
+        ) {
+            if (read(position, buffer, offset, length) != length) throw java.io.EOFException()
+        }
+
+        override fun readFully(
+            position: Long,
+            buffer: ByteArray,
+        ) = readFully(position, buffer, 0, buffer.size)
+    }
 
     override fun create(
         path: Path,

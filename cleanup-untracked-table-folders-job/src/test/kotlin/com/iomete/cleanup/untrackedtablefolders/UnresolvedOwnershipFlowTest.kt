@@ -142,28 +142,28 @@ class UnresolvedOwnershipFlowTest {
     }
 
     @Test
-    fun `over the limit with unresolved tables stays skipped and reports both conditions`() {
-        folders("t1", "t2", "orphan_a", "orphan_b")
+    fun `over the inspection limit with unresolved tables stays skipped and reports both conditions`() {
+        folders("t1", "t2", *orphans(100))
         val flow = flow(tables = listOf(verified("t1"), unresolved("t2")), maxCandidateFolders = 1)
 
         flow.run()
 
         val record = flow.auditRecords.single()
         assertEquals("SKIPPED", record.status)
-        assertEquals("too_many_candidate_folders", record.statusReason)
+        assertEquals("too_many_folders_to_inspect", record.statusReason)
         assertEquals(1, record.unresolvedTableCount)
-        assertEquals(3, record.potentiallyUntrackedFolderCount)
+        assertEquals(101, record.potentiallyUntrackedFolderCount)
         assertEquals(0, record.candidateFolderCount)
         assertTrue(record.candidateFolders.isEmpty())
         assertEquals(1, record.maxCandidateFoldersPerDatabase)
         assertEquals(
-            "Detected 3 candidate untracked table folder(s), which exceeds max_candidate_folders_per_database=1. " +
+            "Detected 101 storage folder(s) with no verified catalog owner, which exceeds the inspection limit of 100. " +
                 "1 catalog table(s) also have unresolved storage ownership. Raising the limit will not make these folders deletable.",
             record.errorMessage,
         )
         assertNull(InMemoryS3FileSystem.listStatusCalls["$SALES/t2"])
-        assertNull(InMemoryS3FileSystem.listStatusCalls["$SALES/orphan_a"])
-        assertTrue(flow.objectExists("$SALES/orphan_a/part-0.parquet"))
+        assertNull(InMemoryS3FileSystem.listStatusCalls["$SALES/orphan_000"])
+        assertTrue(flow.objectExists("$SALES/orphan_000/part-0.parquet"))
         assertTrue(flow.summaries.isEmpty())
         verify(exactly = 1) {
             flow.service.cleanupSummaryLogger.logTooManyFoldersReport(
@@ -175,9 +175,9 @@ class UnresolvedOwnershipFlowTest {
                     catalogTableCount = 2,
                     verifiedTableCount = 1,
                     unresolvedTableNames = listOf("$CATALOG.sales.t2"),
-                    storageFolderCount = 4,
-                    unmatchedFolderPaths = listOf("$SALES/orphan_a", "$SALES/orphan_b", "$SALES/t2"),
-                    maxCandidateFolders = 1,
+                    storageFolderCount = 102,
+                    unmatchedFolderPaths = (orphans(100).toList() + "t2").map { "$SALES/$it" },
+                    maxFoldersToInspect = 100,
                     dryRun = false,
                     unresolvedTableDetails = mapOf("$CATALOG.sales.t2" to UnresolvedTableDetail("metadata could not be read", null)),
                     ownershipChecks = OwnershipChecks(otherDatabaseFolders = true, otherTables = true),
@@ -187,33 +187,43 @@ class UnresolvedOwnershipFlowTest {
     }
 
     @Test
-    fun `raising the limit with unresolved tables blocks deletion instead of allowing it`() {
-        folders("t1", "t2", "orphan_a", "orphan_b")
-        val flow = flow(tables = listOf(verified("t1"), unresolved("t2")), maxCandidateFolders = 10)
+    fun `with unresolved tables the candidate limit does not apply, and deletion is blocked`() {
+        listOf(1, 10).forEach { limit ->
+            InMemoryS3FileSystem.reset()
+            folders("t1", "t2", "orphan_a", "orphan_b")
+            val flow = flow(tables = listOf(verified("t1"), unresolved("t2")), maxCandidateFolders = limit)
 
-        flow.run()
+            flow.run()
 
-        val record = flow.auditRecords.single()
-        assertEquals("BLOCKED", record.status)
-        assertEquals("unresolved_catalog_ownership", record.statusReason)
-        assertTrue(record.deletedFolders.isEmpty())
-        assertTrue(flow.objectExists("$SALES/orphan_a/part-0.parquet"))
+            val record = flow.auditRecords.single()
+            assertEquals("BLOCKED", record.status, "limit=$limit")
+            assertEquals("unresolved_catalog_ownership", record.statusReason, "limit=$limit")
+            assertEquals(3, record.potentiallyUntrackedFolderCount, "limit=$limit")
+            assertTrue(record.deletedFolders.isEmpty(), "limit=$limit")
+            assertTrue(flow.objectExists("$SALES/orphan_a/part-0.parquet"), "limit=$limit")
+        }
     }
 
     @Test
-    fun `over the limit without unresolved tables is unchanged`() {
-        folders("t1", "orphan_a", "orphan_b")
+    fun `over the inspection limit without unresolved tables inspects and deletes nothing`() {
+        folders("t1", *orphans(101))
         val flow = flow(tables = listOf(verified("t1")), maxCandidateFolders = 1)
 
         flow.run()
 
         val record = flow.auditRecords.single()
-        assertEquals("too_many_candidate_folders", record.statusReason)
+        assertEquals("SKIPPED", record.status)
+        assertEquals("too_many_folders_to_inspect", record.statusReason)
         assertEquals(0, record.unresolvedTableCount)
         assertEquals(0, record.potentiallyUntrackedFolderCount)
-        assertEquals(2, record.candidateFolderCount)
-        assertEquals(listOf("$SALES/orphan_a", "$SALES/orphan_b"), record.candidateFolders)
-        assertEquals("Detected 2 candidate untracked table folder(s), which exceeds max_candidate_folders_per_database=1", record.errorMessage)
+        assertEquals(101, record.candidateFolderCount)
+        assertEquals(orphans(100).map { "$SALES/$it" }, record.candidateFolders)
+        assertEquals("Detected 101 storage folder(s) with no verified catalog owner, which exceeds the inspection limit of 100", record.errorMessage)
+        assertNull(record.candidateFingerprints)
+        orphans(101).forEach { orphan ->
+            assertNull(InMemoryS3FileSystem.listStatusCalls["$SALES/$orphan"], orphan)
+            assertTrue(flow.objectExists("$SALES/$orphan/part-0.parquet"), orphan)
+        }
         verify(exactly = 1) {
             flow.service.cleanupSummaryLogger.logTooManyFoldersReport(
                 TooManyFoldersSummary(
@@ -224,9 +234,9 @@ class UnresolvedOwnershipFlowTest {
                     catalogTableCount = 1,
                     verifiedTableCount = 1,
                     unresolvedTableNames = emptyList(),
-                    storageFolderCount = 3,
-                    unmatchedFolderPaths = listOf("$SALES/orphan_a", "$SALES/orphan_b"),
-                    maxCandidateFolders = 1,
+                    storageFolderCount = 102,
+                    unmatchedFolderPaths = orphans(101).map { "$SALES/$it" },
+                    maxFoldersToInspect = 100,
                     dryRun = false,
                     ownershipChecks = OwnershipChecks(otherDatabaseFolders = true, otherTables = true),
                 ),
@@ -401,7 +411,7 @@ class UnresolvedOwnershipFlowTest {
             flow.run()
 
             val record = flow.auditRecords.single()
-            assertEquals("too_many_candidate_folders", record.statusReason, knownLocation)
+            assertEquals("unresolved_catalog_ownership", record.statusReason, knownLocation)
             assertEquals(2, record.potentiallyUntrackedFolderCount, knownLocation)
         }
     }
@@ -427,6 +437,8 @@ class UnresolvedOwnershipFlowTest {
         assertEquals(1, record.potentiallyUntrackedFolderCount)
         assertEquals("$SALES/nested/orphan", record.diagnosticDetails["potentially_untracked_folder_paths_sample"])
     }
+
+    private fun orphans(count: Int): Array<String> = (0 until count).map { "orphan_%03d".format(it) }.toTypedArray()
 
     private fun folders(vararg children: String) {
         putFolder(SALES)

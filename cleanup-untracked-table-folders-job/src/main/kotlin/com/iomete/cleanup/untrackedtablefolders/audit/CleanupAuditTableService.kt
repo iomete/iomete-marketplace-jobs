@@ -4,7 +4,14 @@ import com.iomete.cleanup.untrackedtablefolders.logging.SafeLogger
 import com.iomete.cleanup.untrackedtablefolders.spark.SparkSessionProvider
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
+import java.sql.Timestamp
 import java.time.Instant
+import org.apache.spark.sql.Column
+import org.apache.spark.sql.Row
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.functions.lit
+import org.apache.spark.sql.types.StructType
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
@@ -97,7 +104,9 @@ class CleanupAuditTableService {
           deleted_folders,
           diagnostic_details,
           start_time,
-          end_time
+          end_time,
+          candidate_fingerprints,
+          prev_run_id
         )
         SELECT
           ${sqlString(record.runId)} AS run_id,
@@ -136,8 +145,71 @@ class CleanupAuditTableService {
           ${sqlStringArray(record.deletedFolders)} AS deleted_folders,
           ${sqlStringMap(record.diagnosticDetails)} AS diagnostic_details,
           ${sqlTimestamp(record.startTime)} AS start_time,
-          ${sqlTimestamp(record.endTime)} AS end_time
+          ${sqlTimestamp(record.endTime)} AS end_time,
+          ${record.candidateFingerprints?.let(::sqlStringMap) ?: "CAST(NULL AS MAP<STRING, STRING>)"} AS candidate_fingerprints,
+          ${sqlNullableString(record.prevRunId)} AS prev_run_id
         """.trimIndent()
+
+    /**
+     * Earlier rows of one job, catalog and database that started at or after [since]. Values are compared as stored,
+     * so callers pass them made safe as the recorder writes them. Throws [AuditHistoryUnavailableException] when the
+     * table is not one whose rows can be trusted to be every committed row.
+     */
+    fun readHistory(
+        externalJobId: String,
+        catalogName: String,
+        databaseName: String,
+        since: Instant,
+    ): List<AuditHistoryRow> {
+        val spark = sparkSessionProvider.getOrCreate()
+        val problem =
+            try {
+                historyTrustProblem(
+                    describeRows = spark.sql("DESCRIBE TABLE EXTENDED $AUDIT_TABLE_NAME").collectAsList(),
+                    schema = spark.table(AUDIT_TABLE_NAME).schema(),
+                    properties = spark.sql("SHOW TBLPROPERTIES $AUDIT_TABLE_NAME").collectAsList().associate { it.getString(0) to it.getString(1) },
+                    sessionWapSet = WAP_SESSION_KEYS.any { spark.conf().getOption(it).isDefined },
+                )
+            } catch (th: Exception) {
+                throw AuditHistoryUnavailableException("could not describe the audit table", th)
+            }
+        problem?.let { throw AuditHistoryUnavailableException(it) }
+
+        return try {
+            spark.table(AUDIT_TABLE_NAME)
+                .where(
+                    sameJob(externalJobId, catalogName, databaseName)
+                        .and(col("start_time").geq(lit(Timestamp.from(since)))),
+                ).select(*HISTORY_COLUMNS.map { col(it.first) }.toTypedArray())
+                .collectAsList()
+                .map(::historyRow)
+        } catch (th: Exception) {
+            throw AuditHistoryUnavailableException("could not read the audit history", th)
+        }
+    }
+
+    /** Whether the deletion intent row of [runId] reads back. */
+    fun intentRecorded(
+        runId: String,
+        externalJobId: String,
+        catalogName: String,
+        databaseName: String,
+    ): Boolean =
+        sparkSessionProvider.getOrCreate().table(AUDIT_TABLE_NAME)
+            .where(
+                sameJob(externalJobId, catalogName, databaseName)
+                    .and(col("run_id").equalTo(lit(runId)))
+                    .and(col("status").equalTo(lit(AUDIT_STATUS_INTENT))),
+            ).count() == 1L
+
+    private fun sameJob(
+        externalJobId: String,
+        catalogName: String,
+        databaseName: String,
+    ): Column =
+        col("external_job_id").equalTo(lit(externalJobId))
+            .and(col("catalog_name").equalTo(lit(catalogName)))
+            .and(col("database_name").equalTo(lit(databaseName)))
 
     fun currentSparkAppId(): String? =
         sparkSessionProvider.getOrCreate().sparkContext().applicationId()
@@ -248,6 +320,93 @@ class CleanupAuditTableService {
         value?.let { "${it}L" } ?: "CAST(NULL AS BIGINT)"
 
     companion object {
+        // Write-audit-publish stages a write as an unpublished snapshot, so a row the job wrote may not be read back.
+        private val WAP_SESSION_KEYS = listOf("spark.wap.id", "spark.wap.branch")
+        private const val WAP_TABLE_PROPERTY = "write.wap.enabled"
+
+        // The columns confirmation reads, with the type each must have. A type is compared without nullability.
+        private val HISTORY_COLUMNS: List<Pair<String, String>> =
+            listOf(
+                "run_id" to "string",
+                "status" to "string",
+                "end_time" to "timestamp",
+                "candidate_folders" to "array<string>",
+                "deleted_folders" to "array<string>",
+                "candidate_fingerprints" to "map<string,string>",
+                "prev_run_id" to "string",
+            )
+        private val FILTER_COLUMNS: List<Pair<String, String>> =
+            listOf(
+                "external_job_id" to "string",
+                "catalog_name" to "string",
+                "database_name" to "string",
+                "start_time" to "timestamp",
+            )
+
+        /** Why the audit table's rows cannot be trusted for confirmation, or null when they can. */
+        internal fun historyTrustProblem(
+            describeRows: List<Row>,
+            schema: StructType,
+            properties: Map<String, String?>,
+            sessionWapSet: Boolean,
+        ): String? {
+            val provider =
+                describeRows.singleOrNull { it.getString(0)?.trim().equals("Provider", ignoreCase = true) }?.getString(1)?.trim()
+            if (!provider.equals("iceberg", ignoreCase = true)) {
+                return "the audit table is not an Iceberg table"
+            }
+            (HISTORY_COLUMNS + FILTER_COLUMNS).forEach { (name, type) ->
+                val fields = schema.fields().filter { it.name().equals(name, ignoreCase = true) }
+                if (fields.size != 1 || fields.single().dataType().simpleString() != type) {
+                    return "audit column $name is missing or not of type $type"
+                }
+            }
+            if (properties[WAP_TABLE_PROPERTY]?.trim().equals("true", ignoreCase = true)) {
+                return "write-audit-publish is enabled on the audit table"
+            }
+            if (sessionWapSet) {
+                return "the session sets a write-audit-publish id or branch"
+            }
+            return null
+        }
+
+        internal fun historyRow(row: Row): AuditHistoryRow {
+            fun string(name: String): String? = row.fieldIndex(name).let { if (row.isNullAt(it)) null else row.getString(it) }
+
+            fun strings(name: String): List<String>? =
+                row.fieldIndex(name).let { index -> if (row.isNullAt(index)) null else row.getList<String?>(index).takeIf { null !in it }?.map { it!! } }
+
+            val fingerprintIndex = row.fieldIndex("candidate_fingerprints")
+            val fingerprints =
+                if (row.isNullAt(fingerprintIndex)) {
+                    null
+                } else {
+                    row.getJavaMap<String?, String?>(fingerprintIndex).entries
+                        .takeIf { entries -> entries.all { it.key != null && it.value != null } }
+                        ?.associate { it.key!! to it.value!! }
+                }
+            val endIndex = row.fieldIndex("end_time")
+            val endTime =
+                if (row.isNullAt(endIndex)) {
+                    null
+                } else {
+                    when (val value = row.get(endIndex)) {
+                        is Timestamp -> value.toInstant()
+                        is Instant -> value
+                        else -> null
+                    }
+                }
+            return AuditHistoryRow(
+                runId = string("run_id"),
+                status = string("status"),
+                endTime = endTime,
+                candidateFolders = strings("candidate_folders"),
+                deletedFolders = strings("deleted_folders"),
+                candidateFingerprints = fingerprints,
+                prevRunId = string("prev_run_id"),
+            )
+        }
+
         const val AUDIT_TABLE_NAME =
             "spark_catalog.iomete_system_db.cleanup_untracked_table_folder_runs"
 
@@ -293,6 +452,8 @@ class CleanupAuditTableService {
             "diagnostic_details" to "MAP<STRING, STRING>",
             "start_time" to "TIMESTAMP",
             "end_time" to "TIMESTAMP",
+            "candidate_fingerprints" to "MAP<STRING, STRING>",
+            "prev_run_id" to "STRING",
         )
     }
 }

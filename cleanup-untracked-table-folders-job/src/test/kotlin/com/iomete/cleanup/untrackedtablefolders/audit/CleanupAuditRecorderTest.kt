@@ -384,7 +384,7 @@ class CleanupAuditRecorderTest {
     fun `too many folders with unresolved tables reports them as potentially untracked, not candidates`() {
         val unmatchedFolders = (0..MAX_AUDIT_PATH_SAMPLE_SIZE).map { "s3a://example-bucket/db/folder_$it" }
 
-        recorder.recordTooManyCandidateFolders(
+        recorder.recordTooManyFoldersToInspect(
             runId = "run-5",
             databaseStartTime = Instant.EPOCH,
             catalogName = "example_catalog",
@@ -404,7 +404,7 @@ class CleanupAuditRecorderTest {
         val record = capturedRecord()
 
         assertEquals("SKIPPED", record.status)
-        assertEquals("too_many_candidate_folders", record.statusReason)
+        assertEquals("too_many_folders_to_inspect", record.statusReason)
         assertEquals(1, record.unresolvedTableCount)
         assertEquals(unmatchedFolders.size.toLong(), record.potentiallyUntrackedFolderCount)
         assertEquals(0, record.candidateFolderCount)
@@ -567,13 +567,20 @@ class CleanupAuditRecorderTest {
                 Instant.EPOCH, emptyList(), emptyList(), null, ownershipChecks = allRead,
             )
         }
+        recorder.recordDeletionIntent(
+            "run", Instant.EPOCH, "example_catalog", "analytics", db, db, candidates, Instant.EPOCH, emptyList(), allRead, StorageEvidence.NONE,
+        )
         recorder.recordOwnershipUnverified(
             "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 2, listOf("example_catalog.analytics.t2"), tables, folders,
             candidates, Instant.EPOCH, emptyList(), ownershipChecks = allRead,
         )
-        recorder.recordTooManyCandidateFolders(
+        recorder.recordTooManyFoldersToInspect(
             "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, emptyList(), tables, folders, candidates, Instant.EPOCH,
             emptyList(), "too many", ownershipChecks = allRead,
+        )
+        recorder.recordTooManyCandidateFolders(
+            candidates, "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, tables, folders, candidates, null,
+            Instant.EPOCH, emptyList(), emptyList(), null, ownershipChecks = allRead,
         )
         recorder.recordDeletionFailed(
             "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, tables, folders, candidates, null, emptyList(), null,
@@ -591,8 +598,8 @@ class CleanupAuditRecorderTest {
 
         assertEquals(
             listOf(
-                "SUCCESS", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "SKIPPED", "FAILED", "FAILED", "SKIPPED", "SKIPPED",
-                "SKIPPED", "SKIPPED",
+                "SUCCESS", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "INTENT", "BLOCKED", "SKIPPED", "SKIPPED", "FAILED",
+                "FAILED", "SKIPPED", "SKIPPED", "SKIPPED", "SKIPPED",
             ),
             records.map { it.status },
         )
@@ -778,7 +785,7 @@ class CleanupAuditRecorderTest {
         listOf(deletionRows to (72L to "24"), clampedRows to (72L to "0"), longerRows to (100L to "100"), dryRunRows to (0L to "0"))
             .forEach { (rows, expected) ->
                 val (olderThanHours, configured) = expected
-                assertEquals(13, rows.size)
+                assertEquals(16, rows.size)
                 rows.forEach { row ->
                     assertEquals(olderThanHours, row.olderThanHours, row.statusReason)
                     assertEquals(configured, row.diagnosticDetails["configured_older_than_hours"], row.statusReason)
@@ -877,13 +884,17 @@ class CleanupAuditRecorderTest {
             "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 2, listOf("example_catalog.analytics.t2"), tables, folders,
             candidates, Instant.EPOCH, emptyList(), inspectionOutcomes = outcomes, tooNewPaths = young,
         )
-        recorder.recordTooManyCandidateFolders(
+        recorder.recordTooManyFoldersToInspect(
             "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, emptyList(), tables, folders, folders.drop(1), Instant.EPOCH,
             emptyList(), "too many",
         )
+        recorder.recordTooManyCandidateFolders(
+            candidates, "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, tables, folders, candidates, null,
+            Instant.EPOCH, emptyList(), emptyList(), null, inspectionOutcomes = outcomes, tooNewPaths = young,
+        )
 
         assertEquals(
-            listOf("SUCCESS", "BLOCKED", "FAILED", "FAILED", "BLOCKED", "SKIPPED"),
+            listOf("SUCCESS", "BLOCKED", "FAILED", "FAILED", "BLOCKED", "SKIPPED", "SKIPPED"),
             records.map { it.status },
         )
         records.take(4).forEach { row ->
@@ -901,6 +912,11 @@ class CleanupAuditRecorderTest {
         assertEquals("empty_folder=1\ntoo_new=1", records[4].diagnosticDetails["held_folder_counts"])
         assertEquals("1", records[4].diagnosticDetails["too_new_count"])
         assertTrue(records[5].diagnosticDetails.keys.none { it.startsWith("held_folder") || it.startsWith("too_new") })
+        // The row for too many due folders ran no fence, and names the due folders apart from the held ones.
+        assertEquals("too_many_candidate_folders", records[6].statusReason)
+        assertEquals("empty_folder=1\ntoo_new=1", records[6].diagnosticDetails["held_folder_counts"])
+        assertEquals("2", records[6].diagnosticDetails["due_for_deletion_count"])
+        assertEquals("$db/a\n$db/moved", records[6].diagnosticDetails["due_for_deletion_paths_sample"])
     }
 
     // One row of each type, in the order of `every row type states which ownership checks ran and which did not`.
@@ -930,13 +946,20 @@ class CleanupAuditRecorderTest {
                 Instant.EPOCH, emptyList(), emptyList(), null,
             )
         }
+        rowRecorder.recordDeletionIntent(
+            "run", Instant.EPOCH, "example_catalog", "analytics", db, db, candidates, Instant.EPOCH, emptyList(), OwnershipChecks(), StorageEvidence.NONE,
+        )
         rowRecorder.recordOwnershipUnverified(
             "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 2, listOf("example_catalog.analytics.t2"), tables, folders,
             candidates, Instant.EPOCH, emptyList(),
         )
-        rowRecorder.recordTooManyCandidateFolders(
+        rowRecorder.recordTooManyFoldersToInspect(
             "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, emptyList(), tables, folders, candidates, Instant.EPOCH,
             emptyList(), "too many",
+        )
+        rowRecorder.recordTooManyCandidateFolders(
+            candidates, "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, tables, folders, candidates, null,
+            Instant.EPOCH, emptyList(), emptyList(), null,
         )
         rowRecorder.recordDeletionFailed(
             "run", Instant.EPOCH, "example_catalog", "analytics", db, db, 1, tables, folders, candidates, null, emptyList(), null,

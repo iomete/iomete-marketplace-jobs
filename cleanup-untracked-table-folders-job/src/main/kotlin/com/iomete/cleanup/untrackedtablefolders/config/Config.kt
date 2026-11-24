@@ -16,6 +16,9 @@ private const val APPLICATION_CONFIG_PATH = "/etc/configs/application.json"
 // The youngest folder age deletion mode ever uses. A code constant on purpose: no configuration can lower it.
 const val DELETION_MIN_AGE_HOURS = 72L
 
+/** The lowest bound on unmatched folders a database may have before the job inspects none of them. */
+const val MIN_FOLDERS_TO_INSPECT = 100
+
 data class ApplicationConfig(
     val catalog: String,
 
@@ -51,6 +54,10 @@ data class ApplicationConfig(
     // delete, so it gets the minimum. A dry run keeps the configured value, 0 included, so it stays usable for testing.
     fun effectiveOlderThanHours(): Long =
         if (dryRun) olderThanHours else maxOf(olderThanHours, DELETION_MIN_AGE_HOURS)
+
+    // max_candidate_folders_per_database counts only the folders a run would delete. This bounds how many unmatched
+    // folders are listed and read before that, and is never below the cap.
+    fun maxFoldersToInspectPerDatabase(): Int = maxOf(MIN_FOLDERS_TO_INSPECT, maxCandidateFoldersPerDatabase)
 
     fun ageFloorWarning(): String? =
         effectiveOlderThanHours().takeIf { it != olderThanHours }?.let { effective ->

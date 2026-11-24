@@ -4,7 +4,9 @@ import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditDiagnosticDeta
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecord
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditRecorder
 import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditTableService
+import com.iomete.cleanup.untrackedtablefolders.candidate.StorageHoldChecker
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
+import com.iomete.cleanup.untrackedtablefolders.candidate.passThroughStorageHoldChecker
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.catalog.NamedTableStorage
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
@@ -21,27 +23,32 @@ import com.iomete.cleanup.untrackedtablefolders.storage.OWNERSHIP_SNAPSHOT_MAX_A
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationPlanner
 import com.iomete.cleanup.untrackedtablefolders.storage.StorageScanLocationResolver
 import com.iomete.cleanup.untrackedtablefolders.storage.Ticker
-import io.mockk.Runs
 import io.mockk.every
-import io.mockk.just
 import io.mockk.mockk
 import io.mockk.spyk
 import org.apache.hadoop.conf.Configuration
 import java.time.Duration
 
-/** Real cleanup flow over [InMemoryS3FileSystem]; only catalog discovery and the audit table are faked. */
+/**
+ * Real cleanup flow over [InMemoryS3FileSystem]; only catalog discovery and the audit table are faked. The storage
+ * holds pass every folder unless [realStorageHolds] is set; then [auditTableService] serves the job id and history.
+ */
 class CleanupFlowHarness(
     config: ApplicationConfig,
     catalogProperties: Map<String, String> = CatalogStorageTestHarness.s3CompatibleCatalogProperties(),
     sparkHadoopConfiguration: Configuration = CatalogStorageTestHarness.baseHadoopConfiguration(),
     ticker: Ticker = Ticker.SYSTEM,
     snapshotMaxAge: Duration = OWNERSHIP_SNAPSHOT_MAX_AGE,
+    realStorageHolds: Boolean = false,
 ) {
     val catalogDiscoveryService: CatalogDiscoveryService = mockk()
+
+    /** Every row but deletion intents, which are in [intentRecords]. */
     val auditRecords = mutableListOf<CleanupAuditRecord>()
+    val intentRecords = mutableListOf<CleanupAuditRecord>()
     val summaries = mutableListOf<CleanupSummary>()
 
-    private val auditTableService: CleanupAuditTableService = mockk(relaxed = true)
+    val auditTableService: CleanupAuditTableService = mockk(relaxed = true)
     private val storage =
         CatalogStorageTestHarness(
             catalogProperties = mapOf(config.catalog to catalogProperties),
@@ -51,7 +58,13 @@ class CleanupFlowHarness(
     val service: CleanupUntrackedTableFoldersService
 
     init {
-        every { auditTableService.writeAuditRecord(capture(auditRecords)) } just Runs
+        every { auditTableService.writeAuditRecord(any()) } answers {
+            val record = firstArg<CleanupAuditRecord>()
+            if (record.status == "INTENT") intentRecords += record else auditRecords += record
+        }
+        every { auditTableService.intentRecorded(any(), any(), any(), any()) } answers {
+            intentRecords.any { it.runId == firstArg<String>() && it.catalogName == thirdArg<String>() && it.databaseName == arg<String>(3) }
+        }
         every { catalogDiscoveryService.restNamespaceRoot(any(), any()) } returns null
         every { catalogDiscoveryService.knownWarehouseRoots() } returns emptyList()
         every { catalogDiscoveryService.visibleDatabaseLocations(any()) } returns emptyMap()
@@ -97,6 +110,15 @@ class CleanupFlowHarness(
                         gate.snapshotMaxAge = snapshotMaxAge
                     }
                 it.storageScanLocationPlanner = StorageScanLocationPlanner()
+                it.storageHoldChecker =
+                    if (realStorageHolds) {
+                        StorageHoldChecker().also { checker ->
+                            checker.objectStorageDiscoveryService = discovery
+                            checker.cleanupAuditTableService = auditTableService
+                        }
+                    } else {
+                        passThroughStorageHoldChecker()
+                    }
                 it.reportOnlyRootScanner =
                     ReportOnlyRootScanner().also { scanner ->
                         scanner.objectStorageDiscoveryService = discovery

@@ -157,12 +157,14 @@ class CleanupAuditTableServiceTest {
                 candidateTotalSizeBytes = null,
                 deletedObjectCount = null,
                 deletedTotalSizeBytes = null,
+                candidateFingerprints = null,
+                prevRunId = null,
             )
 
         val values = parsedValues(service.buildInsertAuditRecordSql(record))
 
         assertEquals(expectedValues(record), values)
-        assertEquals(15, values.count { it.value == null })
+        assertEquals(17, values.count { it.value == null })
     }
 
     @Test
@@ -274,6 +276,8 @@ class CleanupAuditTableServiceTest {
             diagnosticDetails = mapOf(value to value, "key#$value" to "value#$value"),
             startTime = Instant.parse("2026-05-21T10:00:00.123456Z"),
             endTime = Instant.parse("2026-05-21T10:01:00.654321Z"),
+            candidateFingerprints = mapOf(value to "fp#$value", "folder#$value" to value),
+            prevRunId = "prev#$value",
         )
 
     private fun expectedValues(record: CleanupAuditRecord): Map<String, Any?> =
@@ -315,6 +319,8 @@ class CleanupAuditTableServiceTest {
             "diagnostic_details" to record.diagnosticDetails,
             "start_time" to record.startTime.truncatedTo(ChronoUnit.MICROS),
             "end_time" to record.endTime.truncatedTo(ChronoUnit.MICROS),
+            "candidate_fingerprints" to record.candidateFingerprints,
+            "prev_run_id" to record.prevRunId,
         )
 
     // The values Spark would insert: one aliased expression per target column, in order.

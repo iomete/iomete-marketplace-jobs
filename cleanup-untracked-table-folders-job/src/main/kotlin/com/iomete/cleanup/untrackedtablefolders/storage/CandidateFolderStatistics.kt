@@ -13,6 +13,7 @@ data class CandidateFolderStatistics(
     val absentFolderPaths: Set<String> = emptySet(),
     val tooManyObjectsFolderPaths: Set<String> = emptySet(),
     val fingerprintsByFolder: Map<String, FolderFingerprint> = emptyMap(),
+    val layoutsByFolder: Map<String, FolderLayout> = emptyMap(),
 ) {
     // Null means the folder has objects of known age, so only the age cutoff decides.
     fun outcome(folderPath: String): CandidateInspectionOutcome? {

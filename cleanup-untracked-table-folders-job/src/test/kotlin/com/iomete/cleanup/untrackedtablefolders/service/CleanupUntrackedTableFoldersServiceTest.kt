@@ -5,6 +5,7 @@ import com.iomete.cleanup.untrackedtablefolders.audit.CleanupAuditTableService
 import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
 import com.iomete.cleanup.untrackedtablefolders.audit.OwnershipChecks
 import com.iomete.cleanup.untrackedtablefolders.candidate.UntrackedFolderCandidateDetector
+import com.iomete.cleanup.untrackedtablefolders.candidate.passThroughStorageHoldChecker
 import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogDiscoveryService
 import com.iomete.cleanup.untrackedtablefolders.catalog.DatabaseNotFoundException
 import com.iomete.cleanup.untrackedtablefolders.catalog.DiscoveredDatabase
@@ -75,6 +76,7 @@ class CleanupUntrackedTableFoldersServiceTest {
             candidateSizeStatCollector,
             candidateDeletionGate,
         )
+        every { cleanupAuditRecorder.deletionIntentRecorded(any(), any(), any()) } returns true
         every { candidateSizeStatCollector.collectPerFolder(any(), any()) } answers {
             CandidateFolderStatistics(
                 secondArg<List<String>>().associateWith {
@@ -1214,9 +1216,14 @@ class CleanupUntrackedTableFoldersServiceTest {
                 cleanupAuditRecorder.recordOwnershipUnverified(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any(), wouldBeHeldByDeletionFloorPaths = any(), tooNewPaths = any())
             }
         }
+        if (except != "recordTooManyFoldersToInspect") {
+            verify(exactly = 0) {
+                cleanupAuditRecorder.recordTooManyFoldersToInspect(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
+            }
+        }
         if (except != "recordTooManyCandidateFolders") {
             verify(exactly = 0) {
-                cleanupAuditRecorder.recordTooManyCandidateFolders(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), ownershipChecks = any())
+                cleanupAuditRecorder.recordTooManyCandidateFolders(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
             }
         }
         if (except != "recordDatabaseNotFound") {
@@ -1269,6 +1276,7 @@ class CleanupUntrackedTableFoldersServiceTest {
             this.candidateSizeStatCollector = candidateSizeStatCollector
             candidateDeletionGate = this@CleanupUntrackedTableFoldersServiceTest.candidateDeletionGate
             storageScanLocationPlanner = StorageScanLocationPlanner()
+            storageHoldChecker = passThroughStorageHoldChecker()
             reportOnlyRootScanner =
                 ReportOnlyRootScanner().also { scanner ->
                     scanner.objectStorageDiscoveryService = this@CleanupUntrackedTableFoldersServiceTest.objectStorageDiscoveryService

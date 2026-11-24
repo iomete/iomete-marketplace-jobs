@@ -67,6 +67,7 @@ class CandidateSizeStatCollector {
             absentFolderPaths = batch.absentFolderPaths,
             tooManyObjectsFolderPaths = batch.tooManyObjectsFolderPaths,
             fingerprintsByFolder = batch.fingerprintsByFolder,
+            layoutsByFolder = batch.layoutsByFolder,
         )
     }
 

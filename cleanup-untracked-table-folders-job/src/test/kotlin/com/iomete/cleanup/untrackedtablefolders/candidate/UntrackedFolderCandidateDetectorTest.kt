@@ -22,7 +22,7 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = listOf("s3a://bucket/db/active_table"),
             excludedPaths = emptyList(),
             unresolvedTableCount = 0,
-            maxCandidateFolders = 10,
+            maxFoldersToInspect = 10,
         )
 
         assertEquals(
@@ -41,7 +41,7 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = emptyList(),
             excludedPaths = listOf("s3a://bucket/db/excluded_table"),
             unresolvedTableCount = 0,
-            maxCandidateFolders = 10,
+            maxFoldersToInspect = 10,
         )
 
         assertEquals(
@@ -62,7 +62,7 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = emptyList(),
             excludedPaths = listOf(resolvedDatabaseFolderExclusion),
             unresolvedTableCount = 0,
-            maxCandidateFolders = 10,
+            maxFoldersToInspect = 10,
         )
 
         assertEquals(
@@ -82,7 +82,7 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = listOf("s3a://bucket/db/active_table"),
             excludedPaths = listOf("s3a://bucket/db/excluded_table"),
             unresolvedTableCount = 0,
-            maxCandidateFolders = 10,
+            maxFoldersToInspect = 10,
         )
 
         assertEquals(
@@ -92,8 +92,8 @@ class UntrackedFolderCandidateDetectorTest {
     }
 
     @Test
-    fun `throws when candidate count exceeds configured maximum`() {
-        assertThrows(TooManyCandidateFoldersException::class.java) {
+    fun `throws when the unmatched folder count exceeds the inspection limit`() {
+        assertThrows(TooManyFoldersToInspectException::class.java) {
             detector.detectCandidates(
                 storageFolders = listOf(
                     storageFolder("s3a://bucket/db/deleted_table_1"),
@@ -102,7 +102,7 @@ class UntrackedFolderCandidateDetectorTest {
                 activeTableLocations = emptyList(),
                 excludedPaths = emptyList(),
                 unresolvedTableCount = 0,
-            maxCandidateFolders = 1,
+            maxFoldersToInspect = 1,
             )
         }
     }
@@ -117,7 +117,7 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = emptyList(),
             excludedPaths = emptyList(),
             unresolvedTableCount = 0,
-            maxCandidateFolders = 10,
+            maxFoldersToInspect = 10,
         )
 
         assertEquals(
@@ -136,7 +136,7 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = emptyList(),
             excludedPaths = emptyList(),
             unresolvedTableCount = 0,
-            maxCandidateFolders = 10,
+            maxFoldersToInspect = 10,
         )
 
         assertEquals(
@@ -155,7 +155,7 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = emptyList(),
             excludedPaths = emptyList(),
             unresolvedTableCount = 0,
-            maxCandidateFolders = 10,
+            maxFoldersToInspect = 10,
         )
 
         assertEquals(
@@ -172,7 +172,7 @@ class UntrackedFolderCandidateDetectorTest {
                 activeTableLocations = emptyList(),
                 excludedPaths = emptyList(),
                 unresolvedTableCount = 0,
-                maxCandidateFolders = 10,
+                maxFoldersToInspect = 10,
             )
 
         assertTrue(result is StorageFolderReconciliation.DeletionEligible)
@@ -188,7 +188,7 @@ class UntrackedFolderCandidateDetectorTest {
                 activeTableLocations = emptyList(),
                 excludedPaths = emptyList(),
                 unresolvedTableCount = 1,
-                maxCandidateFolders = 10,
+                maxFoldersToInspect = 10,
             )
 
         assertTrue(result is StorageFolderReconciliation.OwnershipUnverified)
@@ -200,20 +200,20 @@ class UntrackedFolderCandidateDetectorTest {
     }
 
     @Test
-    fun `the candidate limit is enforced even when ownership is unverified`() {
+    fun `the inspection limit is enforced even when ownership is unverified`() {
         val error =
-            assertThrows(TooManyCandidateFoldersException::class.java) {
+            assertThrows(TooManyFoldersToInspectException::class.java) {
                 detector.detectCandidates(
                     storageFolders =
                         listOf(storageFolder("s3a://bucket/db/old_1"), storageFolder("s3a://bucket/db/old_2")),
                     activeTableLocations = emptyList(),
                     excludedPaths = emptyList(),
                     unresolvedTableCount = 1,
-                    maxCandidateFolders = 1,
+                    maxFoldersToInspect = 1,
                 )
             }
 
-        assertEquals(2, error.candidateCount)
+        assertEquals(2, error.folderCount)
     }
 
     private fun storageFolder(path: String): StorageFolder = StorageFolder(path = path)
@@ -232,7 +232,7 @@ class UntrackedFolderCandidateDetectorTest {
             ),
             excludedPaths = emptyList(),
             unresolvedTableCount = 0,
-            maxCandidateFolders = 10,
+            maxFoldersToInspect = 10,
         )
 
         assertEquals(
@@ -250,7 +250,7 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = listOf("s3a://bucket/db/team_a/orders/"),
             excludedPaths = emptyList(),
             unresolvedTableCount = 0,
-            maxCandidateFolders = 10,
+            maxFoldersToInspect = 10,
         )
 
         assertEquals(
@@ -269,7 +269,7 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = listOf("s3a://bucket/db"),
             excludedPaths = emptyList(),
             unresolvedTableCount = 0,
-            maxCandidateFolders = 10,
+            maxFoldersToInspect = 10,
         )
 
         assertEquals(emptyList<String>(), candidates.folders.map { it.path })
@@ -285,7 +285,7 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = emptyList(),
             excludedPaths = listOf("s3a://bucket/db/legacy/keep_me"),
             unresolvedTableCount = 0,
-            maxCandidateFolders = 10,
+            maxFoldersToInspect = 10,
         )
 
         assertEquals(listOf("s3a://bucket/db/orphan"), candidates.folders.map { it.path })
@@ -300,7 +300,7 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = emptyList(),
             excludedPaths = listOf("s3a://bucket/db"),
             unresolvedTableCount = 0,
-            maxCandidateFolders = 10,
+            maxFoldersToInspect = 10,
         )
 
         assertEquals(emptyList<String>(), candidates.folders.map { it.path })
@@ -316,7 +316,7 @@ class UntrackedFolderCandidateDetectorTest {
             activeTableLocations = listOf("s3a://bucket/db/table1"),
             excludedPaths = listOf("s3a://bucket/db/keep_me"),
             unresolvedTableCount = 0,
-            maxCandidateFolders = 10,
+            maxFoldersToInspect = 10,
         )
 
         assertEquals(

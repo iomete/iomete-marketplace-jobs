@@ -40,4 +40,8 @@ data class CleanupAuditRecord(
     val diagnosticDetails: Map<String, String>,
     val startTime: Instant,
     val endTime: Instant,
+    /** Fingerprint of each folder inspected before its age check; null when the run inspected none. */
+    val candidateFingerprints: Map<String, String>? = null,
+    /** The newest earlier row of the same job, catalog and database, as this run read it. */
+    val prevRunId: String? = null,
 )

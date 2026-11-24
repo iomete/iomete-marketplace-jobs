@@ -30,12 +30,12 @@ data class AgeCutoffResult(
     val tooNewPaths: List<String>,
 )
 
-class TooManyCandidateFoldersException(
-    val candidateCount: Int,
-    val maxCandidateFolders: Int,
-    val candidateFolderPaths: List<String>,
+class TooManyFoldersToInspectException(
+    val folderCount: Int,
+    val maxFoldersToInspect: Int,
+    val folderPaths: List<String>,
 ) : RuntimeException(
-    "Detected $candidateCount candidate untracked table folder(s), which exceeds max_candidate_folders_per_database=$maxCandidateFolders"
+    "Detected $folderCount storage folder(s) with no verified catalog owner, which exceeds the inspection limit of $maxFoldersToInspect"
 )
 
 @ApplicationScoped
@@ -46,11 +46,11 @@ class UntrackedFolderCandidateDetector {
         storageFolders: List<StorageFolder>,
         activeTableLocations: List<String>,
         excludedPaths: List<String>,
-        maxCandidateFolders: Int,
+        maxFoldersToInspect: Int,
         unresolvedTableCount: Int,
     ): StorageFolderReconciliation {
-        require(maxCandidateFolders >= 0) {
-            "maxCandidateFolders must be greater than or equal to 0"
+        require(maxFoldersToInspect >= 0) {
+            "maxFoldersToInspect must be greater than or equal to 0"
         }
 
         val candidateFolders =
@@ -61,11 +61,11 @@ class UntrackedFolderCandidateDetector {
                 stage = "candidate detection",
             )
 
-        if (candidateFolders.size > maxCandidateFolders) {
-            throw TooManyCandidateFoldersException(
-                candidateCount = candidateFolders.size,
-                maxCandidateFolders = maxCandidateFolders,
-                candidateFolderPaths = candidateFolders.map { it.path },
+        if (candidateFolders.size > maxFoldersToInspect) {
+            throw TooManyFoldersToInspectException(
+                folderCount = candidateFolders.size,
+                maxFoldersToInspect = maxFoldersToInspect,
+                folderPaths = candidateFolders.map { it.path },
             )
         }
 

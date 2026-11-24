@@ -1,9 +1,13 @@
 package com.iomete.cleanup.untrackedtablefolders.logging
 
+import com.iomete.cleanup.untrackedtablefolders.audit.CONFIRMATION_WINDOW
 import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
 import com.iomete.cleanup.untrackedtablefolders.audit.OwnershipChecks
 import com.iomete.cleanup.untrackedtablefolders.candidate.HeldFolders
+import com.iomete.cleanup.untrackedtablefolders.candidate.StorageHoldReason
+import com.iomete.cleanup.untrackedtablefolders.candidate.StorageHolds
 import com.iomete.cleanup.untrackedtablefolders.config.DELETION_MIN_AGE_HOURS
+import com.iomete.cleanup.untrackedtablefolders.config.MIN_FOLDERS_TO_INSPECT
 import com.iomete.cleanup.untrackedtablefolders.storage.CandidateInspectionOutcome
 import com.iomete.cleanup.untrackedtablefolders.storage.DeletionFenceReport
 import com.iomete.cleanup.untrackedtablefolders.storage.FenceKeepReason
@@ -44,6 +48,14 @@ data class CleanupSummary(
     val wouldBeHeldByDeletionFloorPaths: List<String> = emptyList(),
     val deletionFence: DeletionFenceReport = DeletionFenceReport(),
     val tooNewPaths: List<String> = emptyList(),
+    val storageHolds: StorageHolds = StorageHolds.NONE,
+    val candidateCapSkip: CandidateCapSkip? = null,
+)
+
+/** More folders passed every check than max_candidate_folders_per_database allows, so none was deleted. */
+data class CandidateCapSkip(
+    val dueFolderPaths: List<String>,
+    val maxCandidateFolders: Int,
 )
 
 data class NoVerifiedLocationSummary(
@@ -67,7 +79,7 @@ data class TooManyFoldersSummary(
     val unresolvedTableNames: List<String>,
     val storageFolderCount: Int,
     val unmatchedFolderPaths: List<String>,
-    val maxCandidateFolders: Int,
+    val maxFoldersToInspect: Int,
     val dryRun: Boolean,
     val unresolvedTableDetails: Map<String, UnresolvedTableDetail> = emptyMap(),
     val ownershipChecks: OwnershipChecks = OwnershipChecks(),
@@ -194,8 +206,9 @@ class CleanupSummaryLogger {
             add("")
             add("  SKIPPED")
             add("")
-            add("  Reason: too_many_candidate_folders")
-            add("  ${summary.unmatchedFolderPaths.size} folder(s) exceed max_candidate_folders_per_database=${summary.maxCandidateFolders}.")
+            add("  Reason: too_many_folders_to_inspect")
+            add("  ${summary.unmatchedFolderPaths.size} folder(s) exceed the inspection limit of ${summary.maxFoldersToInspect}, the larger of")
+            add("  $MIN_FOLDERS_TO_INSPECT and max_candidate_folders_per_database.")
             if (summary.unresolvedTableNames.isNotEmpty()) {
                 add("  ${summary.unresolvedTableNames.size} catalog table(s) also have unresolved storage ownership, so raising")
                 add("  the limit will not make these folders deletable.")
@@ -216,7 +229,7 @@ class CleanupSummaryLogger {
                 summary.activeTableLocations.any { runCatching { StoragePathUtils.overlaps(folder, it) }.getOrDefault(false) }
             }
         val inspectedFolderPaths = summary.inspectionOutcomes.values.flatten().toSet() + summary.tooNewPaths
-        val heldFolders = HeldFolders.of(summary.inspectionOutcomes, summary.tooNewPaths, summary.deletionFence)
+        val heldFolders = HeldFolders.of(summary.inspectionOutcomes, summary.tooNewPaths, summary.deletionFence, summary.storageHolds)
         val otherSkippedFolderPaths =
             summary.storageFolderPaths - tableFolderPaths.toSet() - unmatchedFolderSet - inspectedFolderPaths
         // Several tables can share one location, so path lists are shown once each.
@@ -341,6 +354,20 @@ class CleanupSummaryLogger {
             addListOrNone(summary.wouldBeHeldByDeletionFloorPaths)
         }
 
+        if (summary.storageHolds.pathsByReason.isNotEmpty()) {
+            add("")
+            add("FOLDERS HELD BY STORAGE CHECKS")
+            add("")
+            add("  These folders passed every ownership and age check, but what is stored in them, or how")
+            add("  long earlier runs have seen them unchanged, does not show they are safe to delete.")
+            summary.storageHolds.pathsByReason.forEach { (reason, paths) ->
+                add("")
+                add("  ${reason.code}: ${storageHoldExplanation(reason)}")
+                add("")
+                addListOrNone(paths)
+            }
+        }
+
         if (heldFolders.count > 0) {
             add("")
             add("FOLDERS HELD, BY REASON")
@@ -360,6 +387,16 @@ class CleanupSummaryLogger {
             add("  Reason: ${summary.deletionBlockReason.code}")
             deletionBlockExplanation(summary.deletionBlockReason).forEach { add("  $it") }
             add("  No folder in this database was deleted.")
+        } else if (summary.candidateCapSkip != null) {
+            add("  SKIPPED")
+            add("")
+            add("  Reason: too_many_candidate_folders")
+            add("  ${summary.candidateCapSkip.dueFolderPaths.size} folder(s) passed every check and are due for deletion, which exceeds")
+            add("  max_candidate_folders_per_database=${summary.candidateCapSkip.maxCandidateFolders}. Review them below. Protect folders to keep")
+            add("  with exclude_paths, or raise the limit.")
+            add("  No folder in this database was deleted.")
+            add("")
+            addListOrNone(summary.candidateCapSkip.dueFolderPaths)
         } else if (summary.deletionEligible && summary.dryRun) {
             add("  Dry run. No folder was deleted.")
         } else if (summary.deletionEligible) {
@@ -637,6 +674,29 @@ class CleanupSummaryLogger {
                     "A table of another database or catalog could not be resolved to its storage, so its files",
                     "could be in any folder. The job log names the table.",
                 )
+            DeletionBlockReason.DELETION_INTENT_NOT_RECORDED ->
+                listOf(
+                    "The row that names the folders about to be deleted could not be written or read back, so",
+                    "later runs could not tell that this run may have deleted them. The WARN log has the details.",
+                )
+        }
+
+    private fun storageHoldExplanation(reason: StorageHoldReason): String =
+        when (reason) {
+            StorageHoldReason.INSPECTION_INCOMPLETE -> "the folder's contents or fingerprint are missing from the inspection."
+            StorageHoldReason.METADATA_VIEW -> "a metadata file describes a view, not a table."
+            StorageHoldReason.METADATA_UNREADABLE -> "a metadata file could not be read or parsed. See the WARN log."
+            StorageHoldReason.METADATA_NO_UUID -> "a metadata file has no table UUID."
+            StorageHoldReason.METADATA_LOCATION_MISMATCH -> "a metadata file names a table location other than this folder."
+            StorageHoldReason.DATA_ONLY_UNKNOWN_PROVENANCE ->
+                "plain Spark output with no table metadata. A table or job may still read it by path."
+            StorageHoldReason.DATA_ONLY_NOT_PLAIN_OUTPUT ->
+                "files with no table metadata that are neither commit scratch nor plain Spark output."
+            StorageHoldReason.CONFIRMATION_NO_JOB_ID -> "the run has no job id, so no earlier run can confirm the folder."
+            StorageHoldReason.CONFIRMATION_HISTORY_UNREADABLE -> "earlier audit rows could not be read or trusted. See the WARN log."
+            StorageHoldReason.CONFIRMATION_PATH_NOT_EXACT -> "the path cannot be stored exactly in the audit table, so it cannot be matched."
+            StorageHoldReason.AWAITING_CONFIRMATION ->
+                "earlier runs of this job have not yet seen the folder unchanged for ${CONFIRMATION_WINDOW.toHours()} hours."
         }
 
     private fun MutableList<String>.addListOrNone(values: List<String>) {
