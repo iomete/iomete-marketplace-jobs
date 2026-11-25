@@ -671,8 +671,8 @@ class CleanupSummaryLogger {
                 )
             DeletionBlockReason.OTHER_TABLE_UNRESOLVED ->
                 listOf(
-                    "A table of another database or catalog could not be resolved to its storage, so its files",
-                    "could be in any folder. The job log names the table.",
+                    "A table or view of another database or catalog could not be resolved to its storage, or may",
+                    "read storage the job can't bound, so its files could be in any folder. The job log gives the reason.",
                 )
             DeletionBlockReason.DELETION_INTENT_NOT_RECORDED ->
                 listOf(
@@ -692,6 +692,11 @@ class CleanupSummaryLogger {
                 "plain Spark output with no table metadata. A table or job may still read it by path."
             StorageHoldReason.DATA_ONLY_NOT_PLAIN_OUTPUT ->
                 "files with no table metadata that are neither commit scratch nor plain Spark output."
+            StorageHoldReason.LIVE_TABLES_INCOMPLETE -> "not every live table was read (a read failed, or a catalog in another bucket was skipped), so one of them may use the folder."
+            StorageHoldReason.LIVE_TABLE_UUID -> "its metadata has the UUID of a live table, which may still read it."
+            StorageHoldReason.LIVE_FILE_REFERENCED -> "a live table's current metadata names a file in the folder."
+            StorageHoldReason.NAME_MAPPED_FILE_REFERENCED -> "a table that imported files (add_files, migrate, snapshot) uses a file in the folder."
+            StorageHoldReason.NAME_MAPPED_READ_INCOMPLETE -> "a table that imported files could not be read for the files it uses. See the WARN log."
             StorageHoldReason.CONFIRMATION_NO_JOB_ID -> "the run has no job id, so no earlier run can confirm the folder."
             StorageHoldReason.CONFIRMATION_HISTORY_UNREADABLE -> "earlier audit rows could not be read or trusted. See the WARN log."
             StorageHoldReason.CONFIRMATION_PATH_NOT_EXACT -> "the path cannot be stored exactly in the audit table, so it cannot be matched."

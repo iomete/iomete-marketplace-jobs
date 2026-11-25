@@ -18,6 +18,10 @@ internal fun ReadAccumulator.icebergTable(name: List<String>, metadata: TableMet
     if (properties.containsKey(TableProperties.WRITE_LOCATION_PROVIDER_IMPL)) {
         externalPathUse += ExternalPathUse(name, emptyList(), "custom_location_provider")
     }
+    // Iceberg reads any value other than true as false. Such a table may use files outside its own paths.
+    if (properties[TableProperties.GC_ENABLED]?.equals("true", ignoreCase = true) == false) {
+        externalPathUse += ExternalPathUse(name, emptyList(), "gc_disabled")
+    }
     val referenced = metadata.previousFiles().map { it.file() } +
         metadata.snapshots().mapNotNull { it.manifestListLocation() } +
         metadata.statisticsFiles().map { it.path() } +

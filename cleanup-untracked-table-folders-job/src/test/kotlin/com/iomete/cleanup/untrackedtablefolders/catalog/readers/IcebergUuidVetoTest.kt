@@ -47,6 +47,23 @@ class IcebergUuidVetoTest {
     }
 
     @Test
+    fun `a live file without scheme and bucket is compared by its path in the folder's bucket`() {
+        val path = java.net.URI(folder).path
+        val inside = live("dddd-4444").copy(referencedFiles = listOf("$path/metadata/snap-1.avro"))
+        val elsewhere = live("eeee-5555").copy(referencedFiles = listOf("/other/metadata/snap-1.avro"))
+
+        assertEquals(setOf(LIVE_FILE_REFERENCED), veto(live = listOf(inside)).keepReasons(folder, emptyList()))
+        assertEquals(emptySet<UuidKeepReason>(), veto(live = listOf(elsewhere)).keepReasons(folder, listOf(dropped)))
+    }
+
+    @Test
+    fun `a live file that can't be placed in any bucket makes the live set incomplete`() {
+        val relative = live("ffff-6666").copy(referencedFiles = listOf("metadata/snap-1.avro"))
+
+        assertEquals(setOf(LIVE_SET_INCOMPLETE), veto(live = listOf(relative)).keepReasons(folder, listOf(dropped)))
+    }
+
+    @Test
     fun `an incomplete live set keeps every folder`() {
         assertEquals(setOf(LIVE_SET_INCOMPLETE), veto(live = emptyList(), complete = false).keepReasons(folder, listOf(dropped)))
         assertEquals(setOf(LIVE_SET_INCOMPLETE), veto(live = emptyList(), complete = false).keepReasons(folder, emptyList()))

@@ -102,6 +102,9 @@ class CandidateDeletionGate {
         excludedPaths: List<String>,
     ) : FolderDeletionFence {
         private val protectedPaths = excludedPaths.map(StoragePathUtils::normalizeLocation).toMutableSet()
+
+        // Table paths without scheme and bucket. Each is that path in any bucket, so it is compared in each folder's.
+        private val unqualifiedPaths = mutableSetOf<String>()
         private val inspectionFingerprints = fence.inspectionFingerprints.mapKeys { StoragePathUtils.normalizeLocation(it.key) }
         private val maxAgeNanos = snapshotMaxAge.toNanos()
         private val startMargin = deleteStartMargin ?: minOf(DELETE_START_MARGIN, snapshotMaxAge.dividedBy(10))
@@ -186,6 +189,7 @@ class CandidateDeletionGate {
                 discoveredDatabase.tables
                     .flatMap { listOfNotNull(it.location) + it.writeLocations }
                     .map(StoragePathUtils::normalizeLocation)
+            unqualifiedPaths += discoveredDatabase.tables.flatMap { it.unqualifiedPaths }
             // A table that became unresolved leaves an unknown location behind, so no folder can still be proven untracked.
             if (discoveredDatabase.unresolvedTables.isNotEmpty()) {
                 return FenceStop(
@@ -282,7 +286,11 @@ class CandidateDeletionGate {
                 }
             }
 
-            val owner = protectedPaths.firstOrNull { StoragePathUtils.overlaps(folder, it) } ?: return FenceDecision.Proceed
+            val owner =
+                protectedPaths.firstOrNull { StoragePathUtils.overlaps(folder, it) }
+                    // One that can't be placed may be anywhere, so it claims the folder too.
+                    ?: unqualifiedPaths.firstOrNull { path -> StoragePathUtils.inBucketOf(path, folder)?.let { StoragePathUtils.overlaps(folder, it) } ?: true }
+                    ?: return FenceDecision.Proceed
             logger.warn("Skipping deletion because the folder overlaps protected storage: path=$folderPath, protectedPath=$owner")
             return FenceDecision.Keep(FenceKeepReason.CLAIMED)
         }

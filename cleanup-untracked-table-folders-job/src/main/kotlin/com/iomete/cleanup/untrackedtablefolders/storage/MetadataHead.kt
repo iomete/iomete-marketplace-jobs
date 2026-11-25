@@ -21,6 +21,12 @@ enum class MetadataVerdict(val code: String) {
     LOCATION_MISMATCH("metadata_location_mismatch"),
 }
 
+/** The verdict for a folder's metadata files, and the table UUIDs they name when it is [MetadataVerdict.OWN_TABLE]. */
+data class FolderMetadata(
+    val verdict: MetadataVerdict,
+    val tableUuids: Set<String> = emptySet(),
+)
+
 internal object MetadataHead {
     // Iceberg writes the UUID and the location first, so a head this size holds them unless the file is not Iceberg's.
     const val MAX_HEAD_BYTES = 1L shl 20
@@ -32,19 +38,26 @@ internal object MetadataHead {
         input: InputStream,
         gzip: Boolean,
         folderPath: String,
-    ): MetadataVerdict {
+    ): MetadataVerdict = read(input, gzip, folderPath).verdict
+
+    /** As [verdict], with the table UUID when the file is this folder's own table's. */
+    fun read(
+        input: InputStream,
+        gzip: Boolean,
+        folderPath: String,
+    ): FolderMetadata {
         val stream = BoundedStream(if (gzip) GZIPInputStream(input) else input, MAX_HEAD_BYTES)
         var tableUuid: String? = null
         var location: String? = null
         jsonFactory.createParser(stream).use { parser ->
             if (parser.nextToken() != JsonToken.START_OBJECT) {
-                return MetadataVerdict.UNREADABLE
+                return FolderMetadata(MetadataVerdict.UNREADABLE)
             }
             while (parser.nextToken() == JsonToken.FIELD_NAME) {
                 val name = parser.currentName()
                 val value = if (parser.nextToken() == JsonToken.VALUE_STRING) parser.text else null.also { parser.skipChildren() }
                 when (name) {
-                    "view-uuid" -> return MetadataVerdict.VIEW
+                    "view-uuid" -> return FolderMetadata(MetadataVerdict.VIEW)
                     "table-uuid" -> tableUuid = value?.takeIf { it.isNotBlank() }
                     "location" -> location = value
                 }
@@ -54,9 +67,9 @@ internal object MetadataHead {
             }
         }
         return when {
-            tableUuid == null -> MetadataVerdict.NO_UUID
-            !sameLocation(location, folderPath) -> MetadataVerdict.LOCATION_MISMATCH
-            else -> MetadataVerdict.OWN_TABLE
+            tableUuid == null -> FolderMetadata(MetadataVerdict.NO_UUID)
+            !sameLocation(location, folderPath) -> FolderMetadata(MetadataVerdict.LOCATION_MISMATCH)
+            else -> FolderMetadata(MetadataVerdict.OWN_TABLE, setOfNotNull(tableUuid))
         }
     }
 

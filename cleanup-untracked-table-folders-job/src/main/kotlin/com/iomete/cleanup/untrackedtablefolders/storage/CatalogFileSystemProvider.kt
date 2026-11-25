@@ -108,6 +108,16 @@ class CatalogFileSystemProvider {
         return configuration
     }
 
+    // For catalog readers, which read table metadata in any of the catalog's buckets. The catalog's S3 settings apply
+    // only to S3 paths, as they do for the job's own storage reads.
+    fun catalogReadConfiguration(catalog: String): Configuration {
+        val configuration = Configuration(sparkHadoopConfiguration())
+        val catalogStorageConfig = catalogStorageConfigResolver.resolve(catalog)
+        catalogStorageConfig.removedKeys.forEach { configuration.unset(it) }
+        catalogStorageConfig.overrides.forEach { (key, value) -> configuration.set(key, value) }
+        return configuration
+    }
+
     private fun sparkHadoopConfiguration(): Configuration =
         sparkSessionProvider.getOrCreate().sparkContext().hadoopConfiguration()
 }
