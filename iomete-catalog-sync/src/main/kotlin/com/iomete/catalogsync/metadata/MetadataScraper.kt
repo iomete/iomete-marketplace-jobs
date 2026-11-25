@@ -160,7 +160,7 @@ class MetadataScraper(
         logger.info("Domain {} is private, syncing only its own catalogs", domain)
         return coreServiceClient.ownedCatalogs(domain).catalogs.filter { catalog ->
             sparkSessionProvider.isLaunchCatalog(catalog.name).also { launched ->
-                if (!launched) logger.warn("Skipping catalog {}: the job was not launched with its settings", catalog.name)
+                if (!launched) logger.error("Skipping catalog {}: the job was not launched with its settings", catalog.name)
             }
         }
     }
