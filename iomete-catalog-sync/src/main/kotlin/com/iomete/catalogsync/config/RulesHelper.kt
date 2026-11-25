@@ -21,11 +21,8 @@ inline fun <T> ignoreExcluded(block: () -> T): T? =
 fun Map<String, Any?>.matchesAnyExclusion(exclusionRules: Map<String, String>): Boolean =
     exclusionRules.any { (key, value) -> this[key] == value }
 
-fun InclusionRules.enforceCatalogInclusionRules(catalog: CatalogDetails) {
-    throwIf({ catalogs.names.isNotEmpty() && catalog.name !in catalogs.names }) {
-        ExcludedItemException("Catalog `${catalog.name}` is skipped because it is not in the inclusion list.")
-    }
-}
+fun InclusionRules.includes(catalog: CatalogDetails): Boolean =
+    catalogs.names.isEmpty() || catalog.name in catalogs.names
 
 fun ExclusionRules.enforceCatalogExclusionRules(catalog: CatalogDetails) {
     throwIf({ catalog.name in catalogs.names }) {

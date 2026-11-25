@@ -7,7 +7,7 @@ import com.iomete.catalogsync.SparkSessionProvider
 import com.iomete.catalogsync.config.ApplicationConfig
 import com.iomete.catalogsync.config.ExcludedItemException
 import com.iomete.catalogsync.config.enforceCatalogExclusionRules
-import com.iomete.catalogsync.config.enforceCatalogInclusionRules
+import com.iomete.catalogsync.config.includes
 import com.iomete.catalogsync.config.enforceSchemaExclusionRules
 import com.iomete.catalogsync.config.ignoreExcluded
 import jakarta.annotation.PreDestroy
@@ -64,14 +64,16 @@ class MetadataScraper(
         val catalogs = catalogsToSync()
         checkIncludedCatalogsExist(catalogs)
 
-        catalogs
-            .mapNotNull { catalog ->
-                ignoreExcluded {
-                    inclusionRules.enforceCatalogInclusionRules(catalog)
-                    exclusionRules.enforceCatalogExclusionRules(catalog)
-                    catalog // keep it if not excluded
-                }
-            }.forEach { catalog ->
+        // Inclusion narrows the list first; every exclusion rule then still applies, so exclusion wins.
+        val (included, notIncluded) = catalogs.partition { inclusionRules.includes(it) }
+        if (notIncluded.isNotEmpty()) {
+            logger.info("Skipping {} catalogs that are not in the inclusion list", notIncluded.size)
+            logger.debug("Catalogs not in the inclusion list: {}", notIncluded.map { it.name })
+        }
+
+        included
+            .mapNotNull { catalog -> excludeOrKeep(catalog) }
+            .forEach { catalog ->
                 try {
                     val spark = sparkSessionProvider.getSession(catalog)
 
@@ -171,6 +173,18 @@ class MetadataScraper(
             }
         }
     }
+
+    // An included catalog that an exclusion rule drops would otherwise sync nothing on every run, logged only at INFO.
+    private fun excludeOrKeep(catalog: CatalogDetails): CatalogDetails? =
+        try {
+            exclusionRules.enforceCatalogExclusionRules(catalog)
+            catalog
+        } catch (e: ExcludedItemException) {
+            if (catalog.name in inclusionRules.catalogs.names) {
+                logger.warn("Catalog {} is in the inclusion list but is not synced: {}", catalog.name, e.message)
+            }
+            null
+        }
 
     // A misspelt name in the inclusion list would otherwise sync nothing without saying why.
     // Some unknown names are only a warning; when none of them match, the run fails.

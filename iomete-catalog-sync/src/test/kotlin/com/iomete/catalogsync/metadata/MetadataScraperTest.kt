@@ -243,6 +243,26 @@ class MetadataScraperTest {
         verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
     }
 
+    @Test
+    fun `run does not sync an included catalog that an exclusion property matches`() {
+        val hotCatalog = CatalogDetails(
+            name = "hot_catalog",
+            type = listOf("INTERNAL"),
+            sparkProperties = mapOf("iomete.governance.index" to "false"),
+        )
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules(
+            catalogs = CatalogInclusionRule(names = listOf("hot_catalog")),
+        )
+        recreateScraper()
+
+        every { mockCoreServiceClient.catalogs() } returns listOf(hotCatalog, testCatalog)
+
+        scraper.run()
+
+        verify(exactly = 0) { mockSparkMetadataReader.getSchemas(any(), any()) }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
     private fun recreateScraper() {
         scraper.shutdown()
         scraper = MetadataScraper(
