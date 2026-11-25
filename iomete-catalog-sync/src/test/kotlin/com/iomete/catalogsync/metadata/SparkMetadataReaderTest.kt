@@ -137,6 +137,22 @@ class SparkMetadataReaderTest {
     }
 
     @Test
+    fun `getTables throws when listing views fails with another analysis error`() {
+        val tablesDataset = mockk<Dataset<Row>>()
+        every { tablesDataset.collectAsList() } returns emptyList()
+
+        val accessDenied = mockk<AnalysisException>()
+        every { accessDenied.message } returns "Permission denied on `catalog1`.`schema1`"
+
+        every { mockSparkSession.sql("show tables from `catalog1`.`schema1`") } returns tablesDataset
+        every { mockSparkSession.sql("show views from `catalog1`.`schema1`") } throws accessDenied
+
+        val catalog = CoreClient.CatalogDetails(name = "catalog1", type = listOf("iceberg"))
+
+        assertThrows<AnalysisException> { reader.getTables(mockSparkSession, catalog, "schema1") }
+    }
+
+    @Test
     fun `should skip view fetching for unsupported catalog types`() {
         val mockTableRow = mockk<Row>()
         every { mockTableRow.getString(1) } returns "table1"
