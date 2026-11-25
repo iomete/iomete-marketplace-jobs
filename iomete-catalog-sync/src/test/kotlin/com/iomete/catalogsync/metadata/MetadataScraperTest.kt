@@ -16,6 +16,7 @@ import jakarta.ws.rs.core.Response
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.SparkSession
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -219,7 +220,12 @@ class MetadataScraperTest {
 
         every { mockCoreServiceClient.catalogs() } returns listOf(testCatalog)
 
-        assertThrows(IllegalStateException::class.java) { scraper.run() }
+        val error = assertThrows(IllegalStateException::class.java) { scraper.run() }
+
+        assertEquals(
+            "None of the included catalogs can be synced by this job: [missing_catalog]. Catalogs this job can sync: [test_catalog]",
+            error.message,
+        )
 
         verify(exactly = 0) { mockSparkMetadataReader.getSchemas(any(), any()) }
         verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
@@ -454,8 +460,30 @@ class MetadataScraperTest {
 
         val error = assertThrows<IllegalStateException> { scraperIn("private-a").run() }
 
-        assertTrue(error.message!!.endsWith("Available catalogs: [owned]"), error.message)
+        assertTrue(
+            error.message!!.endsWith(
+                "Catalogs this job can sync: [owned] (a private domain syncs only the catalogs it owns that the job was launched with)",
+            ),
+            error.message,
+        )
         verify(exactly = 0) { mockCoreServiceClient.catalogs() }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    @Test
+    fun `a private domain fails when its only included catalog is owned but not launched`() {
+        val notLaunched = CatalogDetails(name = "not_launched", type = listOf("iceberg"))
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules(
+            catalogs = CatalogInclusionRule(names = listOf("not_launched")),
+        )
+        every { mockCoreServiceClient.domain("private-a") } returns CoreClient.Domain(isPrivate = true)
+        every { mockCoreServiceClient.ownedCatalogs("private-a") } returns CoreClient.OwnedCatalogs(listOf(notLaunched))
+        every { mockSparkSessionProvider.isLaunchCatalog("not_launched") } returns false
+
+        val error = assertThrows<IllegalStateException> { scraperIn("private-a").run() }
+
+        assertTrue(error.message!!.startsWith("None of the included catalogs can be synced by this job: [not_launched]"), error.message)
+        assertTrue(error.message!!.contains("a private domain syncs only"), error.message)
         verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
     }
 

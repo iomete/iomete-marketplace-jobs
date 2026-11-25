@@ -61,8 +61,8 @@ class MetadataScraper(
     fun run() {
         logger.info("Running process with application config: {}", applicationConfig)
 
-        val catalogs = catalogsToSync()
-        checkIncludedCatalogsExist(catalogs)
+        val (catalogs, isPrivate) = catalogsToSync()
+        checkIncludedCatalogsExist(catalogs, isPrivate)
 
         // Inclusion narrows the list first; every exclusion rule then still applies, so exclusion wins.
         val (included, notIncluded) = catalogs.partition { inclusionRules.includes(it) }
@@ -161,18 +161,21 @@ class MetadataScraper(
      * A private domain's job syncs only the catalogs the domain owns, reached with its launch settings.
      * Any other domain syncs the install-wide list. A failed lookup stops the run.
      */
-    private fun catalogsToSync(): List<CatalogDetails> {
+    private fun catalogsToSync(): SyncScope {
         val isPrivate =
             checkNotNull(coreServiceClient.domain(domain).isPrivate) { "iom-core did not say whether domain $domain is private" }
-        if (!isPrivate) return coreServiceClient.catalogs()
+        if (!isPrivate) return SyncScope(coreServiceClient.catalogs(), isPrivate = false)
 
         logger.info("Domain {} is private, syncing only its own catalogs", domain)
-        return coreServiceClient.ownedCatalogs(domain).catalogs.filter { catalog ->
+        val catalogs = coreServiceClient.ownedCatalogs(domain).catalogs.filter { catalog ->
             sparkSessionProvider.isLaunchCatalog(catalog.name).also { launched ->
                 if (!launched) logger.warn("Skipping catalog {}: the job was not launched with its settings", catalog.name)
             }
         }
+        return SyncScope(catalogs, isPrivate = true)
     }
+
+    private data class SyncScope(val catalogs: List<CatalogDetails>, val isPrivate: Boolean)
 
     // An included catalog that an exclusion rule drops would otherwise sync nothing on every run, logged only at INFO.
     private fun excludeOrKeep(catalog: CatalogDetails): CatalogDetails? =
@@ -187,18 +190,26 @@ class MetadataScraper(
         }
 
     // A misspelt name in the inclusion list would otherwise sync nothing without saying why.
-    // Some unknown names are only a warning; when none of them match, the run fails.
-    private fun checkIncludedCatalogsExist(catalogs: List<CatalogDetails>) {
+    // Some unsyncable names are only a warning; when none of them can be synced, the run fails.
+    // In a private domain a name can exist and still be unsyncable (not owned, or not launched with), so the
+    // messages say "cannot sync" rather than "does not exist".
+    private fun checkIncludedCatalogsExist(catalogs: List<CatalogDetails>, isPrivate: Boolean) {
         val included = inclusionRules.catalogs.names
         if (included.isEmpty()) return
 
-        val known = catalogs.map { it.name }.toSet()
-        val unknown = included.filterNot { it in known }
-        if (unknown.size == included.size) {
-            throw IllegalStateException("None of the included catalogs exist: $unknown. Available catalogs: $known")
+        val syncable = catalogs.map { it.name }.toSet()
+        val unsyncable = included.filterNot { it in syncable }
+        val reason = if (isPrivate) " (a private domain syncs only the catalogs it owns that the job was launched with)" else ""
+        if (unsyncable.size == included.size) {
+            throw IllegalStateException(
+                "None of the included catalogs can be synced by this job: $unsyncable. Catalogs this job can sync: $syncable$reason",
+            )
         }
-        if (unknown.isNotEmpty()) {
-            logger.warn("Included catalogs not found, skipping them: {}. Available catalogs: {}", unknown, known)
+        if (unsyncable.isNotEmpty()) {
+            logger.warn(
+                "Included catalogs this job cannot sync, skipping them: {}. Catalogs this job can sync: {}{}",
+                unsyncable, syncable, reason,
+            )
         }
     }
 
