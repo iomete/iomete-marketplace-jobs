@@ -17,6 +17,7 @@ import org.apache.spark.SparkContext
 import org.apache.spark.sql.SparkSession
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -418,6 +419,24 @@ class MetadataScraperTest {
             mockCatalogServiceClient.indexCatalog(match { it.catalog == "owned" && it.storageEndpoint == "http://minio:9000" })
         }
         verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "not_launched" }) }
+    }
+
+    @Test
+    fun `a private domain fails when its included catalog exists only outside the domain`() {
+        val owned = CatalogDetails(name = "owned", type = listOf("iceberg"))
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules(
+            catalogs = CatalogInclusionRule(names = listOf("other_domain_catalog")),
+        )
+        every { mockCoreServiceClient.domain("private-a") } returns CoreClient.Domain(isPrivate = true)
+        every { mockCoreServiceClient.ownedCatalogs("private-a") } returns CoreClient.OwnedCatalogs(listOf(owned))
+        every { mockCoreServiceClient.catalogs() } returns listOf(owned, CatalogDetails(name = "other_domain_catalog", type = listOf("iceberg")))
+        every { mockSparkSessionProvider.isLaunchCatalog("owned") } returns true
+
+        val error = assertThrows<IllegalStateException> { scraperIn("private-a").run() }
+
+        assertTrue(error.message!!.endsWith("Available catalogs: [owned]"), error.message)
+        verify(exactly = 0) { mockCoreServiceClient.catalogs() }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
     }
 
     @Test
