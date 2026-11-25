@@ -4,6 +4,7 @@ import com.iomete.catalogsync.CoreClient
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.SparkSession
@@ -111,6 +112,28 @@ class SparkMetadataReaderTest {
         val catalog = CoreClient.CatalogDetails(name = "catalog1", type = listOf("iceberg"))
 
         assertThrows<RuntimeException> { reader.getTables(mockSparkSession, catalog, "schema1") }
+    }
+
+    @Test
+    fun `getTables lists tables only when the catalog does not support views`() {
+        val tableRow = mockk<Row>()
+        every { tableRow.getString(1) } returns "table1"
+        every { tableRow.getBoolean(2) } returns false
+
+        val tablesDataset = mockk<Dataset<Row>>()
+        every { tablesDataset.collectAsList() } returns listOf(tableRow)
+
+        val noViewSupport = mockk<AnalysisException>()
+        every { noViewSupport.message } returns "Catalog `catalog1` does not support views."
+
+        every { mockSparkSession.sql("show tables from `catalog1`.`schema1`") } returns tablesDataset
+        every { mockSparkSession.sql("show views from `catalog1`.`schema1`") } throws noViewSupport
+
+        val catalog = CoreClient.CatalogDetails(name = "catalog1", type = listOf("iceberg"))
+
+        val result = reader.getTables(mockSparkSession, catalog, "schema1").map { it.name }
+
+        assertEquals(listOf("table1"), result)
     }
 
     @Test
