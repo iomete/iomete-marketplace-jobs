@@ -171,7 +171,7 @@ class MetadataScraper(
             try {
                 coreServiceClient.domain(domain)
             } catch (e: WebApplicationException) {
-                if (e.response.status != 404) throw e
+                if (e.response.status != 404 || hasOwnedCatalogsEndpoint()) throw e
 
                 logger.warn("Domain lookup for {} returned 404, treating it as not private and syncing all catalogs", domain)
                 return false
@@ -179,6 +179,17 @@ class MetadataScraper(
 
         return checkNotNull(lookup.isPrivate) { "iom-core did not say whether domain $domain is private" }
     }
+
+    /** Newer iom-core answers owned-catalogs, so a 404 from the lookup there is a real failure. */
+    private fun hasOwnedCatalogsEndpoint(): Boolean =
+        try {
+            coreServiceClient.ownedCatalogs(domain)
+            true
+        } catch (e: WebApplicationException) {
+            if (e.response.status != 404) throw e
+
+            false
+        }
 
     private fun processSchema(
         spark: SparkSession,
