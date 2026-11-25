@@ -13,6 +13,7 @@ import org.apache.iceberg.rest.RESTCatalog
  */
 object RestCatalogReader {
     internal val COPIED_PROPERTIES = listOf(CatalogProperties.URI, CatalogProperties.WAREHOUSE_LOCATION)
+    private const val TIMEOUT_MS = "60000"
 
     sealed interface Opened {
         /** A live client. Close it after the last read, including manifest reads of tables it loaded. */
@@ -71,6 +72,9 @@ object RestCatalogReader {
             // catches a server that ignores it.
             "view-endpoints-supported" to "true",
             CatalogProperties.FILE_IO_IMPL to "org.apache.iceberg.hadoop.HadoopFileIO",
+            // A stalled server must fail the read, which then blocks deletion, not hang the run.
+            "rest.client.connection-timeout-ms" to TIMEOUT_MS,
+            "rest.client.socket-timeout-ms" to TIMEOUT_MS,
         )
     }
 }

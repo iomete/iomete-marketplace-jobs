@@ -768,7 +768,7 @@ class AutomaticMultiRootFlowTest {
         val record = flow.auditRecords.single()
         assertEquals("other_database_storage_unknown", record.statusReason)
         assertEquals(
-            "catalog=views, database=archive: the location could not be read (IllegalArgumentException)",
+            "catalog=views, database=archive: the location has no scheme and bucket, and no absolute path to compare",
             record.diagnosticDetails["ownership_unreadable_sample"],
         )
     }
@@ -788,7 +788,7 @@ class AutomaticMultiRootFlowTest {
         assertEquals("other_database_storage_unknown", record.statusReason)
         verify { flow.catalogDiscoveryService.tableLocationIfExists("views", "default", "sales.db") }
         assertEquals(
-            "catalog=views, database=archive: the location could not be read (IllegalArgumentException)",
+            "catalog=views, database=archive: the location has no scheme and bucket, and no absolute path to compare",
             record.diagnosticDetails["ownership_unreadable_sample"],
         )
     }

@@ -60,7 +60,11 @@ class NameMappedManifestReader(private val limits: ReaderLimits = ReaderLimits()
         return Outcome.Read(found.toList())
     }
 
-    // An unparseable path can't be shown to be outside the folder, so it counts as inside.
+    // A path without scheme and bucket is compared in the folder's bucket. One that can't be placed or parsed
+    // can't be shown to be outside the folder, so it counts as inside.
     private fun isInside(path: String, folder: String): Boolean =
-        runCatching { StoragePathUtils.isSameOrChildLocation(path, folder) }.getOrDefault(true)
+        runCatching {
+            val placed = StoragePathUtils.inBucketOf(path, folder) ?: return true
+            StoragePathUtils.isSameOrChildLocation(placed, folder)
+        }.getOrDefault(true)
 }

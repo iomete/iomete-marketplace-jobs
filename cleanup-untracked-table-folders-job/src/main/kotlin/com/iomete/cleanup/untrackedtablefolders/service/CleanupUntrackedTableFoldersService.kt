@@ -6,6 +6,8 @@ import com.iomete.cleanup.untrackedtablefolders.audit.DeletionBlockReason
 import com.iomete.cleanup.untrackedtablefolders.audit.OwnershipChecks
 import com.iomete.cleanup.untrackedtablefolders.audit.StorageEvidence
 import com.iomete.cleanup.untrackedtablefolders.candidate.HeldFolders
+import com.iomete.cleanup.untrackedtablefolders.candidate.LiveIcebergTable
+import com.iomete.cleanup.untrackedtablefolders.candidate.LiveIcebergTables
 import com.iomete.cleanup.untrackedtablefolders.candidate.StorageHoldChecker
 import com.iomete.cleanup.untrackedtablefolders.candidate.StorageHolds
 import com.iomete.cleanup.untrackedtablefolders.candidate.StorageFolderReconciliation
@@ -428,8 +430,10 @@ class CleanupUntrackedTableFoldersService {
                         )
                     }
 
+                    // A path without scheme and bucket is that path in any bucket, so it protects that path under every root.
                     val ownTableStorage =
-                        discoveredDatabase.tables.flatMap { listOfNotNull(it.location) + it.writeLocations } + matchableKnownLocations
+                        discoveredDatabase.tables.flatMap { listOfNotNull(it.location) + it.writeLocations } + matchableKnownLocations +
+                            discoveredDatabase.tables.flatMap { table -> listedRootLocations.flatMap { root -> table.unqualifiedPathsIn(root) } }
 
                     // Reading other tables describes every table the job can see, so it is skipped when no folder is
                     // left for them to protect, or when unknown storage of other databases already blocks deletion.
@@ -543,6 +547,16 @@ class CleanupUntrackedTableFoldersService {
                     val inspectionOutcomes = ageCutoff.inspectionOutcomes
                     val tooNewPaths = ageCutoff.tooNewPaths
 
+                    // The tables read for this database's roots. Any read that was not complete leaves the set incomplete.
+                    val liveIcebergTables =
+                        LiveIcebergTables(
+                            tables =
+                                discoveredDatabase.tables.mapNotNull { table -> table.iceberg?.let { LiveIcebergTable(table.catalog, it) } } +
+                                    otherTableStorage.liveIceberg,
+                            complete =
+                                unresolvedTableNames.isEmpty() && otherTablesNeeded && otherTableStorage.blockReason == null &&
+                                    otherTableStorage.skippedCatalogs.isEmpty(),
+                        )
                     val history =
                         storageHoldChecker.readHistory(discoveredDatabase.catalog, discoveredDatabase.database, candidateFolderStatistics, listingTime)
                     val storageHolds =
@@ -554,6 +568,7 @@ class CleanupUntrackedTableFoldersService {
                                 statistics = candidateFolderStatistics,
                                 history = history,
                                 listingTime = listingTime,
+                                live = liveIcebergTables,
                             )
                         } else {
                             StorageHolds(emptyMap(), history)
@@ -1100,10 +1115,13 @@ class CleanupUntrackedTableFoldersService {
                     if (location == null) {
                         return unreadable.unknown("catalog=$catalog, database=$otherDatabase: the location could not be read")
                     }
-                    if (!StoragePathUtils.isQualifiedLocation(location)) {
-                        return unreadable.unknown("catalog=$catalog, database=$otherDatabase: the location has no scheme and bucket")
-                    }
-                    val hiveRoot = StoragePathUtils.normalizeLocation(location)
+                    // A location without scheme and bucket is that path in any bucket, so it is placed in the root's.
+                    val placedLocation =
+                        StoragePathUtils.inBucketOf(location, root)
+                            ?: return unreadable.unknown(
+                                "catalog=$catalog, database=$otherDatabase: the location has no scheme and bucket, and no absolute path to compare",
+                            )
+                    val hiveRoot = StoragePathUtils.normalizeLocation(placedLocation)
                     reading = "catalog=$catalog, database=$otherDatabase: the REST namespace folder"
                     val restNamespaceRoot = catalogDiscoveryService.restNamespaceRoot(catalog, otherDatabase)
                     // The managed REST catalog stores this database under <warehouse>/<database>. With no warehouse in
@@ -1173,11 +1191,20 @@ class CleanupUntrackedTableFoldersService {
         var reading = "the catalogs of the Spark session"
         try {
             val root = StoragePathUtils.normalizeLocation(cleanupRoot)
+            val sessionCatalogs = catalogDiscoveryService.sessionCatalogWarehouses()
             val otherCatalogs =
-                catalogDiscoveryService.sessionCatalogWarehouses().filter { (catalog, warehouses) ->
+                sessionCatalogs.filter { (catalog, warehouses) ->
                     catalog != discoveredDatabase.catalog &&
                         (warehouses.isEmpty() || warehouses.any { !StoragePathUtils.isQualifiedLocation(it) || StoragePathUtils.isSameBucket(it, root) })
                 }
+            // Their tables can still point into this root, so the live tables read for the root are not all of them.
+            val skippedCatalogs = (sessionCatalogs.keys - discoveredDatabase.catalog - otherCatalogs.keys).sorted()
+            if (skippedCatalogs.isNotEmpty()) {
+                logger.info(
+                    "Not reading ${skippedCatalogs.size} catalog(s) with a warehouse in another bucket for cleanup root=$cleanupRoot: " +
+                        "${skippedCatalogs.joinToString()}. Folders that pass every other check are held as live_tables_incomplete."
+                )
+            }
             if (otherCatalogs.isNotEmpty()) {
                 logger.info(
                     "Reading ${otherCatalogs.size} other catalog(s) of the Spark session for cleanup root=$cleanupRoot: " +
@@ -1212,14 +1239,19 @@ class CleanupUntrackedTableFoldersService {
             paths +=
                 tables.flatMap { table ->
                     reading = "table ${table.qualifiedName}: the location"
-                    (listOfNotNull(table.location) + table.writeLocations).filter { StoragePathUtils.overlaps(it, root) }
+                    table.pathsUnder(root)
                 }
 
             logger.info(
                 "Checked ${tables.size} table(s) of other databases and ${otherCatalogs.size} other catalog(s) for cleanup root=$cleanupRoot " +
                     "in ${(System.nanoTime() - startedAt) / 1_000_000} ms"
             )
-            return OtherTableStorage(paths.distinct().sorted(), tables.filter { it.isUnresolved }.map { it.qualifiedName }.sorted())
+            return OtherTableStorage(
+                paths.distinct().sorted(),
+                tables.filter { it.isUnresolved }.map { it.qualifiedName }.sorted(),
+                liveIceberg = tables.mapNotNull { table -> table.iceberg?.let { LiveIcebergTable(table.catalog, it) } },
+                skippedCatalogs = skippedCatalogs,
+            )
         } catch (error: Exception) {
             logger.warn("Could not read the tables of other databases for catalog=${discoveredDatabase.catalog}, cleanup root=$cleanupRoot", error)
             return OtherTableStorage(null, emptyList(), listOf("$reading could not be read (${rootCauseName(error)})"))
@@ -1394,6 +1426,9 @@ private data class OtherTableStorage(
     val paths: List<String>?,
     val unresolvedTables: List<String>,
     val unreadableStorage: List<String> = emptyList(),
+    val liveIceberg: List<LiveIcebergTable> = emptyList(),
+    // Session catalogs not read for a root because their warehouse is in another bucket.
+    val skippedCatalogs: List<String> = emptyList(),
 ) {
     val blockReason: DeletionBlockReason?
         get() =
@@ -1410,6 +1445,8 @@ private data class OtherTableStorage(
                 paths = if (perRoot.any { it.paths == null }) null else perRoot.flatMap { it.paths.orEmpty() }.distinct().sorted(),
                 unresolvedTables = perRoot.flatMap { it.unresolvedTables }.distinct().sorted(),
                 unreadableStorage = perRoot.flatMap { it.unreadableStorage }.distinct(),
+                liveIceberg = perRoot.flatMap { it.liveIceberg }.distinct(),
+                skippedCatalogs = perRoot.flatMap { it.skippedCatalogs }.distinct().sorted(),
             )
 
         // Reads the roots in order and stops at the first one whose storage is unknown. combine() would leave every

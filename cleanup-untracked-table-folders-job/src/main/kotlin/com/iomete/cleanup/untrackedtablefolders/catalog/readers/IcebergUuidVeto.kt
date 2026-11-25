@@ -31,8 +31,9 @@ class IcebergUuidVeto(live: List<LiveIcebergObject>, private val liveSetComplete
     private val liveUuids = live.mapNotNull { it.uuid?.trim()?.lowercase() }.toSet()
     private val liveFiles = live.flatMap { listOfNotNull(it.metadataFileLocation) + it.referencedFiles }
         .filter { it.isNotBlank() }
-        .map { runCatching { StoragePathUtils.normalizeLocation(it) }.getOrNull() }
-    private val allLiveFilesComparable = liveFiles.none { it == null }
+    private val allLiveFilesComparable = liveFiles.all { file ->
+        runCatching { StoragePathUtils.isQualifiedLocation(file) }.getOrDefault(false) || StoragePathUtils.unqualifiedPath(file) != null
+    }
 
     fun keepReasons(folder: String, metadataFiles: List<FolderMetadataFile>): Set<UuidKeepReason> {
         val reasons = sortedSetOf<UuidKeepReason>()
@@ -48,11 +49,15 @@ class IcebergUuidVeto(live: List<LiveIcebergObject>, private val liveSetComplete
             }
             if (file.readable && !sameLocation(file.location, normalizedFolder)) reasons += UuidKeepReason.LOCATION_ELSEWHERE
         }
-        if (liveFiles.any { it != null && (it == normalizedFolder || it.startsWith("$normalizedFolder/")) }) {
+        // A path without scheme and bucket could be in the folder's bucket, so it is compared there.
+        if (liveFiles.any { file -> StoragePathUtils.inBucketOf(file, folder)?.let { isInside(it, normalizedFolder) } ?: false }) {
             reasons += UuidKeepReason.LIVE_FILE_REFERENCED
         }
         return reasons
     }
+
+    private fun isInside(file: String, normalizedFolder: String): Boolean =
+        runCatching { StoragePathUtils.isSameOrChildLocation(file, normalizedFolder) }.getOrDefault(true)
 
     private fun sameLocation(location: String?, normalizedFolder: String): Boolean =
         location != null && runCatching { StoragePathUtils.normalizeLocation(location) == normalizedFolder }.getOrDefault(false)
