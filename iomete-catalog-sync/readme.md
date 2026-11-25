@@ -35,13 +35,15 @@ The job reads an optional config from `/etc/configs/application.json` (mount it 
 2. Every exclusion rule then still runs on what is left: `catalogs.names`, `catalogs.filter_by_properties` and `default_rule`.
 3. Exclusion always wins. A catalog that is in the inclusion list and also matches any exclusion rule is not synced, and the run logs a warning naming the rule.
 
-For example, an included catalog with the `iomete.governance.index=false` property is never synced, because the default rule excludes it.
+For example, outside private domains, an included catalog with the `iomete.governance.index=false` property is never synced, because the default rule excludes it.
+
+**Private domains:** catalog properties are not available to the job there, so catalog-level property rules (`catalogs.filter_by_properties`, and `default_rule` at catalog level) never match. In a private domain, an included catalog with `iomete.governance.index=false` **is** synced, and no warning is logged. To skip a catalog there, list it in `exclusion_rules.catalogs.names`. Schema and table property rules still work, because they read the schema's and table's own properties.
 
 ## Failures
 
 Catalog names match exactly, case included. The run fails in these cases instead of syncing with the defaults:
 
-- None of the included names match a catalog. If only some of them are unknown, the run logs a warning and syncs the rest.
+- None of the included catalogs can be synced by this job: the name matches no catalog or, in a private domain, the catalog is not owned by the domain or the job was not launched with it. If only some of them cannot be synced, the run logs a warning and syncs the rest.
 - The config file cannot be parsed, for example because it is not valid JSON (`//` comments are not allowed) or has an unknown key inside a rule, such as `"schemas": {"names": [...]}` or camelCase `filterByProperties`. Unknown top-level keys are ignored.
 
 An empty config file is treated like a missing one.
