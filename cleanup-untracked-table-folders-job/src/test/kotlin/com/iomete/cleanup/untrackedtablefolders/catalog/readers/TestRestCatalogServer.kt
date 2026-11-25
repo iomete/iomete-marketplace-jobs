@@ -30,6 +30,8 @@ class TestRestCatalogServer(
     val catalogName: String = "spark_catalog",
     private val endpoints: List<Endpoint>? = null,
     private val lenientMissingNamespace: Boolean = false,
+    // An external catalog serves at its own path, which the job's own client refuses.
+    private val basePath: String = "/internal/catalogs/$catalogName",
 ) : AutoCloseable {
     val requests = CopyOnWriteArrayList<RecordedRequest>()
 
@@ -41,12 +43,12 @@ class TestRestCatalogServer(
         start()
     }
 
-    val uri: String get() = "http://127.0.0.1:${server.address.port}/internal/catalogs/$catalogName"
+    val uri: String get() = "http://127.0.0.1:${server.address.port}$basePath"
 
     override fun close() = server.stop(0)
 
     private fun handle(exchange: HttpExchange) {
-        val prefix = "/internal/catalogs/$catalogName/v1/"
+        val prefix = "$basePath/v1/"
         val rawPath = exchange.requestURI.rawPath
         val query = exchange.requestURI.rawQuery.orEmpty().split('&').filter { it.contains('=') }
             .associate { it.substringBefore('=') to URLDecoder.decode(it.substringAfter('='), StandardCharsets.UTF_8) }

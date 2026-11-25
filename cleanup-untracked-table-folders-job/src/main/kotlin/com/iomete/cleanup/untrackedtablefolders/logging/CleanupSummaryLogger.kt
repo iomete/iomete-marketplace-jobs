@@ -519,7 +519,7 @@ class CleanupSummaryLogger {
                 "default folders of other databases the job can see".takeIf { checks.otherDatabaseFolders },
                 "configured exclusions",
                 "tables of other databases the job can see".takeIf { checks.otherTables },
-                "same-bucket catalogs of the Spark session".takeIf { checks.otherTables },
+                "other catalogs of the Spark session".takeIf { checks.otherTables },
                 FINAL_RECHECK.takeIf { checks.finalRecheck },
             ),
         )
@@ -528,9 +528,9 @@ class CleanupSummaryLogger {
             listOfNotNull(
                 "default folders of other databases".takeUnless { checks.otherDatabaseFolders },
                 "tables of other databases".takeUnless { checks.otherTables },
-                "same-bucket catalogs of the Spark session".takeUnless { checks.otherTables },
+                "other catalogs of the Spark session".takeUnless { checks.otherTables },
                 FINAL_RECHECK.takeUnless { checks.finalRecheck },
-                "catalogs in another bucket or outside the Spark session",
+                "catalogs outside the Spark session",
                 "tables the job cannot see",
                 "tables of nested namespaces",
                 "files a table uses outside its own folder",
@@ -692,7 +692,7 @@ class CleanupSummaryLogger {
                 "plain Spark output with no table metadata. A table or job may still read it by path."
             StorageHoldReason.DATA_ONLY_NOT_PLAIN_OUTPUT ->
                 "files with no table metadata that are neither commit scratch nor plain Spark output."
-            StorageHoldReason.LIVE_TABLES_INCOMPLETE -> "not every live table was read (a read failed, or a catalog in another bucket was skipped), so one of them may use the folder."
+            StorageHoldReason.LIVE_TABLES_INCOMPLETE -> "not every live table was read, so one of them may use the folder."
             StorageHoldReason.LIVE_TABLE_UUID -> "its metadata has the UUID of a live table, which may still read it."
             StorageHoldReason.LIVE_FILE_REFERENCED -> "a live table's current metadata names a file in the folder."
             StorageHoldReason.NAME_MAPPED_FILE_REFERENCED -> "a table that imported files (add_files, migrate, snapshot) uses a file in the folder."

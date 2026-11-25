@@ -441,12 +441,10 @@ class CleanupSummaryLoggerTest {
                 listOf(
                     "  Checked      tables of this database the job can see, their Iceberg write paths,",
                     "               default folders of other databases the job can see, configured exclusions,",
-                    "               tables of other databases the job can see,",
-                    "               same-bucket catalogs of the Spark session,",
+                    "               tables of other databases the job can see, other catalogs of the Spark session,",
                     "               a read of other storage at most 5 minutes old at each delete",
-                    "  Not checked  catalogs in another bucket or outside the Spark session,",
-                    "               tables the job cannot see, tables of nested namespaces,",
-                    "               files a table uses outside its own folder",
+                    "  Not checked  catalogs outside the Spark session, tables the job cannot see,",
+                    "               tables of nested namespaces, files a table uses outside its own folder",
                 ),
                 section.lines(),
             )

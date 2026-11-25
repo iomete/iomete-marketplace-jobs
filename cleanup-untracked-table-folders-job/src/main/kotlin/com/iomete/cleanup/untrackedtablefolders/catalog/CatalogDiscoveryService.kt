@@ -118,6 +118,9 @@ private const val SPARK_CATALOG_CLASS = "org.apache.iceberg.spark.SparkCatalog"
 private val ICEBERG_CATALOG_CLASSES = setOf(SPARK_SESSION_CATALOG_CLASS, SPARK_CATALOG_CLASS)
 private const val REST_CATALOG_SERVICE_HOST = "iom-rest-catalog"
 
+// spark_catalog has at most two stores.
+private const val STORE_PARALLELISM = 2
+
 // The class IOMETE sets for a JDBC catalog. It is the only catalog type the platform creates without table storage.
 private const val JDBC_CATALOG_CLASS = "org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog"
 
@@ -169,6 +172,11 @@ class CatalogDiscoveryService {
     // The namespaces each store of a catalog listed, by catalog and store position.
     private val listedNamespaces = ConcurrentHashMap<Pair<String, Int>, Set<List<String>>>()
 
+    // Reads of namespaces and tables. A separate pool runs the stores of one catalog side by side, so a store's own
+    // parallel reads are not run inline on a thread of the same pool.
+    internal val readPool = CatalogReadPool(CATALOG_READ_PARALLELISM, "catalog-read")
+    private val storePool = CatalogReadPool(STORE_PARALLELISM, "catalog-store")
+
     fun discoverDatabase(
         catalog: String,
         database: String,
@@ -207,7 +215,18 @@ class CatalogDiscoveryService {
     // A database whose location cannot be read maps to null. One without a scheme and bucket keeps its path.
     fun visibleDatabaseLocations(catalog: String): Map<String, String?> {
         val startedAt = System.nanoTime()
-        val reads = sources(catalog).map { it.readDatabases() }
+        val sources = sources(catalog)
+        logger.info("Listing the databases of catalog=$catalog in ${sources.size} store(s)")
+        val reads =
+            storePool.map(sources.withIndex().toList()) { (index, source) ->
+                val storeStartedAt = System.nanoTime()
+                source.readDatabases().also { read ->
+                    logger.info(
+                        "Store ${index + 1} (${source.kind}) of catalog=$catalog listed ${read.namespaces.size} database(s) with their locations in " +
+                            "${(System.nanoTime() - storeStartedAt) / 1_000_000} ms; ${read.gaps.size} could not be read"
+                    )
+                }
+            }
         reads.forEachIndexed { index, read -> listedNamespaces[catalog to index] = read.namespaces.toSet() }
         // A gap for a namespace the listing did not return, such as an unexpected child, hides that namespace.
         reads.flatMap { read -> read.gaps.filter { it.name.isEmpty() || it.name !in read.namespaces } }.takeIf { it.isNotEmpty() }?.let { gaps ->
@@ -216,13 +235,11 @@ class CatalogDiscoveryService {
 
         val levelsByName = linkedMapOf<String, MutableSet<List<String>>>()
         reads.flatMap { it.namespaces }.forEach { levels -> levelsByName.getOrPut(levels.joinToString(".")) { linkedSetOf() } += levels }
-        logger.info("Reading the locations of ${levelsByName.size} database(s) in catalog=$catalog to protect their storage")
-
         val locations =
             levelsByName.entries.associate { (name, variants) ->
                 val levels = variants.singleOrNull()
                 namespaceLevels[catalog to name] = NamespaceLevels(levels)
-                name to levels?.let { databaseLocation(catalog, name, it, sources(catalog).zip(reads)) }
+                name to levels?.let { databaseLocation(catalog, name, it, sources.zip(reads)) }
             }
         logger.info(
             "Read the locations of ${locations.size} database(s) in catalog=$catalog in " +
@@ -517,11 +534,15 @@ class CatalogDiscoveryService {
                     else -> throw UnsupportedCatalogException(catalog, "session catalog class or type is not supported")
                 }
             }
-            catalogClass == SPARK_CATALOG_CLASS && type == "rest" -> listOf(restSource(catalog, properties))
+            catalogClass == SPARK_CATALOG_CLASS && type == "rest" && RestCatalogReader.clientProperties(catalog, propertiesOf(catalog, properties)) != null ->
+                listOf(restSource(catalog, properties))
+            // Any other REST catalog, such as an external one with its own token, is read through the client Spark
+            // built from the session's settings, so it keeps their authentication. The table cache is bypassed.
             catalogClass == SPARK_CATALOG_CLASS -> {
                 val plugin = sparkSessionProvider.getOrCreate().sessionState().catalogManager().catalog(catalog)
-                val icebergCatalog = IcebergCatalogReader.icebergCatalogOf(plugin) ?: throw UnsupportedCatalogException(catalog, "no Iceberg catalog behind it")
-                listOf(IcebergSource(IcebergCatalogReader(catalog, icebergCatalog)))
+                val icebergCatalog =
+                    IcebergCatalogReader.icebergCatalogOf(plugin) ?: throw UnsupportedCatalogException(catalog, "no readable Iceberg catalog behind it")
+                listOf(IcebergSource(IcebergCatalogReader(catalog, icebergCatalog, pool = readPool)))
             }
             else -> throw UnsupportedCatalogException(catalog, "catalog class is not supported")
         }
@@ -541,9 +562,14 @@ class CatalogDiscoveryService {
         catalog: String,
         properties: Map<String, String>,
     ): CatalogSource {
-        val catalogProperties = properties.filterKeys { it.startsWith("$catalog.") }.mapKeys { it.key.removePrefix("$catalog.") }
         return when (
-            val opened = RestCatalogReader.open(catalog, catalogProperties, catalogFileSystemProvider.catalogReadConfiguration(catalog))
+            val opened =
+                RestCatalogReader.open(
+                    catalog,
+                    propertiesOf(catalog, properties),
+                    catalogFileSystemProvider.catalogReadConfiguration(catalog),
+                    pool = readPool,
+                )
         ) {
             is RestCatalogReader.Opened.Refused -> throw UnsupportedCatalogException(catalog, describe(opened.result.gaps))
             is RestCatalogReader.Opened.Ready -> {
@@ -553,8 +579,15 @@ class CatalogDiscoveryService {
         }
     }
 
+    private fun propertiesOf(
+        catalog: String,
+        properties: Map<String, String>,
+    ): Map<String, String> = properties.filterKeys { it.startsWith("$catalog.") }.mapKeys { it.key.removePrefix("$catalog.") }
+
     @PreDestroy
     fun close() {
+        storePool.close()
+        readPool.close()
         openRestClients.values.forEach { runCatching { it.close() } }
         openRestClients.clear()
         openSources.clear()

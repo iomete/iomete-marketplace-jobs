@@ -3,6 +3,8 @@ package com.iomete.cleanup.untrackedtablefolders.catalog.readers
 import com.iomete.cleanup.untrackedtablefolders.storage.StoragePathUtils
 import org.apache.iceberg.TableMetadataParser
 import org.apache.iceberg.io.FileIO
+import org.apache.spark.sql.catalyst.analysis.NoSuchDatabaseException
+import org.apache.spark.sql.catalyst.catalog.CatalogDatabase
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.catalog.ExternalCatalog
 import scala.Option
@@ -28,7 +30,7 @@ class HmsCatalogReader(
             return CatalogReadResult.failed(catalogName, gapFor(emptyList(), "list_databases_failed", e))
         }
         val result = ReadAccumulator(catalogName)
-        databases.forEach { readDatabase(it, result) }
+        databases.forEach { database -> readDatabase(database, loadDatabase(database), result) }
         return result.result()
     }
 
@@ -44,16 +46,21 @@ class HmsCatalogReader(
         return result.result()
     }
 
-    /** One database with its tables and views, or null when it does not exist. */
+    /**
+     * One database with its tables and views, or null when it does not exist. Only the metastore's own not-found
+     * answer means missing; any other failure is a gap.
+     */
     fun readDatabase(database: String): CatalogReadResult? {
         val result = ReadAccumulator(catalogName)
-        try {
-            if (!externalCatalog.databaseExists(database)) return null
+        val loaded = try {
+            externalCatalog.getDatabase(database)
+        } catch (_: NoSuchDatabaseException) {
+            return null
         } catch (e: Exception) {
             result.gap(listOf(database), "load_database_failed", e)
             return result.result()
         }
-        readDatabase(database, result)
+        readDatabase(database, Result.success(loaded), result)
         return result.result()
     }
 
@@ -73,16 +80,26 @@ class HmsCatalogReader(
     }
 
     private fun readDatabaseLocation(database: String, result: ReadAccumulator) {
-        result.namespaces += listOf(database)
-        try {
-            result.location(listOf(database), LocationRole.NAMESPACE, externalCatalog.getDatabase(database).locationUri()?.toString())
-        } catch (e: Exception) {
-            result.gap(listOf(database), "load_database_failed", e)
-        }
+        readDatabaseLocation(database, loadDatabase(database), result)
     }
 
-    private fun readDatabase(database: String, result: ReadAccumulator) {
-        readDatabaseLocation(database, result)
+    private fun loadDatabase(database: String): Result<CatalogDatabase> =
+        try {
+            Result.success(externalCatalog.getDatabase(database))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+
+    private fun readDatabaseLocation(database: String, loaded: Result<CatalogDatabase>, result: ReadAccumulator) {
+        result.namespaces += listOf(database)
+        loaded.fold(
+            onSuccess = { result.location(listOf(database), LocationRole.NAMESPACE, it.locationUri()?.toString()) },
+            onFailure = { result.gap(listOf(database), "load_database_failed", it as Exception) },
+        )
+    }
+
+    private fun readDatabase(database: String, loaded: Result<CatalogDatabase>, result: ReadAccumulator) {
+        readDatabaseLocation(database, loaded, result)
         val tables = try {
             externalCatalog.listTables(database).asList()
         } catch (e: Exception) {

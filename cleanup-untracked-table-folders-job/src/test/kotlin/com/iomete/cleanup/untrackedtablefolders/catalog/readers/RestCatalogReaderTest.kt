@@ -3,6 +3,7 @@ package com.iomete.cleanup.untrackedtablefolders.catalog.readers
 import io.mockk.every
 import io.mockk.mockk
 import org.apache.hadoop.conf.Configuration
+import org.apache.iceberg.CachingCatalog
 import org.apache.iceberg.DataFiles
 import org.apache.iceberg.FileFormat
 import org.apache.iceberg.PartitionSpec
@@ -303,6 +304,14 @@ class RestCatalogReaderTest {
         assertNull(IcebergCatalogReader.icebergCatalogOf(SparkSessionCatalog<Nothing>()))
         assertNull(IcebergCatalogReader.icebergCatalogOf(mockk<CatalogPlugin>()))
         assertSame(iceberg, IcebergCatalogReader.icebergCatalogOf(sparkCatalog))
+    }
+
+    @Test
+    fun `a Spark catalog with a table cache is read through the catalog it wraps`() {
+        val backend = InMemoryCatalog().apply { initialize("backend", mapOf("warehouse" to "s3a://lake/wh")) }
+        val sparkCatalog = mockk<SparkCatalog> { every { icebergCatalog() } returns CachingCatalog.wrap(backend) }
+
+        assertSame(backend, IcebergCatalogReader.icebergCatalogOf(sparkCatalog))
     }
 
     private fun server(endpoints: List<Endpoint>? = null, lenientMissingNamespace: Boolean = false): TestRestCatalogServer {

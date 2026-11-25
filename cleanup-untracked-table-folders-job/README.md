@@ -516,7 +516,7 @@ The main safety principle is **fail closed**: if the job cannot prove that a fol
 | Warehouse-root rejection | Scanning a shared warehouse root where other databases live |
 | Active table location protection | Deleting folders still claimed by the catalog, including folders inside a table location |
 | Other database protection | Deleting the storage of another database the job can see that sits inside the cleanup root |
-| Other table protection | Deleting a folder used by a table the job can see in another database, or in another catalog of its Spark session in the same bucket or with no `warehouse` setting |
+| Other table protection | Deleting a folder used by a table the job can see in another database, or in another catalog of its Spark session |
 | Iceberg write path protection | Deleting folders named by a visible Iceberg table's `write.*.path` properties |
 | Configured exclusions | Deleting folders explicitly protected through `exclude_paths` or `exclude_database_folders`, including an excluded path nested inside a candidate |
 | `older_than_hours` cutoff | Selecting folders that hold recently written objects; folders of unknown age are skipped |
@@ -543,7 +543,7 @@ none of these claims it:
 - the storage of another database that the job can see, as described in
   [Storage of other databases and Iceberg write paths](#storage-of-other-databases-and-iceberg-write-paths);
 - a table of another database that the job can see, or the storage of another catalog of its Spark
-  session in the same bucket or with no `warehouse` setting, as described in
+  session, as described in
   [Tables of other databases and catalogs](#tables-of-other-databases-and-catalogs);
 - `exclude_paths` and `exclude_database_folders`.
 
@@ -559,7 +559,7 @@ claims this folder". It does not prove that nothing else uses the folder. The jo
 
 | Not checked | Example | What to do |
 |---|---|---|
-| Catalogs outside the job's Spark session, or with their warehouse in another bucket | A catalog of another data plane or tool, or a catalog in another bucket with a table whose `LOCATION` is in this database's folder | Review the dry-run candidates. Protect the folder with `exclude_paths`. |
+| Catalogs outside the job's Spark session | A catalog of another data plane or tool with a table whose `LOCATION` is in this database's folder | Review the dry-run candidates. Protect the folder with `exclude_paths`. |
 | Tables the job cannot see | Tables the job's run-as user is not allowed to see | Run the job as a user who can see every table in the catalog. |
 | Tables of nested namespaces | A table in a namespace inside another namespace | Protect its folder with `exclude_paths`. |
 | Files a table uses outside its own folder | After `ALTER TABLE ... SET LOCATION`, the existing files stay in the old folder and the table still reads them. Files added with `add_files`, or used by a table made with `snapshot` or `migrate`, stay where they were. | Protect the old or source folder with `exclude_paths` while any table still uses it. |
@@ -582,12 +582,12 @@ storage of other databases is unknown, `ownership_unreadable_sample` says why.
 |---|---|
 | `visible_tables_of_this_database`, `write_paths_of_visible_tables_of_this_database`, `configured_exclusions` | Always. They are part of every folder comparison. A row that stops before comparing folders has no candidates. |
 | `default_folders_of_visible_other_databases` | The locations of other databases were read. They are read only when the cleanup root has at least one folder. |
-| `visible_tables_of_other_databases`, `visible_storage_of_same_bucket_session_catalogs` | The tables of other databases and catalogs were read. They are read only when a folder has no owner after the checks above. |
+| `visible_tables_of_other_databases`, `visible_storage_of_other_session_catalogs` | The tables of other databases and catalogs were read. They are read only when a folder has no owner after the checks above. |
 | `final_recheck_before_deletion` | Other storage was read again by the [deletion fence](#deletion-fence) before the first folder was deleted. This happens only in deletion mode. |
 
 When one of the last three rows is missing, `ownership_not_checked` names it instead, as
-`default_folders_of_other_databases`, `other_database_tables` and `same_bucket_session_catalogs`, or
-`final_recheck_before_deletion`. `ownership_not_checked` always has `other_bucket_session_catalogs`,
+`default_folders_of_other_databases`, `other_database_tables` and `other_session_catalogs`, or
+`final_recheck_before_deletion`. `ownership_not_checked` always has
 `catalogs_outside_session`, `hidden_tables`, `nested_namespace_tables` and `files_outside_table_folders`.
 
 Each `CLEANUP REPORT` in the log starts with an `OWNERSHIP CHECKS` section that says the same for its
@@ -1704,13 +1704,16 @@ or properties that cannot be read is treated as an unresolved table, which block
 A table keeps its location when it is renamed into another database, and a table can be registered or
 created with an explicit location anywhere. So when a folder is still unmatched after the checks above,
 the job also reads every table it can see in the other databases of the catalog, the same way it reads
-its own tables. It does the same for every other catalog in the job's Spark session whose `warehouse` is
-in the same bucket as the cleanup root, has no scheme and bucket, or is not set. A catalog with no
-`warehouse`, or a blank one, can still keep tables in the bucket: a REST catalog can get its warehouse
-from the server. JDBC catalogs (`JDBCTableCatalog`) keep no table folders, so they are not read. The catalogs come from the session's
+its own tables. It does the same for every other catalog in the job's Spark session, whatever bucket its
+`warehouse` is in: a table of a catalog in another bucket can still have its `LOCATION` in this
+database's folder, and a REST catalog can get its warehouse from the server. JDBC catalogs (`JDBCTableCatalog`) keep no table folders, so they are not read. The catalogs come from the session's
 configuration, so a catalog added while the job runs, for example by catalog sync, is included.
 `spark_catalog` always counts as one of them. Its Hive tables go to Spark's `spark.sql.warehouse.dir`, so
-that is also one of its warehouses. For those catalogs:
+that is also one of its warehouses. An IOMETE-managed REST catalog is read with the job's own client. Any
+other Iceberg REST catalog, for example an external one with its own token, is read through the client Spark
+built from the session's settings, so it uses the same authentication, with Spark's table cache bypassed. If
+that catalog does not offer the view endpoints, its views can't be listed, so its reads fail and the database
+is `BLOCKED`. For those catalogs:
 
 - a warehouse at or inside the cleanup root is protected whole;
 - the storage of their databases is protected with the rules above;
@@ -1724,15 +1727,19 @@ databases or tables of one of these catalogs cannot be read, the database is `BL
 no `warehouse`: it stores each database under `<warehouse>/<database>`, and that folder is unknown.
 
 The first read is shared by every configured database. A read that fails, or that could not read a
-database location or found an unresolved table, is not kept, so the next database reads again. Reading costs about one catalog lookup per table. The log reports how many tables
-were checked and how long it took. When every folder already has an owner, nothing is read.
+database location or found an unresolved table, is not kept, so the next database reads again. Reading costs about one catalog lookup per table. The tables of up to 8
+databases are read at a time, and the namespaces of an Iceberg REST catalog are listed 8 at a time; the
+metastore serves one call at a time. Results are used in the same order as a one-by-one read. After the
+first failed read, databases not yet started are not read. The log reports each store's database count
+and time, progress every 30 seconds on long reads, and how many tables were checked and how long it took.
+When every folder already has an owner, nothing is read.
 
 Within one database, the database and table lists are read once and reused under both cleanup roots.
 Once the storage under one root is unknown, the other root is not read, because the database is blocked
 either way. So a catalog that cannot be reached costs one wait per database, not one per root. A catalog whose server
 does not answer can take minutes to fail, depending on its connection timeout. Before reading, the log
 lists each other catalog and why it is read: it has no warehouse setting, its warehouse is not a storage
-path, or its warehouse is in the same bucket.
+path, or its warehouse is in the same or another bucket.
 
 When the storage of other databases is unknown, the row's `diagnostic_details` says why in
 `ownership_unreadable_sample`, for example `catalog=sales_rest: the database list could not be read
@@ -1755,7 +1762,7 @@ deletion with `status_reason=deletion_stopped_at_recheck`. A dry run deletes not
 read again.
 
 These checks use only what the job can see. They do not protect a database or table hidden from the
-job, tables of a catalog outside the job's Spark session or with its warehouse in another bucket, tables
+job, tables of a catalog outside the job's Spark session, tables
 of nested namespaces, a table placed in a candidate folder after the last ownership read (unless it is
 a table of this database with the folder's name), or files that a table reaches
 without a write path property, for example through `add_files`,
@@ -2208,9 +2215,9 @@ bullet is a release blocker.
 - **Scope.** Folders are deleted only under the cleanup root. Additional roots are reported only, and table
   parents outside the database's own storage are not listed at all.
 - **Residual.** Ownership is checked against the tables and databases the job can see in the catalog, and in
-  the other catalogs of its Spark session in the same bucket or with no `warehouse` setting. A table or
+  the other catalogs of its Spark session. A table or
   database the job cannot see does not protect its folder, and neither does a Hive partition stored outside
-  its table's folder. Catalogs outside the Spark session or with their warehouse in another bucket, and files
+  its table's folder. Catalogs outside the Spark session, and files
   a table uses outside its own folder, are not checked. See
   [What deletion mode can and cannot prove](#what-deletion-mode-can-and-cannot-prove). Protect such folders
   with `exclude_paths`.

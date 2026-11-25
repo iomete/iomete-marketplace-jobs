@@ -157,6 +157,29 @@ class HmsCatalogReaderTest {
     }
 
     @Test
+    fun `only the metastore's not-found answer makes a database missing, any other failure is a gap`() {
+        val catalog = object : InMemoryCatalog(SparkConf(), Configuration()) {
+            override fun getDatabase(db: String): CatalogDatabase =
+                when (db) {
+                    "locked" -> throw AccessControlException("denied")
+                    "flaky" -> throw RuntimeException("metastore down")
+                    else -> super.getDatabase(db)
+                }
+        }
+        catalog.createDatabase(database("open"), false)
+        catalog.createTable(table("open", "t", location("open/t")), false)
+        val reader = HmsCatalogReader("spark_catalog", catalog, null)
+
+        assertEquals(null, reader.readDatabase("gone"))
+        assertEquals(listOf(ReadGap(listOf("locked"), ReadGapKind.UNAUTHORIZED, "load_database_failed", "AccessControlException")), reader.readDatabase("locked")!!.gaps)
+        assertEquals(listOf(ReadGap(listOf("flaky"), ReadGapKind.FAILED, "load_database_failed", "RuntimeException")), reader.readDatabase("flaky")!!.gaps)
+        val open = reader.readDatabase("open")!!
+        assertEquals(CatalogReadStatus.COMPLETE, open.status, open.gaps.toString())
+        assertEquals(listOf(listOf("open")), open.namespaces)
+        assertTrue(open.locations.any { it.name == listOf("open", "t") && it.role == LocationRole.TABLE })
+    }
+
+    @Test
     fun `a failing table or partition listing in one database is a gap for that database`() {
         val catalog = object : InMemoryCatalog(SparkConf(), Configuration()) {
             override fun listTables(db: String): Seq<String> =

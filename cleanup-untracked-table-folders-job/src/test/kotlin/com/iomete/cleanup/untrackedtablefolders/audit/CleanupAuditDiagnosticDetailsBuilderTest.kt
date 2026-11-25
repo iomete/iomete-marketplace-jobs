@@ -37,7 +37,7 @@ class CleanupAuditDiagnosticDetailsBuilderTest {
             details["ownership_checks"],
         )
         assertEquals(
-            "other_database_tables,same_bucket_session_catalogs,final_recheck_before_deletion,other_bucket_session_catalogs," +
+            "other_database_tables,other_session_catalogs,final_recheck_before_deletion," +
                 "catalogs_outside_session,hidden_tables,nested_namespace_tables,files_outside_table_folders",
             details["ownership_not_checked"],
         )

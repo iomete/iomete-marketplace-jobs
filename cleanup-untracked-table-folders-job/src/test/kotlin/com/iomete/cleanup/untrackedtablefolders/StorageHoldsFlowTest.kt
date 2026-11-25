@@ -42,6 +42,7 @@ class StorageHoldsFlowTest {
     private var live: List<LiveIcebergObject> = emptyList()
     private var tableLoader: ((LiveIcebergTable) -> Table)? = null
     private var sessionCatalogs: Map<String, List<String>> = emptyMap()
+    private var farUnreadable = false
 
     @BeforeEach
     fun setUp() {
@@ -221,14 +222,26 @@ class StorageHoldsFlowTest {
     }
 
     @Test
-    fun `a session catalog not read because its warehouse is in another bucket holds every folder as live tables incomplete`() {
+    fun `a session catalog with its warehouse in another bucket is read, so it does not hold the folders`() {
         putMetadataFolder("dropped", """{"format-version":2,"table-uuid":"u1","location":"$DB/dropped"}""")
-        putFolder("$DB/scratch", "_temporary/0/part-00000")
         sessionCatalogs = mapOf(CATALOG to listOf(WAREHOUSE), "far" to listOf("s3a://far-bucket/lake"))
 
         val (_, second) = confirmedRuns()
 
-        assertHeld(second, "live_tables_incomplete", "$DB/dropped", "$DB/scratch")
+        assertEquals(listOf("$DB/dropped"), second.auditRecords.single().deletedFolders)
+    }
+
+    @Test
+    fun `a session catalog in another bucket whose databases cannot be listed holds every folder`() {
+        putMetadataFolder("dropped", """{"format-version":2,"table-uuid":"u1","location":"$DB/dropped"}""")
+        putFolder("$DB/scratch", "_temporary/0/part-00000")
+        sessionCatalogs = mapOf(CATALOG to listOf(WAREHOUSE), "far" to listOf("s3a://far-bucket/lake"))
+        farUnreadable = true
+
+        val (_, second) = confirmedRuns()
+
+        assertTrue(second.auditRecords.single().deletedFolders.isEmpty())
+        assertTrue(second.objectExists("$DB/dropped/metadata/v1.metadata.json"))
         assertTrue(second.objectExists("$DB/scratch/_temporary/0/part-00000"))
     }
 
@@ -503,6 +516,12 @@ class StorageHoldsFlowTest {
         tableLoader?.let { loader -> flow.service.storageHoldChecker.tableLoader = loader }
         every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns sessionCatalogs
         every { flow.catalogDiscoveryService.visibleDatabaseLocations("near") } returns emptyMap()
+        if (farUnreadable) {
+            every { flow.catalogDiscoveryService.visibleDatabaseLocations("far") } throws IllegalStateException("catalog unreachable")
+        } else {
+            every { flow.catalogDiscoveryService.visibleDatabaseLocations("far") } returns mapOf("remote" to "s3a://far-bucket/lake/remote.db")
+            every { flow.catalogDiscoveryService.discoverTables("far", "remote") } returns emptyList()
+        }
         every { flow.catalogDiscoveryService.sharedWarehouseRoots(CATALOG) } returns listOf(WAREHOUSE)
         every { flow.auditTableService.currentExternalJobId() } returns jobId
         if (history == null) {

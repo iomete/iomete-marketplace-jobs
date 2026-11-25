@@ -6,6 +6,9 @@ import com.iomete.cleanup.untrackedtablefolders.catalog.readers.IcebergCatalogRe
 
 /** One store behind a Spark catalog. spark_catalog has two: the Hive metastore and, when it is REST, the REST catalog. */
 interface CatalogSource {
+    /** For logs: hms or iceberg. */
+    val kind: String get() = "catalog"
+
     /** Namespaces and their locations, without tables. */
     fun readDatabases(): CatalogReadResult
 
@@ -19,6 +22,8 @@ interface CatalogSource {
 internal class HmsSource(
     private val reader: HmsCatalogReader,
 ) : CatalogSource {
+    override val kind = "hms"
+
     override fun readDatabases() = reader.readDatabases()
 
     // The metastore has one level of databases, so a nested namespace is never one of its databases.
@@ -30,6 +35,8 @@ internal class HmsSource(
 internal class IcebergSource(
     private val reader: IcebergCatalogReader,
 ) : CatalogSource {
+    override val kind = "iceberg"
+
     override fun readDatabases() = reader.readNamespaces()
 
     override fun readDatabase(levels: List<String>) = reader.readNamespace(levels)

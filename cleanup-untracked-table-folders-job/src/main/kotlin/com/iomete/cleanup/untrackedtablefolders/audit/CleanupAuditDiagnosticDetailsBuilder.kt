@@ -80,16 +80,15 @@ class CleanupAuditDiagnosticDetailsBuilder {
                     "default_folders_of_visible_other_databases".takeIf { checks.otherDatabaseFolders },
                     "configured_exclusions",
                     "visible_tables_of_other_databases".takeIf { checks.otherTables },
-                    "visible_storage_of_same_bucket_session_catalogs".takeIf { checks.otherTables },
+                    "visible_storage_of_other_session_catalogs".takeIf { checks.otherTables },
                     "final_recheck_before_deletion".takeIf { checks.finalRecheck },
                 ).joinToString(","),
             "ownership_not_checked" to
                 listOfNotNull(
                     "default_folders_of_other_databases".takeUnless { checks.otherDatabaseFolders },
                     "other_database_tables".takeUnless { checks.otherTables },
-                    "same_bucket_session_catalogs".takeUnless { checks.otherTables },
+                    "other_session_catalogs".takeUnless { checks.otherTables },
                     "final_recheck_before_deletion".takeUnless { checks.finalRecheck },
-                    "other_bucket_session_catalogs",
                     "catalogs_outside_session",
                     "hidden_tables",
                     "nested_namespace_tables",
