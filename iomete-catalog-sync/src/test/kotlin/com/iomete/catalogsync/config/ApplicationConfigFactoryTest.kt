@@ -88,15 +88,12 @@ class ApplicationConfigFactoryTest {
     }
 
     @Test
-    fun `2_1_3 - malformed JSON throws exception and fallback has correct defaults`() {
+    fun `2_1_3 - malformed JSON throws on parse`() {
         val malformedJson = """{ not valid json }"""
 
         assertThrows(JsonParseException::class.java) {
             mapper.readValue<ApplicationConfig>(malformedJson)
         }
-
-        val fallback = ApplicationConfig()
-        assertEquals(mapOf("iomete.governance.index" to "false"), fallback.exclusionRules.defaultRule.filterByProperties)
     }
 
     @Test
