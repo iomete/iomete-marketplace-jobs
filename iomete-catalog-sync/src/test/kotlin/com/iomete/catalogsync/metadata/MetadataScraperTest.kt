@@ -6,7 +6,9 @@ import com.iomete.catalogsync.CoreClient.CatalogDetails
 import com.iomete.catalogsync.SparkSessionProvider
 import com.iomete.catalogsync.config.ApplicationConfig
 import com.iomete.catalogsync.config.CatalogExclusionRule
+import com.iomete.catalogsync.config.CatalogInclusionRule
 import com.iomete.catalogsync.config.ExclusionRules
+import com.iomete.catalogsync.config.InclusionRules
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -14,6 +16,9 @@ import jakarta.ws.rs.core.Response
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.SparkSession
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -49,6 +54,7 @@ class MetadataScraperTest {
         mockTableMetadataExtractor = mockk()
 
         every { mockSparkSessionProvider.getSession(any()) } returns mockSparkSession
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules()
         every { mockApplicationConfig.exclusionRules } returns ExclusionRules()
         every { mockSparkSession.sparkContext() } returns mockSparkContext
         every { mockSparkContext.applicationId() } returns "app-test-123"
@@ -184,6 +190,91 @@ class MetadataScraperTest {
 
         verify(exactly = 0) { mockSparkMetadataReader.getSchemas(mockSparkSession, "excluded_catalog") }
         verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "test_catalog" }) }
+    }
+
+    @Test
+    fun `run syncs only the included catalogs`() {
+        val otherCatalog = CatalogDetails(name = "other_catalog", type = listOf("INTERNAL"))
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules(
+            catalogs = CatalogInclusionRule(names = listOf("test_catalog", "missing_catalog")),
+        )
+        recreateScraper()
+
+        every { mockCoreServiceClient.catalogs() } returns listOf(otherCatalog, testCatalog)
+        every { mockSparkMetadataReader.getSchemas(mockSparkSession, "test_catalog") } returns emptyList()
+        every { mockCatalogServiceClient.indexCatalog(any()) } returns mockk<Response>()
+
+        scraper.run()
+
+        verify(exactly = 0) { mockSparkMetadataReader.getSchemas(mockSparkSession, "other_catalog") }
+        verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "test_catalog" }) }
+        verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    @Test
+    fun `run fails when none of the included catalogs exist`() {
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules(
+            catalogs = CatalogInclusionRule(names = listOf("missing_catalog")),
+        )
+        recreateScraper()
+
+        every { mockCoreServiceClient.catalogs() } returns listOf(testCatalog)
+
+        val error = assertThrows(IllegalStateException::class.java) { scraper.run() }
+
+        assertEquals(
+            "None of the included catalogs can be synced by this job: [missing_catalog]. Catalogs this job can sync: [test_catalog]",
+            error.message,
+        )
+
+        verify(exactly = 0) { mockSparkMetadataReader.getSchemas(any(), any()) }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    @Test
+    fun `run applies exclusion rules to included catalogs`() {
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules(
+            catalogs = CatalogInclusionRule(names = listOf("test_catalog")),
+        )
+        every { mockApplicationConfig.exclusionRules } returns ExclusionRules(
+            catalogs = CatalogExclusionRule(names = listOf("test_catalog")),
+        )
+        recreateScraper()
+
+        every { mockCoreServiceClient.catalogs() } returns listOf(testCatalog)
+
+        scraper.run()
+
+        verify(exactly = 0) { mockSparkMetadataReader.getSchemas(any(), any()) }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    @Test
+    fun `run does not sync an included catalog that an exclusion property matches`() {
+        val hotCatalog = CatalogDetails(
+            name = "hot_catalog",
+            type = listOf("INTERNAL"),
+            sparkProperties = mapOf("iomete.governance.index" to "false"),
+        )
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules(
+            catalogs = CatalogInclusionRule(names = listOf("hot_catalog")),
+        )
+        recreateScraper()
+
+        every { mockCoreServiceClient.catalogs() } returns listOf(hotCatalog, testCatalog)
+
+        scraper.run()
+
+        verify(exactly = 0) { mockSparkMetadataReader.getSchemas(any(), any()) }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    private fun recreateScraper() {
+        scraper.shutdown()
+        scraper = MetadataScraper(
+            mockSparkSessionProvider, mockApplicationConfig, mockSparkMetadataReader,
+            mockTableMetadataExtractor, mockCoreServiceClient, mockCatalogServiceClient, "default",
+        )
     }
 
     @Test
@@ -354,6 +445,66 @@ class MetadataScraperTest {
             mockCatalogServiceClient.indexCatalog(match { it.catalog == "owned" && it.storageEndpoint == "http://minio:9000" })
         }
         verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "not_launched" }) }
+    }
+
+    @Test
+    fun `a private domain fails when its included catalog exists only outside the domain`() {
+        val owned = CatalogDetails(name = "owned", type = listOf("iceberg"))
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules(
+            catalogs = CatalogInclusionRule(names = listOf("other_domain_catalog")),
+        )
+        every { mockCoreServiceClient.domain("private-a") } returns CoreClient.Domain(isPrivate = true)
+        every { mockCoreServiceClient.ownedCatalogs("private-a") } returns CoreClient.OwnedCatalogs(listOf(owned))
+        every { mockCoreServiceClient.catalogs() } returns listOf(owned, CatalogDetails(name = "other_domain_catalog", type = listOf("iceberg")))
+        every { mockSparkSessionProvider.isLaunchCatalog("owned") } returns true
+
+        val error = assertThrows<IllegalStateException> { scraperIn("private-a").run() }
+
+        assertTrue(
+            error.message!!.endsWith(
+                "Catalogs this job can sync: [owned] (a private domain syncs only the catalogs it owns that the job was launched with)",
+            ),
+            error.message,
+        )
+        verify(exactly = 0) { mockCoreServiceClient.catalogs() }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    @Test
+    fun `a private domain fails when its only included catalog is owned but not launched`() {
+        val notLaunched = CatalogDetails(name = "not_launched", type = listOf("iceberg"))
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules(
+            catalogs = CatalogInclusionRule(names = listOf("not_launched")),
+        )
+        every { mockCoreServiceClient.domain("private-a") } returns CoreClient.Domain(isPrivate = true)
+        every { mockCoreServiceClient.ownedCatalogs("private-a") } returns CoreClient.OwnedCatalogs(listOf(notLaunched))
+        every { mockSparkSessionProvider.isLaunchCatalog("not_launched") } returns false
+
+        val error = assertThrows<IllegalStateException> { scraperIn("private-a").run() }
+
+        assertTrue(error.message!!.startsWith("None of the included catalogs can be synced by this job: [not_launched]"), error.message)
+        assertTrue(error.message!!.contains("a private domain syncs only"), error.message)
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    // Pins a known gap: iom-core's owned-catalogs response carries no catalog properties, so catalog-level
+    // property rules (including the default `iomete.governance.index=false`) cannot match in a private domain.
+    // Flip this test when owned-catalogs starts returning the properties.
+    @Test
+    fun `a private domain cannot exclude a catalog by its properties because owned-catalogs returns none`() {
+        val owned = CatalogDetails(name = "owned", type = listOf("iceberg"))
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules(
+            catalogs = CatalogInclusionRule(names = listOf("owned")),
+        )
+        every { mockCoreServiceClient.domain("private-a") } returns CoreClient.Domain(isPrivate = true)
+        every { mockCoreServiceClient.ownedCatalogs("private-a") } returns CoreClient.OwnedCatalogs(listOf(owned))
+        every { mockSparkSessionProvider.isLaunchCatalog("owned") } returns true
+        every { mockSparkMetadataReader.getSchemas(mockSparkSession, "owned") } returns emptyList()
+        every { mockCatalogServiceClient.indexCatalog(any()) } returns mockk()
+
+        scraperIn("private-a").run()
+
+        verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "owned" }) }
     }
 
     @Test

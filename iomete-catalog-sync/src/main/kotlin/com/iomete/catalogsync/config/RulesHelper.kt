@@ -21,6 +21,9 @@ inline fun <T> ignoreExcluded(block: () -> T): T? =
 fun Map<String, Any?>.matchesAnyExclusion(exclusionRules: Map<String, String>): Boolean =
     exclusionRules.any { (key, value) -> this[key] == value }
 
+fun InclusionRules.includes(catalog: CatalogDetails): Boolean =
+    catalogs.names.isEmpty() || catalog.name in catalogs.names
+
 fun ExclusionRules.enforceCatalogExclusionRules(catalog: CatalogDetails) {
     throwIf({ catalog.name in catalogs.names }) {
         ExcludedItemException("Catalog `${catalog.name}` is excluded from indexing due to name matching.")
