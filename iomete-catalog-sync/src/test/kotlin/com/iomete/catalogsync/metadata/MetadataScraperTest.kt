@@ -10,6 +10,7 @@ import com.iomete.catalogsync.config.ExclusionRules
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import jakarta.ws.rs.WebApplicationException
 import jakarta.ws.rs.core.Response
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.SparkSession
@@ -361,6 +362,40 @@ class MetadataScraperTest {
         every { mockCoreServiceClient.domain("private-a") } throws RuntimeException("iom-core unavailable")
 
         assertThrows<RuntimeException> { scraperIn("private-a").run() }
+
+        verify(exactly = 0) { mockCoreServiceClient.catalogs() }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    @Test
+    fun `an older iom-core without the domain lookup syncs all catalogs`() {
+        every { mockCoreServiceClient.domain("private-a") } throws WebApplicationException(404)
+        every { mockCoreServiceClient.ownedCatalogs("private-a") } throws WebApplicationException(404)
+        every { mockCoreServiceClient.catalogs() } returns listOf(testCatalog)
+        every { mockSparkMetadataReader.getSchemas(mockSparkSession, "test_catalog") } returns emptyList()
+        every { mockCatalogServiceClient.indexCatalog(any()) } returns mockk()
+
+        scraperIn("private-a").run()
+
+        verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "test_catalog" }) }
+    }
+
+    @Test
+    fun `a domain lookup 404 on a newer iom-core stops the run before anything is indexed`() {
+        every { mockCoreServiceClient.domain("private-a") } throws WebApplicationException(404)
+        every { mockCoreServiceClient.ownedCatalogs("private-a") } returns CoreClient.OwnedCatalogs(emptyList())
+
+        assertThrows<WebApplicationException> { scraperIn("private-a").run() }
+
+        verify(exactly = 0) { mockCoreServiceClient.catalogs() }
+        verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
+    }
+
+    @Test
+    fun `a domain lookup server error stops the run before anything is indexed`() {
+        every { mockCoreServiceClient.domain("private-a") } throws WebApplicationException(500)
+
+        assertThrows<WebApplicationException> { scraperIn("private-a").run() }
 
         verify(exactly = 0) { mockCoreServiceClient.catalogs() }
         verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }

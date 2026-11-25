@@ -3,6 +3,7 @@ package com.iomete.catalogsync.metadata
 import com.iomete.catalogsync.CoreClient.CatalogDetails
 import com.iomete.catalogsync.extract.ColumnStat
 import jakarta.inject.Singleton
+import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
@@ -103,8 +104,15 @@ class SparkMetadataReader {
         val hasViewSupport = catalog.type.any { viewSupportedCatalogTypes.contains(it.lowercase()) }
         if (!hasViewSupport) return emptyList()
 
-        // A failure propagates for the same reason as in fetchTables
-        return spark.sql("show views from `${catalog.name}`.`$schema`").collectAsList()
+        // A catalog without view support has no views; any other failure propagates as in fetchTables
+        return try {
+            spark.sql("show views from `${catalog.name}`.`$schema`").collectAsList()
+        } catch (e: AnalysisException) {
+            if (e.message?.contains("does not support views") != true) throw e
+
+            logger.info("Catalog {} does not support views, listing tables only", catalog.name)
+            emptyList()
+        }
     }
 
     fun describeTable(

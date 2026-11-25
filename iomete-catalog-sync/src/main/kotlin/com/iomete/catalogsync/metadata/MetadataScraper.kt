@@ -11,6 +11,7 @@ import com.iomete.catalogsync.config.enforceSchemaExclusionRules
 import com.iomete.catalogsync.config.ignoreExcluded
 import jakarta.annotation.PreDestroy
 import jakarta.inject.Singleton
+import jakarta.ws.rs.WebApplicationException
 import org.apache.spark.sql.SparkSession
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.eclipse.microprofile.rest.client.inject.RestClient
@@ -151,20 +152,44 @@ class MetadataScraper(
 
     /**
      * A private domain's job syncs only the catalogs the domain owns, reached with its launch settings.
-     * Any other domain syncs the install-wide list. A failed lookup stops the run.
+     * Any other domain syncs the install-wide list. A failed lookup stops the run, except a 404 from an older iom-core.
      */
     private fun catalogsToSync(): List<CatalogDetails> {
-        val isPrivate =
-            checkNotNull(coreServiceClient.domain(domain).isPrivate) { "iom-core did not say whether domain $domain is private" }
-        if (!isPrivate) return coreServiceClient.catalogs()
+        if (!isPrivateDomain()) return coreServiceClient.catalogs()
 
         logger.info("Domain {} is private, syncing only its own catalogs", domain)
         return coreServiceClient.ownedCatalogs(domain).catalogs.filter { catalog ->
             sparkSessionProvider.isLaunchCatalog(catalog.name).also { launched ->
-                if (!launched) logger.warn("Skipping catalog {}: the job was not launched with its settings", catalog.name)
+                if (!launched) logger.error("Skipping catalog {}: the job was not launched with its settings", catalog.name)
             }
         }
     }
+
+    /** Older iom-core has no domain lookup and no private domains, so a 404 reads as not private. */
+    private fun isPrivateDomain(): Boolean {
+        val lookup =
+            try {
+                coreServiceClient.domain(domain)
+            } catch (e: WebApplicationException) {
+                if (e.response.status != 404 || hasOwnedCatalogsEndpoint()) throw e
+
+                logger.warn("Domain lookup for {} returned 404, treating it as not private and syncing all catalogs", domain)
+                return false
+            }
+
+        return checkNotNull(lookup.isPrivate) { "iom-core did not say whether domain $domain is private" }
+    }
+
+    /** Newer iom-core answers owned-catalogs, so a 404 from the lookup there is a real failure. */
+    private fun hasOwnedCatalogsEndpoint(): Boolean =
+        try {
+            coreServiceClient.ownedCatalogs(domain)
+            true
+        } catch (e: WebApplicationException) {
+            if (e.response.status != 404) throw e
+
+            false
+        }
 
     private fun processSchema(
         spark: SparkSession,
