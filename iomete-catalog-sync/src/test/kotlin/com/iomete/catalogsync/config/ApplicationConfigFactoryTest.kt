@@ -171,4 +171,11 @@ class ApplicationConfigFactoryTest {
         assertEquals(listOf("only_this_catalog"), ApplicationConfigFactory().load(file).inclusionRules.catalogs.names)
         assertEquals(ApplicationConfig(), ApplicationConfigFactory().load(File(dir, "missing.json")))
     }
+
+    @Test
+    fun `2_1_10 - factory treats an empty config file like a missing one`(@TempDir dir: File) {
+        val file = File(dir, "application.json").apply { writeText("  \n") }
+
+        assertEquals(ApplicationConfig(), ApplicationConfigFactory().load(file))
+    }
 }

@@ -72,6 +72,11 @@ class ApplicationConfigFactory {
             logger.warn("Config file not found at {}. Using default values.", file.path)
             return ApplicationConfig()
         }
+        // An empty ConfigMap file holds no settings, so treat it like a missing file rather than a parse failure.
+        if (file.readText().isBlank()) {
+            logger.warn("Config file at {} is empty. Using default values.", file.path)
+            return ApplicationConfig()
+        }
 
         logger.info("Reading JSON config from: {}", file.path)
         return try {
