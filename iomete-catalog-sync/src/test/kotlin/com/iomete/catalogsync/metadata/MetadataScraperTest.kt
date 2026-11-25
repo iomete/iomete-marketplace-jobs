@@ -487,6 +487,26 @@ class MetadataScraperTest {
         verify(exactly = 0) { mockCatalogServiceClient.indexCatalog(any()) }
     }
 
+    // Pins a known gap: iom-core's owned-catalogs response carries no catalog properties, so catalog-level
+    // property rules (including the default `iomete.governance.index=false`) cannot match in a private domain.
+    // Flip this test when owned-catalogs starts returning the properties.
+    @Test
+    fun `a private domain cannot exclude a catalog by its properties because owned-catalogs returns none`() {
+        val owned = CatalogDetails(name = "owned", type = listOf("iceberg"))
+        every { mockApplicationConfig.inclusionRules } returns InclusionRules(
+            catalogs = CatalogInclusionRule(names = listOf("owned")),
+        )
+        every { mockCoreServiceClient.domain("private-a") } returns CoreClient.Domain(isPrivate = true)
+        every { mockCoreServiceClient.ownedCatalogs("private-a") } returns CoreClient.OwnedCatalogs(listOf(owned))
+        every { mockSparkSessionProvider.isLaunchCatalog("owned") } returns true
+        every { mockSparkMetadataReader.getSchemas(mockSparkSession, "owned") } returns emptyList()
+        every { mockCatalogServiceClient.indexCatalog(any()) } returns mockk()
+
+        scraperIn("private-a").run()
+
+        verify(exactly = 1) { mockCatalogServiceClient.indexCatalog(match { it.catalog == "owned" }) }
+    }
+
     @Test
     fun `a failed private-domain lookup stops the run before anything is indexed`() {
         every { mockCoreServiceClient.domain("private-a") } throws RuntimeException("iom-core unavailable")
