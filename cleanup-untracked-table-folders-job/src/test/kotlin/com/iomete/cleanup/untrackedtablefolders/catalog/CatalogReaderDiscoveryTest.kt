@@ -20,6 +20,8 @@ import org.apache.iceberg.Schema
 import org.apache.iceberg.catalog.Namespace
 import org.apache.iceberg.catalog.TableIdentifier
 import org.apache.iceberg.inmemory.InMemoryCatalog
+import org.apache.iceberg.rest.RESTCatalog
+import org.apache.iceberg.spark.SparkCatalog
 import org.apache.iceberg.types.Types
 import org.apache.spark.sql.SparkSession
 import org.junit.jupiter.api.AfterEach
@@ -30,6 +32,8 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
+
+private const val EXTERNAL_TOKEN = "external-test-token"
 
 private const val MANAGED_URI = "http://iom-rest-catalog.iomete-system.svc.cluster.local/internal/catalogs/spark_catalog"
 
@@ -388,6 +392,132 @@ class CatalogReaderDiscoveryTest {
         val again = reader.readObject(listOf("sales", "orders"))!!
 
         assertTrue(again.locations.any { it.role == LocationRole.WRITE_PATH && it.location == "s3a://lake/moved/orders" }, again.locations.toString())
+    }
+
+    @Test
+    fun `an external REST catalog is read through Spark's own client, so its token is sent, and its cache is bypassed`() {
+        val server = externalServer()
+        server.backend.createNamespace(Namespace.of("sales"), mapOf("location" to "s3a://ext/sales"))
+        val table = server.backend.buildTable(TableIdentifier.of("sales", "orders"), schema).withLocation("s3a://ext/sales/orders").create()
+        val sparkClient = sparkCatalogClient(server, "view-endpoints-supported" to "true")
+        val service = externalService(server, sparkClient)
+
+        assertEquals(mapOf("sales" to "s3a://ext/sales"), service.visibleDatabaseLocations("ext"))
+        assertEquals(listOf("s3a://ext/sales/orders"), service.discoverDatabase("ext", "sales").fileTableLocations)
+        // A change after Spark's cache loaded the table is still seen.
+        sparkClient.loadTable(TableIdentifier.of("sales", "orders"))
+        table.updateProperties().set("write.data.path", "s3a://ext/moved/orders").commit()
+        assertTrue("s3a://ext/moved/orders" in service.discoverDatabase("ext", "sales").tables.single().writeLocations)
+
+        assertTrue(server.requests.isNotEmpty())
+        assertTrue(server.requests.all { it.authorization == "Bearer $EXTERNAL_TOKEN" }, server.requests.map { it.authorization }.toString())
+        assertNull(RestCatalogReader.clientProperties("ext", mapOf("type" to "rest", "uri" to server.uri)))
+    }
+
+    @Test
+    fun `an external REST catalog whose views can't be listed fails the database read`() {
+        val server = externalServer()
+        server.backend.createNamespace(Namespace.of("sales"), mapOf("location" to "s3a://ext/sales"))
+        val service = externalService(server, sparkCatalogClient(server))
+
+        val error = assertThrows<IllegalStateException> { service.discoverDatabase("ext", "sales") }
+
+        assertTrue("missing_namespace_listed_views" in error.message.orEmpty(), error.message)
+    }
+
+    @Test
+    fun `an external REST namespace without a location has no known folder`() {
+        val server = externalServer()
+        server.backend.createNamespace(Namespace.of("sales"))
+        val service = externalService(server, sparkCatalogClient(server, "view-endpoints-supported" to "true"))
+
+        assertEquals(mapOf("sales" to null), service.visibleDatabaseLocations("ext"))
+    }
+
+    private fun externalServer(): TestRestCatalogServer {
+        val backend = InMemoryCatalog().apply { initialize("backend", mapOf("warehouse" to "s3a://ext")) }
+        return TestRestCatalogServer(backend, "ext", basePath = "/api/iceberg").also { closeables += it }
+    }
+
+    // The client SparkCatalog builds from the session's settings, with its table cache.
+    private fun sparkCatalogClient(
+        server: TestRestCatalogServer,
+        vararg extra: Pair<String, String>,
+    ): CachingCatalog {
+        val client =
+            RESTCatalog().apply {
+                setConf(Configuration())
+                initialize("ext", mapOf("uri" to server.uri, "token" to EXTERNAL_TOKEN) + extra)
+            }
+        closeables += client
+        return CachingCatalog.wrap(client) as CachingCatalog
+    }
+
+    private fun externalService(
+        server: TestRestCatalogServer,
+        sparkClient: CachingCatalog,
+    ): CatalogDiscoveryService {
+        sessionConf["spark.sql.catalog.ext"] = "org.apache.iceberg.spark.SparkCatalog"
+        sessionConf["spark.sql.catalog.ext.type"] = "rest"
+        sessionConf["spark.sql.catalog.ext.uri"] = server.uri
+        sessionConf["spark.sql.catalog.ext.token"] = EXTERNAL_TOKEN
+        val plugin = mockk<SparkCatalog> { every { icebergCatalog() } returns sparkClient }
+        val spark = mockk<SparkSession>()
+        every { spark.conf() } returns sessionConfigOf(sessionConf)
+        every { spark.sessionState().catalogManager().catalog("ext") } returns plugin
+        return CatalogDiscoveryService().apply {
+            sparkSessionProvider = mockk<SparkSessionProvider> { every { getOrCreate() } returns spark }
+            closeables += AutoCloseable { close() }
+        }
+    }
+
+    @Test
+    fun `only the metastore and managed REST catalogs count as seeing every table`() {
+        sessionConf["spark.sql.catalog.spark_catalog"] = "org.apache.iceberg.spark.SparkSessionCatalog"
+        sessionConf["spark.sql.catalog.spark_catalog.type"] = "rest"
+        sessionConf["spark.sql.catalog.spark_catalog.uri"] = MANAGED_URI
+        sparkCatalog("managed", "rest", "http://iom-core.iomete-system/internal/catalogs/managed")
+        sparkCatalog("ext", "rest", "http://unity.example/api/iceberg")
+        sparkCatalog("lake", "hive", "thrift://metastore:9083")
+        sparkCatalog("glue", "glue", null)
+        sessionConf["spark.sql.catalog.pg"] = "org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog"
+        sessionConf["spark.sql.catalog.custom"] = "com.example.CustomCatalog"
+        val service = service()
+
+        assertEquals(
+            listOf("custom", "ext", "glue", "lake", "missing"),
+            service.catalogsWithUnverifiedVisibility(listOf("spark_catalog", "managed", "ext", "lake", "glue", "pg", "custom", "missing")),
+        )
+    }
+
+    @Test
+    fun `when the session settings can't be read, no catalog counts as seeing every table`() {
+        val spark = mockk<SparkSession> { every { conf() } throws IllegalStateException("no session") }
+        val service = CatalogDiscoveryService().apply { sparkSessionProvider = mockk { every { getOrCreate() } returns spark } }
+
+        assertEquals(listOf("managed", "spark_catalog"), service.catalogsWithUnverifiedVisibility(listOf("spark_catalog", "managed")))
+    }
+
+    @Test
+    fun `only the metastore and REST clients are read from several threads, and an unreadable catalog never is`() {
+        val hms = hms()
+        val service = service(hms, server())
+        val fake = service(sources = { listOf(FakeSource(listOf(listOf("sales")))) })
+        val broken = service(sources = { throw UnsupportedCatalogException(it, "not supported") })
+
+        assertTrue(service.concurrentReadSafe("spark_catalog"))
+        assertFalse(fake.concurrentReadSafe("spark_catalog"))
+        assertFalse(broken.concurrentReadSafe("spark_catalog"))
+    }
+
+    private fun sparkCatalog(
+        name: String,
+        type: String,
+        uri: String?,
+    ) {
+        sessionConf["spark.sql.catalog.$name"] = "org.apache.iceberg.spark.SparkCatalog"
+        sessionConf["spark.sql.catalog.$name.type"] = type
+        uri?.let { sessionConf["spark.sql.catalog.$name.uri"] = it }
     }
 
     private class FakeSource(

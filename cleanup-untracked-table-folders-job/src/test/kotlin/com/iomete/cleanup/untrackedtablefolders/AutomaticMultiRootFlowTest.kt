@@ -618,7 +618,7 @@ class AutomaticMultiRootFlowTest {
         assertEquals("SUCCESS", record.status)
         assertEquals(listOf("$DB_FOLDER/orphan_hive", "$REST_FOLDER/orphan_rest"), record.deletedFolders)
         assertTrue(flow.objectExists("$REST_FOLDER/remote_t/part-0.parquet"))
-        assertTrue("visible_storage_of_same_bucket_session_catalogs" in checks(record))
+        assertTrue("visible_storage_of_other_session_catalogs" in checks(record))
         assertTrue("final_recheck_before_deletion" in checks(record))
     }
 
@@ -642,8 +642,8 @@ class AutomaticMultiRootFlowTest {
         assertTrue(flow.objectExists("$DB_FOLDER/orphan_hive/part-0.parquet"))
         assertTrue(flow.objectExists("$REST_FOLDER/orphan_rest/part-0.parquet"))
         verify(exactly = 1) { flow.catalogDiscoveryService.tableLocationIfExists("views", "default", "sales.db") }
-        assertFalse("visible_storage_of_same_bucket_session_catalogs" in checks(record))
-        assertTrue("same_bucket_session_catalogs" in notChecked(record))
+        assertFalse("visible_storage_of_other_session_catalogs" in checks(record))
+        assertTrue("other_session_catalogs" in notChecked(record))
         assertTrue("final_recheck_before_deletion" in notChecked(record))
     }
 
@@ -665,7 +665,7 @@ class AutomaticMultiRootFlowTest {
         assertTrue(record.deletedFolders.isEmpty())
         assertTrue(flow.objectExists("$DB_FOLDER/orphan_hive/part-0.parquet"))
         assertTrue(flow.objectExists("$REST_FOLDER/orphan_rest/part-0.parquet"))
-        assertTrue("visible_storage_of_same_bucket_session_catalogs" in checks(record))
+        assertTrue("visible_storage_of_other_session_catalogs" in checks(record))
         assertFalse("final_recheck_before_deletion" in checks(record))
         assertTrue("final_recheck_before_deletion" in notChecked(record))
     }
@@ -692,7 +692,7 @@ class AutomaticMultiRootFlowTest {
         verify(exactly = 1) { flow.catalogDiscoveryService.visibleDatabaseLocations("remote") }
         val unreadable = "catalog=remote: the database list could not be read (ConnectException)"
         assertEquals(unreadable, record.diagnosticDetails["ownership_unreadable_sample"])
-        assertTrue("same_bucket_session_catalogs" in notChecked(record))
+        assertTrue("other_session_catalogs" in notChecked(record))
         val summary = flow.summaryLines()
         assertTrue("  Unreadable   $unreadable" in summary)
         assertTrue("  OWNERSHIP CHECKS names what could not be read. The WARN log has the details." in summary)
@@ -840,7 +840,7 @@ class AutomaticMultiRootFlowTest {
         assertTrue(flow.objectExists("$REST_FOLDER/orphan_rest/part-0.parquet"))
         // One complete read shared by both folders, then one failed read at the final check.
         verify(exactly = 2) { flow.catalogDiscoveryService.visibleDatabaseLocations("remote") }
-        assertTrue("visible_storage_of_same_bucket_session_catalogs" in checks(record))
+        assertTrue("visible_storage_of_other_session_catalogs" in checks(record))
         assertTrue("final_recheck_before_deletion" in notChecked(record))
         assertEquals(
             "catalog=remote: the database list could not be read (ConnectException)",

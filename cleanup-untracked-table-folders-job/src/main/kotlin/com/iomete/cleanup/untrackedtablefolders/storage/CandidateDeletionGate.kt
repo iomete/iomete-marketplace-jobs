@@ -199,7 +199,11 @@ class CandidateDeletionGate {
                 )
             }
 
-            if (ticker.nanos() - startedAt > usableReadNanos) {
+            val readNanos = ticker.nanos() - startedAt
+            logger.info(
+                "Read ownership$where in ${readNanos / 1_000_000} ms; a read may use ${text(Duration.ofNanos(usableReadNanos))} of the ${limitText()} limit"
+            )
+            if (readNanos > usableReadNanos) {
                 return tooSlow(null)
             }
             snapshotStartedAt = startedAt

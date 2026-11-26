@@ -112,6 +112,14 @@ internal class ReadAccumulator(private val catalog: String) {
         gaps += gapFor(name, reason, error)
     }
 
+    fun addAll(other: ReadAccumulator) {
+        locations += other.locations
+        liveIceberg += other.liveIceberg
+        externalPathUse += other.externalPathUse
+        gaps += other.gaps
+        namespaces += other.namespaces
+    }
+
     fun result() =
         CatalogReadResult(catalog, locations.toList(), liveIceberg.toList(), externalPathUse.toList(), gaps.toList(), namespaces.toList())
 }

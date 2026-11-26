@@ -124,6 +124,24 @@ val verifyRunnerJarHasNoIceberg by tasks.registering {
     }
 }
 
+// application.properties removes this service file. Without that, JBoss LogManager takes over the JDK's System.Logger
+// in every Spark JVM that loads the jar.
+val verifyRunnerJarHasNoJdkLoggerFinder by tasks.registering {
+    description = "Fails the build if the runner jar registers a java.lang.System.LoggerFinder."
+    val buildDir = layout.buildDirectory
+    doLast {
+        val jars = buildDir.get().asFile.listFiles { file -> file.name.endsWith("-runner.jar") }.orEmpty()
+        if (jars.isEmpty()) throw GradleException("No runner jar found to check for a JDK logger finder")
+        jars.forEach { jar ->
+            ZipFile(jar).use { zip ->
+                if (zip.getEntry("META-INF/services/java.lang.System\$LoggerFinder") != null) {
+                    throw GradleException("${jar.name} registers a java.lang.System.LoggerFinder")
+                }
+            }
+        }
+    }
+}
+
 tasks.named("quarkusBuild") {
-    finalizedBy(verifyRunnerJarHasNoIceberg)
+    finalizedBy(verifyRunnerJarHasNoIceberg, verifyRunnerJarHasNoJdkLoggerFinder)
 }

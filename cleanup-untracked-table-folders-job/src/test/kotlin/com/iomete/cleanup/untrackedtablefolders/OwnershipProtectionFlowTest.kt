@@ -452,11 +452,57 @@ class OwnershipProtectionFlowTest {
         assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
         assertTrue("default_folders_of_visible_other_databases" in checks(record))
         assertTrue("other_database_tables" in notChecked(record))
-        assertTrue("same_bucket_session_catalogs" in notChecked(record))
+        assertTrue("other_session_catalogs" in notChecked(record))
         assertEquals(
             "catalog=$CATALOG, database=archive: the tables could not be read (IllegalStateException)",
             record.diagnosticDetails["ownership_unreadable_sample"],
         )
+    }
+
+    @Test
+    fun `tables of other databases read in parallel report the first failing database in order, not the first to fail`() {
+        folders(SALES, "t1", "orphan")
+        val flow =
+            flow(
+                tables = listOf(table("$SALES/t1")),
+                databases = mapOf("sales" to SALES, "archive" to "$WAREHOUSE/archive.db", "beta" to "$WAREHOUSE/beta.db", "gamma" to "$WAREHOUSE/gamma.db"),
+            )
+        every { flow.catalogDiscoveryService.discoverTables(CATALOG, "archive") } answers {
+            Thread.sleep(200)
+            throw IllegalStateException("describe denied")
+        }
+        every { flow.catalogDiscoveryService.discoverTables(CATALOG, "gamma") } throws IllegalArgumentException("bad location")
+        every { flow.catalogDiscoveryService.concurrentReadSafe(CATALOG) } returns true
+
+        flow.run()
+
+        val record = flow.auditRecords.single()
+        assertEquals("other_database_storage_unknown", record.statusReason)
+        assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
+        assertEquals(
+            "catalog=$CATALOG, database=archive: the tables could not be read (IllegalStateException)",
+            record.diagnosticDetails["ownership_unreadable_sample"],
+        )
+    }
+
+    @Test
+    fun `tables of a catalog whose client is not known to be thread-safe are read one at a time`() {
+        folders(SALES, "t1", "orphan")
+        val databases = (1..6).associate { "db$it" to "$WAREHOUSE/db$it.db" }
+        val flow = flow(tables = listOf(table("$SALES/t1")), databases = mapOf("sales" to SALES) + databases)
+        val running = java.util.concurrent.atomic.AtomicInteger()
+        val peak = java.util.concurrent.atomic.AtomicInteger()
+        every { flow.catalogDiscoveryService.discoverTables(CATALOG, any()) } answers {
+            peak.accumulateAndGet(running.incrementAndGet(), ::maxOf)
+            Thread.sleep(20)
+            running.decrementAndGet()
+            emptyList()
+        }
+
+        flow.run()
+
+        assertEquals(1, peak.get())
+        assertEquals(listOf("$SALES/orphan"), flow.auditRecords.single().deletedFolders)
     }
 
     @Test
@@ -482,9 +528,8 @@ class OwnershipProtectionFlowTest {
         assertEquals(
             listOf(
                 "other_database_tables",
-                "same_bucket_session_catalogs",
+                "other_session_catalogs",
                 "final_recheck_before_deletion",
-                "other_bucket_session_catalogs",
                 "catalogs_outside_session",
                 "hidden_tables",
                 "nested_namespace_tables",
@@ -521,14 +566,13 @@ class OwnershipProtectionFlowTest {
                     "default_folders_of_visible_other_databases",
                     "configured_exclusions",
                     "visible_tables_of_other_databases",
-                    "visible_storage_of_same_bucket_session_catalogs",
+                    "visible_storage_of_other_session_catalogs",
                     "final_recheck_before_deletion",
                 ),
                 checks(record),
             )
             assertEquals(
                 listOf(
-                    "other_bucket_session_catalogs",
                     "catalogs_outside_session",
                     "hidden_tables",
                     "nested_namespace_tables",
@@ -725,7 +769,7 @@ class OwnershipProtectionFlowTest {
     }
 
     @Test
-    fun `a table of another catalog in the same bucket survives, and a catalog in another bucket is not read`() {
+    fun `tables of other catalogs in the same bucket and in another bucket both survive`() {
         folders(SALES, "t1", "shared_t", "orphan")
         val flow = flow(tables = listOf(table("$SALES/t1")))
         every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns
@@ -733,12 +777,17 @@ class OwnershipProtectionFlowTest {
         every { flow.catalogDiscoveryService.visibleDatabaseLocations("views") } returns mapOf("reports" to "s3://bucket/views/reports.db")
         every { flow.catalogDiscoveryService.discoverTables("views", "reports") } returns
             listOf(DiscoveredTable("views", "reports", "shared_t", false, location = "$SALES/shared_t"))
+        // A table registered from another bucket's catalog with its location in this root.
+        every { flow.catalogDiscoveryService.visibleDatabaseLocations("far") } returns mapOf("remote" to "s3a://far-bucket/lake/remote.db")
+        every { flow.catalogDiscoveryService.discoverTables("far", "remote") } returns
+            listOf(DiscoveredTable("far", "remote", "far_t", false, location = "$SALES/far_t"))
+        folders(SALES, "far_t")
 
         flow.run()
 
         assertEquals(listOf("$SALES/orphan"), flow.auditRecords.single().deletedFolders)
         assertTrue(flow.objectExists("$SALES/shared_t/part-0.parquet"))
-        verify(exactly = 0) { flow.catalogDiscoveryService.visibleDatabaseLocations("far") }
+        assertTrue(flow.objectExists("$SALES/far_t/part-0.parquet"))
     }
 
     @Test
@@ -811,7 +860,7 @@ class OwnershipProtectionFlowTest {
         assertEquals("SUCCESS", record.status)
         assertEquals(listOf("$SALES/orphan"), record.deletedFolders)
         assertTrue(flow.objectExists("$SALES/remote_t/part-0.parquet"))
-        assertTrue("visible_storage_of_same_bucket_session_catalogs" in checks(record))
+        assertTrue("visible_storage_of_other_session_catalogs" in checks(record))
         assertTrue("final_recheck_before_deletion" in checks(record))
     }
 
@@ -847,8 +896,8 @@ class OwnershipProtectionFlowTest {
         assertEquals("BLOCKED", record.status)
         assertEquals("other_database_storage_unknown", record.statusReason)
         assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
-        assertFalse("visible_storage_of_same_bucket_session_catalogs" in checks(record))
-        assertTrue("same_bucket_session_catalogs" in notChecked(record))
+        assertFalse("visible_storage_of_other_session_catalogs" in checks(record))
+        assertTrue("other_session_catalogs" in notChecked(record))
     }
 
     @Test
@@ -864,7 +913,7 @@ class OwnershipProtectionFlowTest {
         assertEquals("BLOCKED", record.status)
         assertEquals("other_database_storage_unknown", record.statusReason)
         assertTrue(flow.objectExists("$SALES/orphan/part-0.parquet"))
-        assertTrue("same_bucket_session_catalogs" in notChecked(record))
+        assertTrue("other_session_catalogs" in notChecked(record))
     }
 
     @Test
@@ -898,12 +947,12 @@ class OwnershipProtectionFlowTest {
             listOf(
                 "visible_tables_of_this_database", "write_paths_of_visible_tables_of_this_database",
                 "default_folders_of_visible_other_databases", "configured_exclusions", "visible_tables_of_other_databases",
-                "visible_storage_of_same_bucket_session_catalogs", "final_recheck_before_deletion",
+                "visible_storage_of_other_session_catalogs", "final_recheck_before_deletion",
             ),
             checks(record),
         )
         assertEquals(
-            listOf("other_bucket_session_catalogs", "catalogs_outside_session", "hidden_tables", "nested_namespace_tables", "files_outside_table_folders"),
+            listOf("catalogs_outside_session", "hidden_tables", "nested_namespace_tables", "files_outside_table_folders"),
             notChecked(record),
         )
     }
@@ -921,13 +970,13 @@ class OwnershipProtectionFlowTest {
         assertEquals(listOf("visible_tables_of_this_database", "write_paths_of_visible_tables_of_this_database", "configured_exclusions"), checks(record))
         assertTrue(
             notChecked(record).containsAll(
-                listOf("default_folders_of_other_databases", "other_database_tables", "same_bucket_session_catalogs", "final_recheck_before_deletion"),
+                listOf("default_folders_of_other_databases", "other_database_tables", "other_session_catalogs", "final_recheck_before_deletion"),
             ),
         )
     }
 
     // Lists the session's catalogs with the real CatalogDiscoveryService over these settings, so the flow sees which
-    // catalogs it keeps or leaves out. Spark's own warehouse is in another bucket, so spark_catalog is not read.
+    // catalogs it reads. Spark's own warehouse is in another bucket; spark_catalog is still read and lists no databases.
     private fun sessionCatalogs(
         flow: CleanupFlowHarness,
         settings: Map<String, String>,

@@ -1,6 +1,9 @@
 package com.iomete.cleanup.untrackedtablefolders.catalog.readers
 
+import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogReadPool
+import com.iomete.cleanup.untrackedtablefolders.catalog.ReadProgress
 import java.util.UUID
+import org.apache.iceberg.CachingCatalog
 import org.apache.iceberg.HasTableOperations
 import org.apache.iceberg.Table
 import org.apache.iceberg.catalog.Catalog
@@ -9,6 +12,7 @@ import org.apache.iceberg.catalog.SupportsNamespaces
 import org.apache.iceberg.catalog.TableIdentifier
 import org.apache.iceberg.catalog.ViewCatalog
 import org.apache.iceberg.exceptions.NoSuchNamespaceException
+import org.apache.iceberg.rest.RESTCatalog
 import org.apache.iceberg.spark.SparkCatalog
 import org.apache.iceberg.view.BaseView
 import org.apache.iceberg.view.SQLViewRepresentation
@@ -19,6 +23,9 @@ import org.apache.spark.sql.connector.catalog.CatalogPlugin
  *
  * Missing-namespace errors are never treated as "no tables" here: a namespace that was listed and then can't
  * be read is a gap.
+ *
+ * With [pool], a REST catalog's child listings and namespace locations are read in parallel. Each read fills its own
+ * accumulator, and they are merged in listing order, so the result is the same as a sequential read.
  */
 class IcebergCatalogReader(
     private val catalogName: String,
@@ -26,7 +33,15 @@ class IcebergCatalogReader(
     private val viewPathParser: ViewPathParser = ViewPathParser(),
     private val limits: ReaderLimits = ReaderLimits(),
     private val probeNamespace: Namespace = Namespace.of("cleanup_probe_" + UUID.randomUUID().toString().replace("-", "")),
+    pool: CatalogReadPool? = null,
 ) {
+    /** Other catalog clients may not be safe to share between threads. RESTCatalog uses a pooled HTTP client. */
+    val concurrentReadSafe: Boolean = catalog is RESTCatalog
+
+    private val pool: CatalogReadPool? = pool?.takeIf { concurrentReadSafe }
+
+    private fun <T, R> each(items: List<T>, work: (T) -> R): List<R> = pool?.map(items, work) ?: items.map(work)
+
     fun read(): CatalogReadResult {
         val namespaces = catalog as? SupportsNamespaces
             ?: return CatalogReadResult.failed(catalogName, ReadGap(emptyList(), ReadGapKind.UNSUPPORTED, "catalog_lists_no_namespaces"))
@@ -51,7 +66,13 @@ class IcebergCatalogReader(
         } catch (e: Exception) {
             return CatalogReadResult.failed(catalogName, gapFor(emptyList(), "list_namespaces_failed", e))
         }
-        all.forEach { readNamespaceLocation(namespaces, it, result) }
+        val progress = ReadProgress("Reading namespace locations of catalog=$catalogName", all.size)
+        each(all) { namespace ->
+            ReadAccumulator(catalogName).also {
+                readNamespaceLocation(namespaces, namespace, it)
+                progress.itemDone()
+            }
+        }.forEach { result.addAll(it) }
         return result.result()
     }
 
@@ -98,37 +119,59 @@ class IcebergCatalogReader(
         return catalog.loadTable(identifier)
     }
 
-    // Children are listed with parent=, so nested and dotted namespaces are read too.
+    // Children are listed with parent=, so nested and dotted namespaces are read too. One depth at a time, in listing
+    // order: the checks run in the order a queue would give, and only the child listings run in parallel.
     private fun listAllNamespaces(catalog: SupportsNamespaces, result: ReadAccumulator): List<Namespace> {
         val found = linkedSetOf<Namespace>()
-        val pending = ArrayDeque(catalog.listNamespaces(Namespace.empty()).map { it to 1 })
-        while (pending.isNotEmpty()) {
-            val (namespace, depth) = pending.removeFirst()
-            val name = namespace.levels().toList()
-            if (namespace.length() != depth || found.contains(namespace)) {
-                result.gaps += ReadGap(name, ReadGapKind.UNVERIFIED, "unexpected_namespace_listing")
-                continue
+        var level = catalog.listNamespaces(Namespace.empty()).map { it to 1 }
+        while (level.isNotEmpty()) {
+            val toList = mutableListOf<Pair<Namespace, Int>>()
+            for ((namespace, depth) in level) {
+                val name = namespace.levels().toList()
+                if (namespace.length() != depth || found.contains(namespace)) {
+                    result.gaps += ReadGap(name, ReadGapKind.UNVERIFIED, "unexpected_namespace_listing")
+                    continue
+                }
+                if (found.size >= limits.maxNamespaces) {
+                    result.gaps += ReadGap(emptyList(), ReadGapKind.LIMIT_EXCEEDED, "too_many_namespaces")
+                    return found.toList()
+                }
+                found += namespace
+                if (depth >= limits.maxNamespaceDepth) {
+                    result.gaps += ReadGap(name, ReadGapKind.LIMIT_EXCEEDED, "namespace_too_deep")
+                    continue
+                }
+                toList += namespace to depth
             }
-            if (found.size >= limits.maxNamespaces) {
-                result.gaps += ReadGap(emptyList(), ReadGapKind.LIMIT_EXCEEDED, "too_many_namespaces")
-                break
-            }
-            found += namespace
-            if (depth >= limits.maxNamespaceDepth) {
-                result.gaps += ReadGap(name, ReadGapKind.LIMIT_EXCEEDED, "namespace_too_deep")
-                continue
-            }
-            try {
-                catalog.listNamespaces(namespace).forEach { child ->
-                    if (child.levels().take(depth) == name) {
-                        pending.addLast(child to depth + 1)
-                    } else {
-                        result.gaps += ReadGap(child.levels().toList(), ReadGapKind.UNVERIFIED, "unexpected_namespace_listing")
+            val children =
+                each(toList) { (namespace, _) ->
+                    try {
+                        Result.success(catalog.listNamespaces(namespace))
+                    } catch (e: Exception) {
+                        Result.failure(e)
                     }
                 }
-            } catch (e: Exception) {
-                result.gap(name, "list_child_namespaces_failed", e)
-            }
+            level =
+                toList.zip(children).flatMap { (parent, listed) ->
+                    val (namespace, depth) = parent
+                    val name = namespace.levels().toList()
+                    listed.fold(
+                        onSuccess = { list ->
+                            list.mapNotNull { child ->
+                                if (child.levels().take(depth) == name) {
+                                    child to depth + 1
+                                } else {
+                                    result.gaps += ReadGap(child.levels().toList(), ReadGapKind.UNVERIFIED, "unexpected_namespace_listing")
+                                    null
+                                }
+                            }
+                        },
+                        onFailure = { error ->
+                            result.gap(name, "list_child_namespaces_failed", error as Exception)
+                            emptyList()
+                        },
+                    )
+                }
         }
         return found.toList()
     }
@@ -230,6 +273,14 @@ class IcebergCatalogReader(
          * The Iceberg catalog behind a non-session Spark catalog, or null. spark_catalog's SparkSessionCatalog is
          * not a SparkCatalog: it merges two stores and must never answer an ownership read.
          */
-        fun icebergCatalogOf(plugin: CatalogPlugin): Catalog? = (plugin as? SparkCatalog)?.icebergCatalog()
+        fun icebergCatalogOf(plugin: CatalogPlugin): Catalog? =
+            (plugin as? SparkCatalog)?.icebergCatalog()?.let { if (it is CachingCatalog) uncached(it) else it }
+
+        // Spark's CachingCatalog can serve a table loaded minutes ago and has no namespace or view API, so the
+        // catalog it wraps is read instead. Null when that field is not found, so the catalog is not read at all.
+        internal fun uncached(caching: CachingCatalog): Catalog? =
+            runCatching {
+                CachingCatalog::class.java.getDeclaredField("catalog").apply { isAccessible = true }.get(caching) as? Catalog
+            }.getOrNull()
     }
 }

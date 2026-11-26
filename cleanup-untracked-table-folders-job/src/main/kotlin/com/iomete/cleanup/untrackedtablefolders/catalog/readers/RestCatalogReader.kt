@@ -1,5 +1,6 @@
 package com.iomete.cleanup.untrackedtablefolders.catalog.readers
 
+import com.iomete.cleanup.untrackedtablefolders.catalog.CatalogReadPool
 import java.net.URI
 import org.apache.hadoop.conf.Configuration
 import org.apache.iceberg.CatalogProperties
@@ -31,6 +32,7 @@ object RestCatalogReader {
         hadoopConf: Configuration,
         viewPathParser: ViewPathParser = ViewPathParser(),
         limits: ReaderLimits = ReaderLimits(),
+        pool: CatalogReadPool? = null,
     ): Opened {
         val properties = clientProperties(catalogName, catalogProperties)
             ?: return Opened.Refused(CatalogReadResult.failed(catalogName, ReadGap(emptyList(), ReadGapKind.UNSUPPORTED, "not_a_managed_rest_catalog")))
@@ -42,7 +44,7 @@ object RestCatalogReader {
             runCatching { client.close() }
             return Opened.Refused(CatalogReadResult.failed(catalogName, gapFor(emptyList(), "rest_catalog_config_failed", e)))
         }
-        return Opened.Ready(client, IcebergCatalogReader(catalogName, client, viewPathParser, limits))
+        return Opened.Ready(client, IcebergCatalogReader(catalogName, client, viewPathParser, limits, pool = pool))
     }
 
     /** Opens, reads and closes. */

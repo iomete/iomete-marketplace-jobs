@@ -72,6 +72,8 @@ class CleanupFlowHarness(
         every { catalogDiscoveryService.tableStorageIfExists(any(), any(), any()) } returns NamedTableStorage.NotFound
         every { catalogDiscoveryService.sessionCatalogWarehouses() } returns emptyMap()
         every { catalogDiscoveryService.discoverTables(any(), any()) } returns emptyList()
+        every { catalogDiscoveryService.catalogsWithUnverifiedVisibility(any()) } returns emptyList()
+        every { catalogDiscoveryService.concurrentReadSafe(any()) } returns false
 
         val excludePathResolver = ExcludePathResolver().also { it.config = config }
         val discovery = storage.discoveryService()

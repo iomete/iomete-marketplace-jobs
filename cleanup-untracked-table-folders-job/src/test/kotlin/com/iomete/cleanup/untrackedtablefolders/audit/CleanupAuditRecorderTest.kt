@@ -158,8 +158,8 @@ class CleanupAuditRecorderTest {
             record.diagnosticDetails["ownership_checks"],
         )
         assertEquals(
-            "other_database_tables,same_bucket_session_catalogs,final_recheck_before_deletion," +
-                "other_bucket_session_catalogs,catalogs_outside_session,hidden_tables,nested_namespace_tables,files_outside_table_folders",
+            "other_database_tables,other_session_catalogs,final_recheck_before_deletion," +
+                "catalogs_outside_session,hidden_tables,nested_namespace_tables,files_outside_table_folders",
             record.diagnosticDetails["ownership_not_checked"],
         )
     }
@@ -607,12 +607,12 @@ class CleanupAuditRecorderTest {
             assertEquals(
                 "visible_tables_of_this_database,write_paths_of_visible_tables_of_this_database," +
                     "default_folders_of_visible_other_databases,configured_exclusions,visible_tables_of_other_databases," +
-                    "visible_storage_of_same_bucket_session_catalogs,final_recheck_before_deletion",
+                    "visible_storage_of_other_session_catalogs,final_recheck_before_deletion",
                 record.diagnosticDetails["ownership_checks"],
                 record.statusReason,
             )
             assertEquals(
-                "other_bucket_session_catalogs,catalogs_outside_session,hidden_tables,nested_namespace_tables,files_outside_table_folders",
+                "catalogs_outside_session,hidden_tables,nested_namespace_tables,files_outside_table_folders",
                 record.diagnosticDetails["ownership_not_checked"],
                 record.statusReason,
             )
@@ -624,8 +624,8 @@ class CleanupAuditRecorderTest {
                 record.statusReason,
             )
             assertEquals(
-                "default_folders_of_other_databases,other_database_tables,same_bucket_session_catalogs,final_recheck_before_deletion," +
-                    "other_bucket_session_catalogs,catalogs_outside_session,hidden_tables,nested_namespace_tables,files_outside_table_folders",
+                "default_folders_of_other_databases,other_database_tables,other_session_catalogs,final_recheck_before_deletion," +
+                    "catalogs_outside_session,hidden_tables,nested_namespace_tables,files_outside_table_folders",
                 record.diagnosticDetails["ownership_not_checked"],
                 record.statusReason,
             )
