@@ -9,6 +9,9 @@ interface CatalogSource {
     /** For logs: hms or iceberg. */
     val kind: String get() = "catalog"
 
+    /** True only for clients known to be safe to call from several threads at once. */
+    val concurrentReadSafe: Boolean get() = false
+
     /** Namespaces and their locations, without tables. */
     fun readDatabases(): CatalogReadResult
 
@@ -24,6 +27,9 @@ internal class HmsSource(
 ) : CatalogSource {
     override val kind = "hms"
 
+    // Spark's HiveExternalCatalog runs every call under one lock.
+    override val concurrentReadSafe = true
+
     override fun readDatabases() = reader.readDatabases()
 
     // The metastore has one level of databases, so a nested namespace is never one of its databases.
@@ -36,6 +42,8 @@ internal class IcebergSource(
     private val reader: IcebergCatalogReader,
 ) : CatalogSource {
     override val kind = "iceberg"
+
+    override val concurrentReadSafe get() = reader.concurrentReadSafe
 
     override fun readDatabases() = reader.readNamespaces()
 

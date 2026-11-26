@@ -35,8 +35,10 @@ class IcebergCatalogReader(
     private val probeNamespace: Namespace = Namespace.of("cleanup_probe_" + UUID.randomUUID().toString().replace("-", "")),
     pool: CatalogReadPool? = null,
 ) {
-    // Other catalog clients may not be safe to share between threads. RESTCatalog uses a pooled HTTP client.
-    private val pool: CatalogReadPool? = pool?.takeIf { catalog is RESTCatalog }
+    /** Other catalog clients may not be safe to share between threads. RESTCatalog uses a pooled HTTP client. */
+    val concurrentReadSafe: Boolean = catalog is RESTCatalog
+
+    private val pool: CatalogReadPool? = pool?.takeIf { concurrentReadSafe }
 
     private fun <T, R> each(items: List<T>, work: (T) -> R): List<R> = pool?.map(items, work) ?: items.map(work)
 

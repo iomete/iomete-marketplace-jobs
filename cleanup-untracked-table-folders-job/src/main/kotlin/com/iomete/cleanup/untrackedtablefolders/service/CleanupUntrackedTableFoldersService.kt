@@ -566,6 +566,15 @@ class CleanupUntrackedTableFoldersService {
                                     otherTableStorage.liveIceberg,
                             complete =
                                 unresolvedTableNames.isEmpty() && otherTablesNeeded && otherTableStorage.blockReason == null,
+                            // Without an unowned folder there is nothing to hold.
+                            unverifiedCatalogs =
+                                if (otherTablesNeeded) {
+                                    catalogDiscoveryService.catalogsWithUnverifiedVisibility(
+                                        listOf(discoveredDatabase.catalog) + catalogDiscoveryService.sessionCatalogWarehouses().keys,
+                                    )
+                                } else {
+                                    emptyList()
+                                },
                         )
                     val history =
                         storageHoldChecker.readHistory(discoveredDatabase.catalog, discoveredDatabase.database, candidateFolderStatistics, listingTime)
@@ -1525,18 +1534,20 @@ private class OtherStorageIndex(
         val toRead = databases.distinct().filter { it !in tables }
         val failed = AtomicBoolean()
         val progress = ReadProgress("Reading the tables of other databases", toRead.size)
-        val read =
-            pool.map(toRead) { (catalog, database) ->
-                if (failed.get()) {
-                    Result.failure(NotReadAfterFailure())
-                } else {
-                    runCatching { catalogDiscoveryService.discoverTables(catalog, database) }
-                        .onFailure { failed.set(true) }
-                        .also { progress.itemDone() }
-                }
+        val readOne = { (catalog, database): Pair<String, String> ->
+            if (failed.get()) {
+                Result.failure(NotReadAfterFailure())
+            } else {
+                runCatching { catalogDiscoveryService.discoverTables(catalog, database) }
+                    .onFailure { failed.set(true) }
+                    .also { progress.itemDone() }
             }
-        check(read.size == toRead.size) { "Read ${read.size} table lists for ${toRead.size} databases" }
-        val byDatabase = toRead.zip(read).toMap()
+        }
+        // Only catalogs whose clients are known to be safe to share are read in parallel; the rest one at a time.
+        val safeCatalogs = toRead.map { it.first }.distinct().filter { catalogDiscoveryService.concurrentReadSafe(it) }.toSet()
+        val (parallel, sequential) = toRead.partition { it.first in safeCatalogs }
+        val byDatabase = (parallel.zip(pool.map(parallel, readOne)) + sequential.map { it to readOne(it) }).toMap()
+        check(byDatabase.size == toRead.size) { "Read ${byDatabase.size} table lists for ${toRead.size} databases" }
         byDatabase.forEach { (database, result) -> result.onSuccess { if (it.none(DiscoveredTable::isUnresolved)) tables[database] = it } }
         return databases.map { database -> byDatabase[database] ?: Result.success(tables.getValue(database)) }
     }

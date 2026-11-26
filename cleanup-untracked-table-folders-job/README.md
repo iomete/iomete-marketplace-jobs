@@ -560,7 +560,7 @@ claims this folder". It does not prove that nothing else uses the folder. The jo
 | Not checked | Example | What to do |
 |---|---|---|
 | Catalogs outside the job's Spark session | A catalog of another data plane or tool with a table whose `LOCATION` is in this database's folder | Review the dry-run candidates. Protect the folder with `exclude_paths`. |
-| Tables the job cannot see | Tables the job's run-as user is not allowed to see | Run the job as a user who can see every table in the catalog. |
+| Tables the job cannot see | Tables the job's run-as user is not allowed to see. A catalog that may hide tables from its credential holds every folder as `catalog_visibility_unverified` instead | Run the job as a user who can see every table in the catalog. |
 | Tables of nested namespaces | A table in a namespace inside another namespace | Protect its folder with `exclude_paths`. |
 | Files a table uses outside its own folder | After `ALTER TABLE ... SET LOCATION`, the existing files stay in the old folder and the table still reads them. Files added with `add_files`, or used by a table made with `snapshot` or `migrate`, stay where they were. | Protect the old or source folder with `exclude_paths` while any table still uses it. |
 
@@ -1713,7 +1713,14 @@ that is also one of its warehouses. An IOMETE-managed REST catalog is read with 
 other Iceberg REST catalog, for example an external one with its own token, is read through the client Spark
 built from the session's settings, so it uses the same authentication, with Spark's table cache bypassed. If
 that catalog does not offer the view endpoints, its views can't be listed, so its reads fail and the database
-is `BLOCKED`. For those catalogs:
+is `BLOCKED`.
+
+Such a catalog only shows what its credential may see, so a read that succeeds does not show that it listed
+every table. Its tables still protect their folders, but a table it hides looks like a dropped one. So while
+any catalog of the session other than `spark_catalog`, an IOMETE-managed REST catalog or a JDBC catalog is in
+the session, every folder that passes the other checks is held as `catalog_visibility_unverified`, whatever it
+holds: own table metadata, commit scratch or anything else. Nothing is deleted under any cleanup root of the
+database, and the dry run still reads every catalog and reports every other hold. For those catalogs:
 
 - a warehouse at or inside the cleanup root is protected whole;
 - the storage of their databases is protected with the rules above;

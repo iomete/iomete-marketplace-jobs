@@ -693,6 +693,8 @@ class CleanupSummaryLogger {
             StorageHoldReason.DATA_ONLY_NOT_PLAIN_OUTPUT ->
                 "files with no table metadata that are neither commit scratch nor plain Spark output."
             StorageHoldReason.LIVE_TABLES_INCOMPLETE -> "not every live table was read, so one of them may use the folder."
+            StorageHoldReason.CATALOG_VISIBILITY_UNVERIFIED ->
+                "a catalog of the session was read through a credential that may not see every table, so a hidden table may use the folder."
             StorageHoldReason.LIVE_TABLE_UUID -> "its metadata has the UUID of a live table, which may still read it."
             StorageHoldReason.LIVE_FILE_REFERENCED -> "a live table's current metadata names a file in the folder."
             StorageHoldReason.NAME_MAPPED_FILE_REFERENCED -> "a table that imported files (add_files, migrate, snapshot) uses a file in the folder."

@@ -39,6 +39,7 @@ enum class StorageHoldReason(val code: String) {
     LIVE_FILE_REFERENCED("live_file_referenced"),
     NAME_MAPPED_FILE_REFERENCED("name_mapped_file_referenced"),
     NAME_MAPPED_READ_INCOMPLETE("name_mapped_read_incomplete"),
+    CATALOG_VISIBILITY_UNVERIFIED("catalog_visibility_unverified"),
     CONFIRMATION_NO_JOB_ID("confirmation_no_job_id"),
     CONFIRMATION_HISTORY_UNREADABLE("confirmation_history_unreadable"),
     CONFIRMATION_PATH_NOT_EXACT("confirmation_path_not_exact"),
@@ -63,10 +64,15 @@ data class LiveIcebergTable(
     val table: LiveIcebergObject,
 )
 
-/** The live Iceberg tables and views read for a database's cleanup roots. Incomplete when any of those reads was. */
+/**
+ * The live Iceberg tables and views read for a database's cleanup roots. Incomplete when any of those reads was.
+ * [unverifiedCatalogs] were read in full, but through a credential that may not see every table, so a read that
+ * succeeded still doesn't show that no hidden table uses a folder.
+ */
 data class LiveIcebergTables(
     val tables: List<LiveIcebergTable>,
     val complete: Boolean,
+    val unverifiedCatalogs: List<String> = emptyList(),
 )
 
 /** The folders held by the storage checks, by reason, and the history the run read for confirmation. */
@@ -141,6 +147,20 @@ class StorageHoldChecker {
         }
 
         val unused = liveTableHolds(remaining.sorted(), metadata.mapValues { it.value.tableUuids }, live, ::hold)
+
+        // A hidden table can look like a dropped one, or like commit scratch when its metadata is kept elsewhere. Every
+        // folder that passed the checks above is held, whatever its shape. The checks still run, so a dry run reports
+        // everything else it found.
+        if (live.unverifiedCatalogs.isNotEmpty()) {
+            if (unused.isNotEmpty()) {
+                logger.warn(
+                    "Holding ${unused.size} folder(s) of catalog=$catalog, database=$database: catalog(s) " +
+                        "${live.unverifiedCatalogs.joinToString()} may hide tables from the job, so no folder can be shown unused"
+                )
+            }
+            unused.forEach { hold(StorageHoldReason.CATALOG_VISIBILITY_UNVERIFIED, it) }
+            return StorageHolds(held.toSortedMap().mapValues { (_, paths) -> paths.sorted() }, history)
+        }
 
         unused.forEach { path ->
             confirmationHold(path, statistics, history, listingTime)?.let { hold(it, path) }

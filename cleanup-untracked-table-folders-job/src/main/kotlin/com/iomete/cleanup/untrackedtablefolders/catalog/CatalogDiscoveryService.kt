@@ -217,8 +217,8 @@ class CatalogDiscoveryService {
         val startedAt = System.nanoTime()
         val sources = sources(catalog)
         logger.info("Listing the databases of catalog=$catalog in ${sources.size} store(s)")
-        val reads =
-            storePool.map(sources.withIndex().toList()) { (index, source) ->
+        val stores = sources.withIndex().toList()
+        val readStore = { (index, source): IndexedValue<CatalogSource> ->
                 val storeStartedAt = System.nanoTime()
                 source.readDatabases().also { read ->
                     logger.info(
@@ -227,6 +227,7 @@ class CatalogDiscoveryService {
                     )
                 }
             }
+        val reads = if (sources.all { it.concurrentReadSafe }) storePool.map(stores, readStore) else stores.map(readStore)
         reads.forEachIndexed { index, read -> listedNamespaces[catalog to index] = read.namespaces.toSet() }
         // A gap for a namespace the listing did not return, such as an unexpected child, hides that namespace.
         reads.flatMap { read -> read.gaps.filter { it.name.isEmpty() || it.name !in read.namespaces } }.takeIf { it.isNotEmpty() }?.let { gaps ->
@@ -246,6 +247,38 @@ class CatalogDiscoveryService {
                 "${(System.nanoTime() - startedAt) / 1_000_000} ms; ${locations.count { it.value == null }} had no readable location"
         )
         return locations
+    }
+
+    /** Whether every store of [catalog] is safe to read from several threads. False when that can't be established. */
+    fun concurrentReadSafe(catalog: String): Boolean =
+        runCatching { sources(catalog).let { it.isNotEmpty() && it.all(CatalogSource::concurrentReadSafe) } }.getOrDefault(false)
+
+    /**
+     * The catalogs whose listings can't be shown to include every table: a successful read only shows what its
+     * credential may see. The metastore through Spark's own client and a managed REST catalog through its internal
+     * endpoint see every table. Any other catalog, read through the client Spark built from the session settings, may
+     * hide tables, so a folder no visible table claims could still belong to one. When the settings can't be read,
+     * every catalog counts.
+     */
+    fun catalogsWithUnverifiedVisibility(catalogs: Collection<String>): List<String> {
+        val properties = runCatching { catalogProperties() }.getOrElse { return catalogs.distinct().sorted() }
+        return catalogs.distinct().filterNot { visibilityEstablished(it, properties) }.sorted()
+    }
+
+    private fun visibilityEstablished(
+        catalog: String,
+        properties: Map<String, String>,
+    ): Boolean {
+        val catalogClass = properties[catalog].orEmpty()
+        val type = properties["$catalog.$CATALOG_TYPE_PROPERTY"].orEmpty().lowercase()
+        return when {
+            // No table storage.
+            catalogClass == JDBC_CATALOG_CLASS -> true
+            // Read only from the metastore and, when REST, the managed endpoint. Any other setup is refused.
+            catalog == SESSION_CATALOG_NAME -> true
+            catalogClass == SPARK_CATALOG_CLASS && type == "rest" -> RestCatalogReader.clientProperties(catalog, propertiesOf(catalog, properties)) != null
+            else -> false
+        }
     }
 
     // Null when the table does not exist or is a view. Any other failure is thrown so the caller can fail closed.

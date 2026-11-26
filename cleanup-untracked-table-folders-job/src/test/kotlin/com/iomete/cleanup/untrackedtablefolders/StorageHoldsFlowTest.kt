@@ -12,6 +12,7 @@ import com.iomete.cleanup.untrackedtablefolders.catalog.readers.LiveIcebergObjec
 import com.iomete.cleanup.untrackedtablefolders.config.ApplicationConfig
 import com.iomete.cleanup.untrackedtablefolders.storage.InMemoryS3FileSystem
 import io.mockk.every
+import io.mockk.verify
 import java.time.Duration
 import java.time.Instant
 import org.apache.hadoop.fs.FileSystem
@@ -43,6 +44,7 @@ class StorageHoldsFlowTest {
     private var tableLoader: ((LiveIcebergTable) -> Table)? = null
     private var sessionCatalogs: Map<String, List<String>> = emptyMap()
     private var farUnreadable = false
+    private var unverifiedCatalogs: List<String> = emptyList()
 
     @BeforeEach
     fun setUp() {
@@ -229,6 +231,46 @@ class StorageHoldsFlowTest {
         val (_, second) = confirmedRuns()
 
         assertEquals(listOf("$DB/dropped"), second.auditRecords.single().deletedFolders)
+    }
+
+    // The external catalog "far" lists its databases, but its credential can't see the table that owns these folders:
+    // a dropped-looking Iceberg folder and a data-only one. Every read succeeds and the folders are unchanged for 73 h.
+    @Test
+    fun `a table an external catalog hides can't make its folder deletable, whatever the folder holds`() {
+        putMetadataFolder("dropped", """{"format-version":2,"table-uuid":"u1","location":"$DB/dropped"}""")
+        putFolder("$DB/scratch", "_temporary/0/part-00000")
+        sessionCatalogs = mapOf(CATALOG to listOf(WAREHOUSE), "far" to listOf("s3a://far-bucket/lake"))
+        unverifiedCatalogs = listOf("far")
+
+        val (first, second) = confirmedRuns()
+
+        assertHeld(second, "catalog_visibility_unverified", "$DB/dropped", "$DB/scratch")
+        assertTrue(second.objectExists("$DB/dropped/metadata/v1.metadata.json"))
+        assertTrue(second.objectExists("$DB/scratch/_temporary/0/part-00000"))
+        // The dry run still reads everything and reports the hold.
+        assertEquals(listOf("$DB/dropped", "$DB/scratch"), samplePaths(first.auditRecords.single(), "catalog_visibility_unverified"))
+        verify { second.catalogDiscoveryService.discoverTables("far", "remote") }
+    }
+
+    @Test
+    fun `when the database's own catalog may hide tables, its folders are held too`() {
+        putMetadataFolder("dropped", """{"format-version":2,"table-uuid":"u1","location":"$DB/dropped"}""")
+        unverifiedCatalogs = listOf(CATALOG)
+
+        val (_, second) = confirmedRuns()
+
+        assertHeld(second, "catalog_visibility_unverified", "$DB/dropped")
+    }
+
+    @Test
+    fun `the same folders are deleted when every catalog's visibility is established`() {
+        putMetadataFolder("dropped", """{"format-version":2,"table-uuid":"u1","location":"$DB/dropped"}""")
+        putFolder("$DB/scratch", "_temporary/0/part-00000")
+        sessionCatalogs = mapOf(CATALOG to listOf(WAREHOUSE), "far" to listOf("s3a://far-bucket/lake"))
+
+        val (_, second) = confirmedRuns()
+
+        assertEquals(listOf("$DB/dropped", "$DB/scratch"), second.auditRecords.single().deletedFolders.sorted())
     }
 
     @Test
@@ -516,6 +558,7 @@ class StorageHoldsFlowTest {
         tableLoader?.let { loader -> flow.service.storageHoldChecker.tableLoader = loader }
         every { flow.catalogDiscoveryService.sessionCatalogWarehouses() } returns sessionCatalogs
         every { flow.catalogDiscoveryService.visibleDatabaseLocations("near") } returns emptyMap()
+        every { flow.catalogDiscoveryService.catalogsWithUnverifiedVisibility(any()) } returns unverifiedCatalogs
         if (farUnreadable) {
             every { flow.catalogDiscoveryService.visibleDatabaseLocations("far") } throws IllegalStateException("catalog unreachable")
         } else {

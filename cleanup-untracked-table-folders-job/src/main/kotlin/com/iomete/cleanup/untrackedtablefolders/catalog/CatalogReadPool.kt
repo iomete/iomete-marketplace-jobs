@@ -6,17 +6,21 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /** Threads for catalog reads that clients can serve at the same time. */
 const val CATALOG_READ_PARALLELISM = 8
 
+private val SKIPPED = Any()
+
 /**
  * A fixed number of daemon threads. [map] returns results in item order. Called from one of its own threads it runs
- * inline, so nested use can't wait on itself. A failure is rethrown after the items already running finish; queued
- * items are dropped, and no running call is interrupted, because an interrupted metastore call can leave its shared
- * client in a bad state.
+ * inline, so nested use can't wait on itself. The first failure in item order is rethrown once every item already
+ * started has finished, so no read is still running when [map] returns; items not yet started are skipped. No running
+ * call is interrupted, because an interrupted metastore call can leave its shared client in a bad state. When the
+ * caller is interrupted, it stops waiting at once.
  */
 class CatalogReadPool(
     val parallelism: Int,
@@ -35,11 +39,19 @@ class CatalogReadPool(
         if (parallelism <= 1 || items.size <= 1 || ownThread.get()) {
             return items.map(work)
         }
-        val futures = items.map { item -> executor().submit(Callable { work(item) }) }
+        val stopped = AtomicBoolean()
+        val futures = items.map { item -> executor().submit(Callable { if (stopped.get()) SKIPPED else work(item) }) }
         try {
-            return futures.map { it.result() }
-        } finally {
-            futures.forEach { it.cancel(false) }
+            @Suppress("UNCHECKED_CAST")
+            return futures.map { it.result() as R }
+        } catch (e: InterruptedException) {
+            stopped.set(true)
+            Thread.currentThread().interrupt()
+            throw e
+        } catch (e: Throwable) {
+            stopped.set(true)
+            futures.forEach { runCatching { it.get() } }
+            throw e
         }
     }
 

@@ -77,6 +77,31 @@ class CatalogReadPoolTest {
     }
 
     @Test
+    fun `a failure is rethrown only after the items already running finish, and items not started are skipped`() {
+        val slowFinished = java.util.concurrent.atomic.AtomicBoolean()
+        val started = AtomicInteger()
+
+        assertThrows<IllegalStateException> {
+            pool(2).map((0..9).toList()) { item ->
+                when (item) {
+                    0 -> throw IllegalStateException("item 0")
+                    1 -> {
+                        Thread.sleep(200)
+                        slowFinished.set(true)
+                    }
+                    else -> {
+                        started.incrementAndGet()
+                        Thread.sleep(50)
+                    }
+                }
+            }
+        }
+
+        assertTrue(slowFinished.get(), "returned while item 1 was still running")
+        assertTrue(started.get() < 8, "started=${started.get()}")
+    }
+
+    @Test
     fun `with one thread, or one item, reads run on the calling thread`() {
         val caller = Thread.currentThread()
 

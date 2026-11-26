@@ -471,6 +471,55 @@ class CatalogReaderDiscoveryTest {
         }
     }
 
+    @Test
+    fun `only the metastore and managed REST catalogs count as seeing every table`() {
+        sessionConf["spark.sql.catalog.spark_catalog"] = "org.apache.iceberg.spark.SparkSessionCatalog"
+        sessionConf["spark.sql.catalog.spark_catalog.type"] = "rest"
+        sessionConf["spark.sql.catalog.spark_catalog.uri"] = MANAGED_URI
+        sparkCatalog("managed", "rest", "http://iom-core.iomete-system/internal/catalogs/managed")
+        sparkCatalog("ext", "rest", "http://unity.example/api/iceberg")
+        sparkCatalog("lake", "hive", "thrift://metastore:9083")
+        sparkCatalog("glue", "glue", null)
+        sessionConf["spark.sql.catalog.pg"] = "org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog"
+        sessionConf["spark.sql.catalog.custom"] = "com.example.CustomCatalog"
+        val service = service()
+
+        assertEquals(
+            listOf("custom", "ext", "glue", "lake", "missing"),
+            service.catalogsWithUnverifiedVisibility(listOf("spark_catalog", "managed", "ext", "lake", "glue", "pg", "custom", "missing")),
+        )
+    }
+
+    @Test
+    fun `when the session settings can't be read, no catalog counts as seeing every table`() {
+        val spark = mockk<SparkSession> { every { conf() } throws IllegalStateException("no session") }
+        val service = CatalogDiscoveryService().apply { sparkSessionProvider = mockk { every { getOrCreate() } returns spark } }
+
+        assertEquals(listOf("managed", "spark_catalog"), service.catalogsWithUnverifiedVisibility(listOf("spark_catalog", "managed")))
+    }
+
+    @Test
+    fun `only the metastore and REST clients are read from several threads, and an unreadable catalog never is`() {
+        val hms = hms()
+        val service = service(hms, server())
+        val fake = service(sources = { listOf(FakeSource(listOf(listOf("sales")))) })
+        val broken = service(sources = { throw UnsupportedCatalogException(it, "not supported") })
+
+        assertTrue(service.concurrentReadSafe("spark_catalog"))
+        assertFalse(fake.concurrentReadSafe("spark_catalog"))
+        assertFalse(broken.concurrentReadSafe("spark_catalog"))
+    }
+
+    private fun sparkCatalog(
+        name: String,
+        type: String,
+        uri: String?,
+    ) {
+        sessionConf["spark.sql.catalog.$name"] = "org.apache.iceberg.spark.SparkCatalog"
+        sessionConf["spark.sql.catalog.$name.type"] = type
+        uri?.let { sessionConf["spark.sql.catalog.$name.uri"] = it }
+    }
+
     private class FakeSource(
         private val namespaces: List<List<String>>,
         private val database: CatalogReadResult? = null,

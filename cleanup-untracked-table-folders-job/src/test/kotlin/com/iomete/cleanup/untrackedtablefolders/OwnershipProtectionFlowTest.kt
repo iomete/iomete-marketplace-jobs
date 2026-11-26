@@ -472,6 +472,7 @@ class OwnershipProtectionFlowTest {
             throw IllegalStateException("describe denied")
         }
         every { flow.catalogDiscoveryService.discoverTables(CATALOG, "gamma") } throws IllegalArgumentException("bad location")
+        every { flow.catalogDiscoveryService.concurrentReadSafe(CATALOG) } returns true
 
         flow.run()
 
@@ -482,6 +483,26 @@ class OwnershipProtectionFlowTest {
             "catalog=$CATALOG, database=archive: the tables could not be read (IllegalStateException)",
             record.diagnosticDetails["ownership_unreadable_sample"],
         )
+    }
+
+    @Test
+    fun `tables of a catalog whose client is not known to be thread-safe are read one at a time`() {
+        folders(SALES, "t1", "orphan")
+        val databases = (1..6).associate { "db$it" to "$WAREHOUSE/db$it.db" }
+        val flow = flow(tables = listOf(table("$SALES/t1")), databases = mapOf("sales" to SALES) + databases)
+        val running = java.util.concurrent.atomic.AtomicInteger()
+        val peak = java.util.concurrent.atomic.AtomicInteger()
+        every { flow.catalogDiscoveryService.discoverTables(CATALOG, any()) } answers {
+            peak.accumulateAndGet(running.incrementAndGet(), ::maxOf)
+            Thread.sleep(20)
+            running.decrementAndGet()
+            emptyList()
+        }
+
+        flow.run()
+
+        assertEquals(1, peak.get())
+        assertEquals(listOf("$SALES/orphan"), flow.auditRecords.single().deletedFolders)
     }
 
     @Test
